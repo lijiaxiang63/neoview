@@ -260,6 +260,61 @@ describe('segmentRegion — grow from seed (hysteresis)', () => {
   })
 })
 
+describe('segmentRegion — sparse path (bounds dwarf a finite cap)', () => {
+  // Same core/rim layout as the grow tests: x=4..6 at 100, x=2..8 at 60.
+  const vol = makeVolume([12, 3, 3], (i, j, k) => {
+    if (j !== 1 || k !== 1) return 0
+    if (i >= 4 && i <= 6) return 100
+    if (i >= 2 && i <= 8) return 60
+    return 0
+  })
+  const seedBox = box([4, 1, 1], [6, 1, 1])
+
+  it('matches the dense result and returns tight bounds', () => {
+    // 108-voxel bounds > 25 * 4 routes sparse; the dense run is the oracle.
+    const dense = segmentRegion(
+      vol,
+      seedBox,
+      wholeVolumeBox(vol.dims),
+      params({ low: 50, high: 90 })
+    )
+    const sparse = segmentRegion(
+      vol,
+      seedBox,
+      wholeVolumeBox(vol.dims),
+      params({ low: 50, high: 90, maxVoxels: 25 })
+    )
+    expect(sparse.truncated).toBe(false)
+    expect(sparse.voxels).toBe(dense.voxels)
+    expect(selected(vol, sparse)).toEqual(selected(vol, dense))
+    expect(sparse.bounds).toEqual({ min: [2, 1, 1], max: [8, 1, 1] })
+  })
+
+  it('no seed above high -> empty result with zero voxels', () => {
+    const res = segmentRegion(
+      vol,
+      box([2, 1, 1], [3, 1, 1]), // rim only, all 60 < high
+      wholeVolumeBox(vol.dims),
+      params({ low: 50, high: 90, maxVoxels: 25 })
+    )
+    expect(res.voxels).toBe(0)
+    expect(res.truncated).toBe(false)
+  })
+
+  it('caps a runaway flood (visited set grows past its initial capacity)', () => {
+    const flat = makeVolume([24, 24, 24], () => 100) // 13824 > 3000 * 4
+    const res = segmentRegion(
+      flat,
+      box([12, 12, 12], [12, 12, 12]),
+      wholeVolumeBox(flat.dims),
+      params({ low: 50, high: 50, maxVoxels: 3000 })
+    )
+    expect(res.truncated).toBe(true)
+    expect(res.voxels).toBeGreaterThanOrEqual(3000)
+    expect(res.voxels).toBeLessThan(13824)
+  })
+})
+
 describe('constraintFromLabelMap', () => {
   it('allows only the chosen region', () => {
     const labelMap = new Uint16Array(4 * 4 * 4)

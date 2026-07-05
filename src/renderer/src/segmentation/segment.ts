@@ -350,12 +350,191 @@ class IntStack {
   }
 }
 
+/** Open-addressed int set for the sparse flood path (keys >= 0, -1 = empty). */
+class IntHashSet {
+  private table = new Int32Array(1 << 12).fill(-1)
+  size = 0
+
+  private slot(k: number): number {
+    // Fibonacci hashing; the table length is always a power of two.
+    let i = (Math.imul(k, 0x9e3779b1) >>> 0) & (this.table.length - 1)
+    while (this.table[i] !== -1 && this.table[i] !== k) i = (i + 1) & (this.table.length - 1)
+    return i
+  }
+
+  has(k: number): boolean {
+    return this.table[this.slot(k)] === k
+  }
+
+  add(k: number): void {
+    if ((this.size + 1) * 2 > this.table.length) this.grow()
+    const i = this.slot(k)
+    if (this.table[i] === k) return
+    this.table[i] = k
+    this.size++
+  }
+
+  private grow(): void {
+    const old = this.table
+    this.table = new Int32Array(old.length * 2).fill(-1)
+    for (let i = 0; i < old.length; i++) {
+      if (old[i] !== -1) this.table[this.slot(old[i])] = old[i]
+    }
+  }
+}
+
+/** Dense per-bounds arrays cost 2 bytes/voxel; when bounds exceed the visit
+ * cap by this factor the sparse path is cheaper (and whole-volume bounds on
+ * a large file would otherwise allocate GBs just to preview a grow). */
+const SPARSE_BOUNDS_FACTOR = 4
+
+/**
+ * Capped flood over bounds far larger than the cap can ever visit: visited
+ * voxels live in a hash set instead of a bounds-sized array, and the mask is
+ * emitted over the tight bounding box of the result. Memory scales with the
+ * cap, not the volume.
+ */
+function segmentRegionSparse(
+  vol: Volume,
+  seedBox: SegBox,
+  bounds: SegBox,
+  params: EngineParams,
+  frameOffset: number,
+  constraint: VoxelPredicate | null
+): SegmentResult {
+  const [dxs, dys, dzs] = neighborOffsets(params.connectivity)
+  const nOff = dxs.length
+  const low = Math.min(params.low, params.high)
+  const high = Math.max(params.low, params.high)
+  const minSize = Math.max(1, params.minVoxels)
+  const maxVoxels = params.maxVoxels ?? MAX_RESULT_VOXELS
+
+  const [nx, ny] = vol.dims
+  const nxy = nx * ny
+  const { raw, slope, inter } = vol
+
+  const visited = new IntHashSet()
+  const stack = new IntStack()
+  const component = new IntStack()
+  const selected = new IntStack()
+  let voxels = 0
+  let components = 0
+  let truncated = false
+
+  const keepComponent = (): void => {
+    for (let s = 0; s < component.top; s++) selected.push(component.buf[s])
+    voxels += component.top
+    components++
+  }
+
+  outer: for (let k = seedBox.min[2]; k <= seedBox.max[2]; k++) {
+    for (let j = seedBox.min[1]; j <= seedBox.max[1]; j++) {
+      let g = seedBox.min[0] + j * nx + k * nxy
+      for (let i = seedBox.min[0]; i <= seedBox.max[0]; i++, g++) {
+        if (visited.has(g)) continue
+        // Negated form so NaN never seeds (it fails every comparison).
+        if (!(raw[frameOffset + g] * slope + inter >= high)) continue
+        if (constraint && !constraint(i, j, k)) continue
+
+        component.top = 0
+        visited.add(g)
+        stack.top = 0
+        stack.push(g)
+        while (stack.top > 0) {
+          const c = stack.pop()
+          component.push(c)
+          const li = c % nx
+          const lj = ((c / nx) | 0) % ny
+          const lk = (c / nxy) | 0
+          for (let o = 0; o < nOff; o++) {
+            const mi = li + dxs[o]
+            const mj = lj + dys[o]
+            const mk = lk + dzs[o]
+            if (
+              mi < bounds.min[0] ||
+              mi > bounds.max[0] ||
+              mj < bounds.min[1] ||
+              mj > bounds.max[1] ||
+              mk < bounds.min[2] ||
+              mk > bounds.max[2]
+            ) {
+              continue
+            }
+            const q = mi + mj * nx + mk * nxy
+            if (visited.has(q)) continue
+            const v = raw[frameOffset + q] * slope + inter
+            if (!(v >= low)) continue
+            if (constraint && !constraint(mi, mj, mk)) continue
+            visited.add(q)
+            stack.push(q)
+          }
+          if (visited.size > maxVoxels) {
+            truncated = true
+            break
+          }
+        }
+
+        if (truncated) {
+          // Keep what the capped flood reached (plus what is still queued),
+          // so the preview shows where the runaway went.
+          while (stack.top > 0) component.push(stack.pop())
+          keepComponent()
+          break outer
+        }
+        if (component.top >= minSize) keepComponent()
+      }
+    }
+  }
+
+  if (selected.top === 0) {
+    return {
+      mask: new Uint8Array(1),
+      bounds: {
+        min: [seedBox.min[0], seedBox.min[1], seedBox.min[2]],
+        max: [seedBox.min[0], seedBox.min[1], seedBox.min[2]]
+      },
+      voxels: 0,
+      components,
+      truncated
+    }
+  }
+
+  // Emit the mask over the tight bounding box of the kept voxels.
+  const min: [number, number, number] = [Infinity, Infinity, Infinity]
+  const max: [number, number, number] = [-Infinity, -Infinity, -Infinity]
+  for (let s = 0; s < selected.top; s++) {
+    const c = selected.buf[s]
+    const li = c % nx
+    const lj = ((c / nx) | 0) % ny
+    const lk = (c / nxy) | 0
+    if (li < min[0]) min[0] = li
+    if (li > max[0]) max[0] = li
+    if (lj < min[1]) min[1] = lj
+    if (lj > max[1]) max[1] = lj
+    if (lk < min[2]) min[2] = lk
+    if (lk > max[2]) max[2] = lk
+  }
+  const outBounds: SegBox = { min, max }
+  const [bw, bh] = boxExtent(outBounds)
+  const mask = new Uint8Array(boxVoxelCount(outBounds))
+  for (let s = 0; s < selected.top; s++) {
+    const c = selected.buf[s]
+    const li = c % nx
+    const lj = ((c / nx) | 0) % ny
+    const lk = (c / nxy) | 0
+    mask[li - min[0] + (lj - min[1]) * bw + (lk - min[2]) * bw * bh] = 1
+  }
+  return { mask, bounds: outBounds, voxels, components, truncated }
+}
+
 /**
  * Non-mutating hot path for the live preview: flood every component seeded
  * from `seedBox` (v >= high) over candidates (v >= low, inside `bounds`,
  * inside the constraint), drop components below minVoxels, and return the
- * kept voxels as a mask over `bounds`. Both boxes must be pre-clamped and
- * bounds must contain seedBox.
+ * kept voxels as a mask over the result's `bounds`. Both boxes must be
+ * pre-clamped and bounds must contain seedBox. Bounds that dwarf a finite
+ * visit cap route to the sparse path (tight result bounds, memory bounded by
+ * the cap instead of the volume).
  */
 export function segmentRegion(
   vol: Volume,
@@ -367,6 +546,10 @@ export function segmentRegion(
 ): SegmentResult {
   const [bw, bh, bd] = boxExtent(bounds)
   const n = boxVoxelCount(bounds)
+  const cap = params.maxVoxels ?? MAX_RESULT_VOXELS
+  if (Number.isFinite(cap) && n > cap * SPARSE_BOUNDS_FACTOR) {
+    return segmentRegionSparse(vol, seedBox, bounds, params, frameOffset, constraint)
+  }
   const visited = new Uint8Array(n)
   const mask = new Uint8Array(n)
   const [dxs, dys, dzs] = neighborOffsets(params.connectivity)
