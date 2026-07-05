@@ -149,6 +149,25 @@ describe('computeRegionStats', () => {
     expect(r.voxelCount).toBe(0)
     expect(r.stats).toBeNull()
   })
+
+  it('NaN voxels count toward size but not toward the mean', () => {
+    const vol = makeVolume((idx) => (idx === 20 ? NaN : 10))
+    const labelMap = new Uint16Array(N)
+    labelMap[10] = 1
+    labelMap[20] = 1
+    const [r] = computeRegionStats(vol, labelMap, [makeRegion(1)])
+    expect(r.voxelCount).toBe(2)
+    expect(r.stats).toEqual({ min: 10, max: 10, mean: 10 })
+  })
+
+  it('all-NaN region keeps its size with null stats', () => {
+    const vol = makeVolume(() => NaN)
+    const labelMap = new Uint16Array(N)
+    labelMap[3] = 1
+    const [r] = computeRegionStats(vol, labelMap, [makeRegion(1)])
+    expect(r.voxelCount).toBe(1)
+    expect(r.stats).toBeNull()
+  })
 })
 
 describe('export helpers', () => {
@@ -174,6 +193,13 @@ describe('export helpers', () => {
     labelMap[2] = 3
     const out = maskUnion(labelMap, [makeRegion(1), makeRegion(3)])
     expect([...out.slice(0, 4)]).toEqual([1, 0, 1, 0])
+  })
+
+  it('maskUnion with no regions is all zeros (empty visible mask export)', () => {
+    const labelMap = new Uint16Array(N)
+    labelMap[0] = 1
+    const out = maskUnion(labelMap, [])
+    expect(out.every((v) => v === 0)).toBe(true)
   })
 
   it('buildColorTable emits one TSV row per region', () => {

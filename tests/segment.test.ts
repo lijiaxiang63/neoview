@@ -232,6 +232,18 @@ describe('segmentRegion — grow from seed (hysteresis)', () => {
     expect(got.has(`8,1,1`)).toBe(false)
   })
 
+  it('NaN voxels never seed (grow) and are never kept (threshold)', () => {
+    // NaN at x=1 amid 50s: no voxel reaches high=90, so a NaN "seed" would
+    // wrongly flood the whole >= low row.
+    const v2 = makeVolume([4, 1, 1], (i) => (i === 1 ? NaN : 50))
+    const b = box([0, 0, 0], [3, 0, 0])
+    const grow = segmentRegion(v2, b, wholeVolumeBox(v2.dims), params({ low: 40, high: 90 }))
+    expect(grow.voxels).toBe(0)
+
+    const thr = segmentRegion(v2, b, b, params({ low: 40, high: 40 }))
+    expect(selected(v2, thr)).toEqual(new Set(['0,0,0', '2,0,0', '3,0,0']))
+  })
+
   it('safety cap truncates a runaway grow and reports it', () => {
     const flat = makeVolume([10, 10, 10], () => 100)
     const b = box([5, 5, 5], [5, 5, 5])

@@ -597,8 +597,8 @@ function ExportSection(): JSX.Element {
         </button>
         <button
           className="preset-btn"
-          disabled={busy || visibleRegions.length === 0}
-          title="Single-value mask: 1 wherever any visible region has a voxel"
+          disabled={busy || regions.length === 0}
+          title="Single-value mask: 1 wherever any visible region has a voxel (all regions hidden exports an empty mask)"
           onClick={() => void doExport('mask')}
         >
           Export mask

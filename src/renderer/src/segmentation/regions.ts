@@ -218,6 +218,8 @@ export function computeRegionStats(
   if (regions.length === 0) return regions
   const maxId = regions.reduce((m, r) => Math.max(m, r.id), 0)
   const count = new Uint32Array(maxId + 1)
+  // NaN voxels count toward size but not toward intensity stats.
+  const finite = new Uint32Array(maxId + 1)
   const sum = new Float64Array(maxId + 1)
   const min = new Float64Array(maxId + 1).fill(Infinity)
   const max = new Float64Array(maxId + 1).fill(-Infinity)
@@ -228,6 +230,7 @@ export function computeRegionStats(
     const v = raw[frameOffset + i] * slope + inter
     count[id]++
     if (Number.isNaN(v)) continue
+    finite[id]++
     sum[id] += v
     if (v < min[id]) min[id] = v
     if (v > max[id]) max[id] = v
@@ -236,9 +239,7 @@ export function computeRegionStats(
     ...r,
     voxelCount: count[r.id],
     stats:
-      count[r.id] > 0 && min[r.id] <= max[r.id]
-        ? { min: min[r.id], max: max[r.id], mean: sum[r.id] / count[r.id] }
-        : null
+      finite[r.id] > 0 ? { min: min[r.id], max: max[r.id], mean: sum[r.id] / finite[r.id] } : null
   }))
 }
 

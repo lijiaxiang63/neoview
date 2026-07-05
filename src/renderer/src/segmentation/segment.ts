@@ -393,7 +393,8 @@ export function segmentRegion(
       for (let i = seedBox.min[0]; i <= seedBox.max[0]; i++, gIdx++) {
         const p = i - ox + (j - oy) * bw + (k - oz) * bhw
         if (visited[p]) continue
-        if (raw[gIdx] * slope + inter < high) continue
+        // Negated form so NaN never seeds (it fails every comparison).
+        if (!(raw[gIdx] * slope + inter >= high)) continue
         if (constraint && !constraint(i, j, k)) continue
 
         // Flood this component over candidates (region growing).
