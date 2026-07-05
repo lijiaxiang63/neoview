@@ -10,6 +10,7 @@ import { fmt } from '../format'
 import {
   buildLabelMapExport,
   buildMaskExport,
+  dirOfPath,
   loadExportSettings,
   saveExportSettings,
   type ExportSettings
@@ -66,11 +67,6 @@ function parseConstraintKey(key: string): SegConstraint {
   if (type === 'overlay') return { type: 'overlay', overlayId: Number(id) }
   if (type === 'region') return { type: 'region', regionId: Number(id) }
   return { type: 'none' }
-}
-
-function dirOfPath(path: string): string {
-  const cut = Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\'))
-  return cut > 0 ? path.slice(0, cut) : ''
 }
 
 /**

@@ -32,6 +32,16 @@ export function exportBaseName(volumeName: string): string {
   return volumeName.replace(/\.nii(\.gz)?$/i, '').replace(/\.gz$/i, '')
 }
 
+/** Directory of an absolute path ('' when there is none to take). Parents
+ * that are filesystem roots keep their separator ('/x' -> '/', 'C:\x' ->
+ * 'C:\'), since 'C:' alone means the drive's current directory. */
+export function dirOfPath(path: string): string {
+  const cut = Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\'))
+  if (cut < 0) return ''
+  const dir = path.slice(0, cut)
+  return dir === '' || /^[A-Za-z]:$/.test(dir) ? path.slice(0, cut + 1) : dir
+}
+
 export interface ExportPayload {
   fileName: string
   bytes: ArrayBuffer

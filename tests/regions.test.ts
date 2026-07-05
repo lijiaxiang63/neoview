@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { dirOfPath } from '../src/renderer/src/segmentation/exportRegions'
 import {
   applyMaskAsRegion,
   buildColorTable,
@@ -207,6 +208,15 @@ describe('export helpers', () => {
       { value: 1, region: makeRegion(9, { name: 'left part', color: '#ff8000' }) }
     ])
     expect(table).toBe('1\t255\t128\t0\t255\tleft part\n')
+  })
+
+  it('dirOfPath keeps the separator for filesystem roots', () => {
+    expect(dirOfPath('/data/scans/a.nii')).toBe('/data/scans')
+    expect(dirOfPath('C:\\scans\\a.nii')).toBe('C:\\scans')
+    expect(dirOfPath('/a.nii')).toBe('/')
+    expect(dirOfPath('C:\\a.nii')).toBe('C:\\')
+    expect(dirOfPath('\\\\server\\share\\a.nii')).toBe('\\\\server\\share')
+    expect(dirOfPath('a.nii')).toBe('')
   })
 })
 
