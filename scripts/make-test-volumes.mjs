@@ -175,4 +175,56 @@ if (isMain) {
 
   const ok = buildVolume({ dims: [8, 8, 8], dtype: 'uint8', value: () => 0 })
   save('truncated.nii', ok.subarray(0, VOX_OFFSET + 100))
+
+  // 7. Overlay fixtures over grad_u8.nii (same world region, offset (10,20,30)).
+
+  // Label volume on a 2x-coarser grid: blocks of ids 1..16 in the middle.
+  save(
+    'labels_coarse.nii',
+    buildVolume({
+      dims: [32, 32, 20],
+      dtype: 'uint8',
+      spacing: [2, 2, 2],
+      sform: {
+        rows: [
+          [2, 0, 0, 10],
+          [0, 2, 0, 20],
+          [0, 0, 2, 30]
+        ]
+      },
+      value: (i, j, k) =>
+        i >= 8 && i < 24 && j >= 8 && j < 24 && k >= 5 && k < 15
+          ? ((i - 8) >> 2) + 4 * ((j - 8) >> 2) + 1
+          : 0
+    })
+  )
+
+  // Smooth signed value map for the diverging colormap, gzipped.
+  save(
+    'map_signed.nii.gz',
+    gzipSync(
+      buildVolume({
+        dims: [64, 64, 40],
+        dtype: 'float32',
+        sform: identitySform(10, 20, 30),
+        value: (i, j, k) => (i - 32) * Math.exp(-((j - 32) ** 2 + (k - 20) ** 2) / 200)
+      })
+    )
+  )
+
+  // Binary ball mask on the base grid.
+  save(
+    'mask_ball.nii',
+    buildVolume({
+      dims: [64, 64, 40],
+      dtype: 'uint8',
+      sform: identitySform(10, 20, 30),
+      value: (i, j, k) => {
+        const dx = i - 32
+        const dy = j - 32
+        const dz = k - 20
+        return dx * dx + dy * dy + dz * dz <= 12 * 12 ? 1 : 0
+      }
+    })
+  )
 }

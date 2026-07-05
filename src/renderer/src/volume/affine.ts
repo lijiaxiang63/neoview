@@ -72,3 +72,58 @@ export function applyAffine(
     m[8] * i + m[9] * j + m[10] * k + m[11]
   ]
 }
+
+/**
+ * Invert a row-major 4x4 affine whose last row is 0 0 0 1 (as buildAffine
+ * guarantees): adjugate inverse of the upper 3x3, then t' = -R⁻¹·t.
+ * Returns null when the upper 3x3 is singular.
+ */
+export function invertAffine(m: Float64Array): Float64Array | null {
+  const c00 = m[5] * m[10] - m[6] * m[9]
+  const c01 = m[6] * m[8] - m[4] * m[10]
+  const c02 = m[4] * m[9] - m[5] * m[8]
+  const det = m[0] * c00 + m[1] * c01 + m[2] * c02
+  if (Math.abs(det) < 1e-12) return null
+  const inv = new Float64Array(16)
+  inv[0] = c00 / det
+  inv[1] = (m[2] * m[9] - m[1] * m[10]) / det
+  inv[2] = (m[1] * m[6] - m[2] * m[5]) / det
+  inv[4] = c01 / det
+  inv[5] = (m[0] * m[10] - m[2] * m[8]) / det
+  inv[6] = (m[2] * m[4] - m[0] * m[6]) / det
+  inv[8] = c02 / det
+  inv[9] = (m[1] * m[8] - m[0] * m[9]) / det
+  inv[10] = (m[0] * m[5] - m[1] * m[4]) / det
+  inv[3] = -(inv[0] * m[3] + inv[1] * m[7] + inv[2] * m[11])
+  inv[7] = -(inv[4] * m[3] + inv[5] * m[7] + inv[6] * m[11])
+  inv[11] = -(inv[8] * m[3] + inv[9] * m[7] + inv[10] * m[11])
+  inv[15] = 1
+  return inv
+}
+
+/** Multiply two row-major 4x4 matrices: returns a·b. */
+export function multiplyAffine(a: Float64Array, b: Float64Array): Float64Array {
+  const out = new Float64Array(16)
+  for (let r = 0; r < 4; r++) {
+    for (let c = 0; c < 4; c++) {
+      out[r * 4 + c] =
+        a[r * 4] * b[c] +
+        a[r * 4 + 1] * b[4 + c] +
+        a[r * 4 + 2] * b[8 + c] +
+        a[r * 4 + 3] * b[12 + c]
+    }
+  }
+  return out
+}
+
+/**
+ * Voxel-to-voxel map from the base grid to an overlay grid:
+ * M = inv(overlayAffine) · baseAffine. Null when overlayAffine is singular.
+ */
+export function composeVoxelMap(
+  baseAffine: Float64Array,
+  overlayAffine: Float64Array
+): Float64Array | null {
+  const inv = invertAffine(overlayAffine)
+  return inv ? multiplyAffine(inv, baseAffine) : null
+}

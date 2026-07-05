@@ -10,6 +10,7 @@ A cross-platform desktop viewer for `.nii` / `.nii.gz` volume files, built with 
 - **Display range controls** — dual-thumb slider with Auto (2–98 percentile), Full range, and fixed presets; an appropriate preset is chosen automatically on load
 - **Cursor readout** — voxel indices, world coordinates (via the affine), and raw/scaled intensity in the status bar
 - **GPU volume rendering** — WebGL2 raycaster in the fourth view cell with MIP and composite modes, orbit/dolly camera (drag / wheel / double-click reset), and brightness & density controls; large volumes are automatically stride-downsampled to a texture budget while slice views stay full resolution
+- **Overlay layers** — drop additional volumes onto a loaded base to stack value maps (warm/cool/diverging colormaps with a threshold window), binary masks, and label volumes (distinct color per id); layers align through their affines with nearest-neighbor sampling, so differing grids work, and each has its own visibility, opacity, and kind controls
 - **4D support** — a frame slider appears for volumes with a fourth dimension
 - **Affine panel** — the full 4×4 voxel-to-world matrix, dimensions, spacing, datatype, and which transform source the file provided (matrix rows / quaternion / spacing fallback)
 - **From-scratch parser** — no runtime parsing dependencies; handles both endiannesses, all common voxel datatypes, value scaling, and gzip decompression

@@ -2,6 +2,7 @@ import { type JSX } from 'react'
 import { useStore } from '../store'
 import { applyAffine } from '../volume/affine'
 import { strides } from '../slicing/extract'
+import { sampleOverlayAt, type OverlayLayer } from '../slicing/overlay'
 
 function fmt(v: number, digits = 1): string {
   return Number(v.toFixed(digits)).toString()
@@ -12,6 +13,7 @@ export function StatusBar(): JSX.Element {
   const hover = useStore((s) => s.hover)
   const cross = useStore((s) => s.cross)
   const frame = useStore((s) => s.frame)
+  const overlays = useStore((s) => s.overlays)
 
   if (!volume) {
     return <div className="status-bar">Ready</div>
@@ -19,6 +21,15 @@ export function StatusBar(): JSX.Element {
 
   const ijk = hover ? hover.ijk : cross
   const [i, j, k] = ijk
+  // Top-most visible layer's value at the cursor.
+  let topLayer: OverlayLayer | null = null
+  for (let n = overlays.length - 1; n >= 0; n--) {
+    if (overlays[n].visible) {
+      topLayer = overlays[n]
+      break
+    }
+  }
+  const layerValue = topLayer ? sampleOverlayAt(topLayer, volume, ijk, frame) : null
   const [x, y, z] = applyAffine(volume.affine, i, j, k)
   const st = strides(volume.dims)
   const frameStride = volume.dims[0] * volume.dims[1] * volume.dims[2]
@@ -50,6 +61,18 @@ export function StatusBar(): JSX.Element {
         <span className="label">value</span>
         <span className="value">{fmt(scaled, 4)}</span>
       </span>
+      {topLayer && (
+        <span className="field">
+          <span className="label">layer</span>
+          <span className="value">
+            {layerValue === null
+              ? '—'
+              : topLayer.kind === 'labels'
+                ? `id ${Math.round(layerValue)}`
+                : fmt(layerValue, 4)}
+          </span>
+        </span>
+      )}
       {volume.frames > 1 && (
         <span className="field">
           <span className="label">t</span>

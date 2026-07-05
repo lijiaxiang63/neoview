@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState, type JSX } from 'react'
 import { useStore } from './store'
 import { MAX_BYTES } from './volume/gunzip'
 import { loadVolume } from './volume/loadVolume'
+import { composeVoxelMap } from './volume/affine'
 import { SliceView } from './components/SliceView'
 import { VolumeView } from './components/VolumeView'
 import { SidePanel } from './components/SidePanel'
@@ -9,12 +10,28 @@ import { Toolbar } from './components/Toolbar'
 import { StatusBar } from './components/StatusBar'
 import { EmptyState } from './components/EmptyState'
 
-async function loadFromBuffer(name: string, buf: ArrayBuffer): Promise<void> {
+/** 'auto' routes to an overlay layer when a base volume is already loaded. */
+type LoadTarget = 'base' | 'overlay' | 'auto'
+
+async function loadFromBuffer(name: string, buf: ArrayBuffer, target: LoadTarget): Promise<void> {
   const store = useStore.getState()
+  const asOverlay = target === 'overlay' || (target === 'auto' && store.volume !== null)
   store.startLoading()
   try {
-    const volume = await loadVolume(name, buf)
-    useStore.getState().setVolume(volume)
+    if (asOverlay) {
+      const volume = await loadVolume(name, buf, { skipTex: true })
+      const base = useStore.getState().volume
+      if (!base) {
+        useStore.getState().fail('Load the base volume first.')
+      } else if (!composeVoxelMap(base.affine, volume.affine)) {
+        useStore.getState().fail('Overlay could not be aligned: its affine is not invertible.')
+      } else {
+        useStore.getState().addOverlay(volume)
+      }
+    } else {
+      const volume = await loadVolume(name, buf)
+      useStore.getState().setVolume(volume)
+    }
   } catch (err) {
     useStore.getState().fail(err instanceof Error ? err.message : 'Could not open file.')
   }
@@ -33,14 +50,21 @@ export default function App(): JSX.Element {
   const [dragging, setDragging] = useState(false)
   const [sidebarOpen, setSidebarOpen] = useState(true)
 
+  // Explicit Open always replaces the base volume (the one way to swap it);
+  // drops route to an overlay layer whenever a base is already present.
   const openDialog = useCallback(async () => {
     const opened = await window.neoview.openDialog()
-    if (opened) await loadFromBuffer(opened.name, opened.bytes)
+    if (opened) await loadFromBuffer(opened.name, opened.bytes, 'base')
+  }, [])
+
+  const addOverlayViaDialog = useCallback(async () => {
+    const opened = await window.neoview.openDialog()
+    if (opened) await loadFromBuffer(opened.name, opened.bytes, 'overlay')
   }, [])
 
   useEffect(() => {
     const offOpened = window.neoview.onFileOpened((file) => {
-      void loadFromBuffer(file.name, file.bytes)
+      void loadFromBuffer(file.name, file.bytes, 'base')
     })
     const offError = window.neoview.onFileOpenError((message) => {
       useStore.getState().fail(message)
@@ -79,7 +103,7 @@ export default function App(): JSX.Element {
         useStore.getState().fail('File is larger than 2 GB, which is not supported.')
         return
       }
-      void file.arrayBuffer().then((buf) => loadFromBuffer(file.name, buf))
+      void file.arrayBuffer().then((buf) => loadFromBuffer(file.name, buf, 'auto'))
     }
     window.addEventListener('dragenter', onDragEnter)
     window.addEventListener('dragleave', onDragLeave)
@@ -108,7 +132,7 @@ export default function App(): JSX.Element {
             <SliceView view={1} />
             <SliceView view={2} />
             <VolumeView />
-            <SidePanel />
+            <SidePanel onAddOverlay={addOverlayViaDialog} />
           </>
         ) : (
           <EmptyState onOpen={openDialog} />

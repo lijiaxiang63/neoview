@@ -1,5 +1,6 @@
 import { create } from 'zustand'
 import type { Volume } from './volume/types'
+import { defaultLayerSettings, guessOverlayKind, type OverlayLayer } from './slicing/overlay'
 
 export type Preset = 'auto' | 'full' | 'fixed-0-80' | 'suggested' | 'custom'
 
@@ -22,9 +23,14 @@ interface AppState {
   renderMode: RenderMode
   density: number
   brightness: number
+  /** Overlay layers in draw order: index 0 is the bottom-most. */
+  overlays: OverlayLayer[]
 
   startLoading: () => void
   setVolume: (v: Volume) => void
+  addOverlay: (v: Volume) => void
+  removeOverlay: (id: number) => void
+  updateOverlay: (id: number, patch: Partial<Omit<OverlayLayer, 'id' | 'volume'>>) => void
   fail: (message: string) => void
   dismissError: () => void
   setCross: (ijk: [number, number, number]) => void
@@ -75,6 +81,9 @@ export function pickInitialPreset(vol: Volume): Exclude<Preset, 'custom'> {
   return 'auto'
 }
 
+// Never reset: layer ids must stay unique across base changes for React keys.
+let nextOverlayId = 1
+
 export const useStore = create<AppState>()((set, get) => ({
   volume: null,
   loadState: 'empty',
@@ -87,6 +96,7 @@ export const useStore = create<AppState>()((set, get) => ({
   renderMode: 'mip',
   density: 0.35,
   brightness: BRIGHTNESS_DEFAULT,
+  overlays: [],
 
   startLoading: () => set({ loadState: 'loading', errorMessage: null }),
 
@@ -100,9 +110,34 @@ export const useStore = create<AppState>()((set, get) => ({
       frame: 0,
       range: presetRange(v, preset),
       activePreset: preset,
-      hover: null
+      hover: null,
+      // A new base means a new grid: keeping layers would silently misalign
+      // them, so they are dropped (also frees their memory promptly).
+      overlays: []
     })
   },
+
+  addOverlay: (v) => {
+    const kind = guessOverlayKind(v)
+    const { range, colormap } = defaultLayerSettings(v)
+    const layer: OverlayLayer = {
+      id: nextOverlayId++,
+      volume: v,
+      kind,
+      visible: true,
+      opacity: 0.6,
+      range,
+      colormap
+    }
+    set((s) => ({ overlays: [...s.overlays, layer], loadState: 'ready', errorMessage: null }))
+  },
+
+  removeOverlay: (id) => set((s) => ({ overlays: s.overlays.filter((l) => l.id !== id) })),
+
+  updateOverlay: (id, patch) =>
+    set((s) => ({
+      overlays: s.overlays.map((l) => (l.id === id ? { ...l, ...patch } : l))
+    })),
 
   fail: (message) =>
     set((s) => ({

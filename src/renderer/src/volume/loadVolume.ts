@@ -17,7 +17,11 @@ export function initialTexOf(vol: Volume): TexPayload | null {
  * message protocol trivially race-free; startup cost is negligible next to
  * the decode work, and terminate() releases the worker's memory promptly.
  */
-export function loadVolume(name: string, bytes: ArrayBuffer): Promise<Volume> {
+export function loadVolume(
+  name: string,
+  bytes: ArrayBuffer,
+  opts?: { skipTex?: boolean }
+): Promise<Volume> {
   return new Promise((resolve, reject) => {
     const worker = new Worker(new URL('./worker.ts', import.meta.url), { type: 'module' })
     const finish = (fn: () => void): void => {
@@ -28,7 +32,7 @@ export function loadVolume(name: string, bytes: ArrayBuffer): Promise<Volume> {
       const msg = e.data
       finish(() => {
         if (msg.ok) {
-          initialTex.set(msg.volume, msg.tex)
+          if (msg.tex) initialTex.set(msg.volume, msg.tex)
           resolve(msg.volume)
         } else {
           reject(new Error(msg.message))
@@ -38,6 +42,6 @@ export function loadVolume(name: string, bytes: ArrayBuffer): Promise<Volume> {
     worker.onerror = () => {
       finish(() => reject(new Error('Could not open file.')))
     }
-    worker.postMessage({ name, bytes }, [bytes])
+    worker.postMessage({ name, bytes, skipTex: opts?.skipTex }, [bytes])
   })
 }

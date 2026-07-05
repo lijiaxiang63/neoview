@@ -1,6 +1,12 @@
 import { useEffect, useMemo, useRef, useState, type JSX } from 'react'
 import { useStore } from '../store'
 import { AXIS_NAMES, extractSliceToImageData, PLANES } from '../slicing/extract'
+import { extractOverlayRGBA } from '../slicing/overlay'
+
+interface LayerBuffer {
+  canvas: HTMLCanvasElement
+  img: ImageData
+}
 
 interface Fit {
   dx: number
@@ -21,6 +27,7 @@ export function SliceView({ view }: Props): JSX.Element {
   const cross = useStore((s) => s.cross)
   const frame = useStore((s) => s.frame)
   const range = useStore((s) => s.range)
+  const overlays = useStore((s) => s.overlays)
   const setCross = useStore((s) => s.setCross)
   const setHover = useStore((s) => s.setHover)
   const hoveredView = useStore((s) => s.hover?.view)
@@ -30,6 +37,7 @@ export function SliceView({ view }: Props): JSX.Element {
   const overlayRef = useRef<HTMLCanvasElement>(null)
   const offscreenRef = useRef<HTMLCanvasElement | null>(null)
   const imageDataRef = useRef<ImageData | null>(null)
+  const layerBuffersRef = useRef(new Map<number, LayerBuffer>())
   const draggingRef = useRef(false)
   const rafRef = useRef(0)
   const pendingPointRef = useRef<[number, number] | null>(null)
@@ -119,7 +127,34 @@ export function SliceView({ view }: Props): JSX.Element {
     ctx.imageSmoothingEnabled = true
     ctx.imageSmoothingQuality = 'high'
     ctx.drawImage(off, fit.dx, fit.dy, fit.dw, fit.dh)
-  }, [volume, plane, sliceIdx, frame, range, fit, size, w, h])
+
+    // Overlay layers, bottom to top, each drawn from its own buffer at the
+    // base slice grid size so it shares the letterbox fit exactly.
+    const buffers = layerBuffersRef.current
+    for (const id of buffers.keys()) {
+      if (!overlays.some((l) => l.id === id)) buffers.delete(id)
+    }
+    for (const layer of overlays) {
+      if (!layer.visible || layer.opacity <= 0) continue
+      let buf = buffers.get(layer.id)
+      if (!buf || buf.canvas.width !== w || buf.canvas.height !== h) {
+        const c = document.createElement('canvas')
+        c.width = w
+        c.height = h
+        buf = { canvas: c, img: new ImageData(w, h) }
+        buffers.set(layer.id, buf)
+      }
+      extractOverlayRGBA(layer, volume, plane, sliceIdx, frame, buf.img)
+      const layerCtx = buf.canvas.getContext('2d') as CanvasRenderingContext2D
+      layerCtx.putImageData(buf.img, 0, 0)
+      // Crisp voxel edges for discrete kinds; smoothing only suits continuous maps.
+      ctx.imageSmoothingEnabled = layer.kind === 'map'
+      ctx.globalAlpha = layer.opacity
+      ctx.drawImage(buf.canvas, fit.dx, fit.dy, fit.dw, fit.dh)
+    }
+    ctx.globalAlpha = 1
+    ctx.imageSmoothingEnabled = true
+  }, [volume, plane, sliceIdx, frame, range, overlays, fit, size, w, h])
 
   // Crosshair overlay.
   useEffect(() => {

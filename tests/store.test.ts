@@ -15,6 +15,8 @@ function fakeVolume(stats: Partial<VolumeStats>, datatypeCode = 4): Volume {
   return {
     datatypeCode,
     suggestedRange: null,
+    slope: 1,
+    inter: 0,
     stats: {
       dataMin: 0,
       dataMax: 100,
@@ -24,6 +26,12 @@ function fakeVolume(stats: Partial<VolumeStats>, datatypeCode = 4): Volume {
       ...stats
     }
   } as Volume
+}
+
+function baseVolume(): Volume {
+  const vol = fakeVolume({ dataMin: 0, dataMax: 100, p2: 5, p98: 95 })
+  ;(vol as { dims: number[] }).dims = [4, 4, 4]
+  return vol
 }
 
 describe('pickInitialPreset', () => {
@@ -95,5 +103,47 @@ describe('brightness', () => {
     useStore.getState().setBrightness(0)
     expect(useStore.getState().brightness).toBe(BRIGHTNESS_MIN)
     useStore.getState().setBrightness(BRIGHTNESS_DEFAULT)
+  })
+})
+
+describe('overlay layers', () => {
+  it('addOverlay appends with guessed kind, defaults, and unique ids', () => {
+    useStore.getState().setVolume(baseVolume())
+    const mask = fakeVolume({ dataMin: 0, dataMax: 1, typeRange: [0, 255] }, 2)
+    const map = fakeVolume({ dataMin: -50, dataMax: 80 }, 16)
+    useStore.getState().addOverlay(mask)
+    useStore.getState().addOverlay(map)
+    const [a, b] = useStore.getState().overlays
+    expect(a.kind).toBe('mask')
+    expect(b.kind).toBe('map')
+    expect(b.colormap).toBe('signed')
+    expect(b.range).toEqual({ lo: 0, hi: 80 })
+    expect(a.id).not.toBe(b.id)
+    expect(a.visible).toBe(true)
+    expect(a.opacity).toBeCloseTo(0.6)
+  })
+
+  it('removeOverlay drops only the matching layer', () => {
+    const [a, b] = useStore.getState().overlays
+    useStore.getState().removeOverlay(a.id)
+    expect(useStore.getState().overlays.map((l) => l.id)).toEqual([b.id])
+  })
+
+  it('updateOverlay patches immutably', () => {
+    const before = useStore.getState().overlays
+    const target = before[0]
+    useStore.getState().updateOverlay(target.id, { kind: 'labels', opacity: 0.3 })
+    const after = useStore.getState().overlays
+    expect(after).not.toBe(before)
+    expect(after[0]).not.toBe(target)
+    expect(after[0].kind).toBe('labels')
+    expect(after[0].opacity).toBeCloseTo(0.3)
+    expect(after[0].volume).toBe(target.volume)
+  })
+
+  it('setVolume clears all layers', () => {
+    expect(useStore.getState().overlays.length).toBeGreaterThan(0)
+    useStore.getState().setVolume(baseVolume())
+    expect(useStore.getState().overlays).toEqual([])
   })
 })

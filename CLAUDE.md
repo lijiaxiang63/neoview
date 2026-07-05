@@ -44,7 +44,11 @@ Results transfer back as Transferables; the prebuilt texture payload rides a Wea
 
 ### Slice views (2D)
 
-`slices.ts` PLANES table maps each view to {sliceAxis, colAxis, rowAxis} with strides `[1, nx, nx*ny]`. Extraction and windowing are fused into one loop writing packed RGBA via a `Uint32Array` view; canvases letterbox with spacing-corrected aspect and the row axis points up. Wheel = slice scrub (no zoom/pan by design).
+`slicing/extract.ts` PLANES table maps each view to {sliceAxis, colAxis, rowAxis} with strides `[1, nx, nx*ny]`. Extraction and windowing are fused into one loop writing packed RGBA via a `Uint32Array` view; canvases letterbox with spacing-corrected aspect and the row axis points up. Wheel = slice scrub (no zoom/pan by design).
+
+### Overlay layers (slicing/overlay.ts)
+
+Ordered list in the store (`overlays[]`, kinds: value map / mask / labels); slice views only — the 3D raycaster never sees them. Alignment is per-layer `M = inv(A_overlay)·A_base` (cached in a WeakMap, `volume/affine.ts#composeVoxelMap`); `extractOverlayRGBA` walks the base slice grid stepping the overlay-space coordinate incrementally (3 adds/pixel, fresh start per row) with nearest-neighbor rounding, so arbitrary grids work. Colors via 256-entry colormap LUTs (warm/cool + diverging 'signed' that windows on |v|), a golden-angle label palette, and one mask color; transparent for out-of-bounds/below-threshold/label-0/NaN. SliceView composites each visible layer's own offscreen canvas over the base with `globalAlpha` = layer opacity (smoothing off for mask/labels). Overlay loads reuse the worker with `skipTex: true` (no 3D texture build); drag&drop routes to a layer whenever a base volume exists, explicit Open always replaces the base (and clears layers).
 
 ### 3D view (render3d/)
 
