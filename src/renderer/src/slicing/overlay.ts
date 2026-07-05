@@ -15,6 +15,8 @@ export interface OverlayLayer {
   /** Display window for the map kind; magnitude window for 'signed'. */
   range: { lo: number; hi: number }
   colormap: ColormapName
+  /** Label ids suppressed in the labels kind (empty = all visible). */
+  hiddenLabels: ReadonlySet<number>
 }
 
 // ---------------------------------------------------------------------------
@@ -137,6 +139,40 @@ export function labelColor(id: number): number {
 
 export const MASK_COLOR = packRGB(255, 80, 40)
 
+/** CSS color string matching labelColor's packed value, for UI swatches. */
+export function labelColorCSS(id: number): string {
+  const c = labelColor(id)
+  return `rgb(${c & 0xff}, ${(c >>> 8) & 0xff}, ${(c >>> 16) & 0xff})`
+}
+
+/** Cap on enumerated ids for volumes without a name table. */
+export const MAX_LISTED_LABELS = 512
+
+const labelIdCache = new WeakMap<Volume, number[]>()
+
+/**
+ * Distinct label ids of a volume, ascending: the name-table keys when one is
+ * embedded, otherwise one memoized scan of the raw data (all frames),
+ * truncated at MAX_LISTED_LABELS entries.
+ */
+export function listLabelIds(vol: Volume): number[] {
+  let ids = labelIdCache.get(vol)
+  if (ids) return ids
+  if (vol.labels) {
+    ids = [...vol.labels.keys()].sort((a, b) => a - b)
+  } else {
+    const seen = new Set<number>()
+    const { raw, slope, inter } = vol
+    for (let i = 0; i < raw.length && seen.size <= MAX_LISTED_LABELS; i++) {
+      const id = Math.round(raw[i] * slope + inter)
+      if (id !== 0 && Number.isFinite(id)) seen.add(id)
+    }
+    ids = [...seen].sort((a, b) => a - b).slice(0, MAX_LISTED_LABELS)
+  }
+  labelIdCache.set(vol, ids)
+  return ids
+}
+
 // ---------------------------------------------------------------------------
 // Kind heuristic and defaults
 
@@ -221,11 +257,12 @@ export function extractOverlayRGBA(
   const ry = m[4 + plane.rowAxis]
   const rz = m[8 + plane.rowAxis]
 
-  const { kind } = layer
+  const { kind, hiddenLabels: hidden } = layer
   const { lo, hi } = layer.range
   const scale = 255 / Math.max(hi - lo, 1e-12)
   const lut = kind === 'map' ? buildMapLUT(layer.colormap) : null
   const signed = lut !== null && lut.neg !== null
+  const anyHidden = hidden.size > 0
 
   let p = 0
   for (let r = h - 1; r >= 0; r--) {
@@ -246,7 +283,7 @@ export function extractOverlayRGBA(
         px[p] = v !== 0 ? MASK_COLOR : 0
       } else if (kind === 'labels') {
         const id = Math.round(v)
-        px[p] = id !== 0 ? labelColor(id) : 0
+        px[p] = id !== 0 && !(anyHidden && hidden.has(id)) ? labelColor(id) : 0
       } else if (Number.isNaN(v)) {
         px[p] = 0
       } else if (signed) {

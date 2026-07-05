@@ -6,11 +6,14 @@ import type { Volume } from '../src/renderer/src/volume/types'
 import { PLANES } from '../src/renderer/src/slicing/extract'
 import {
   MASK_COLOR,
+  MAX_LISTED_LABELS,
   buildMapLUT,
   defaultLayerSettings,
   extractOverlayRGBA,
   guessOverlayKind,
   labelColor,
+  labelColorCSS,
+  listLabelIds,
   sampleOverlayAt,
   voxelMapFor,
   type OverlayLayer
@@ -34,6 +37,7 @@ function mkLayer(volume: Volume, overrides: Partial<OverlayLayer> = {}): Overlay
     opacity: 1,
     range: { lo: 0, hi: 1 },
     colormap: 'warm',
+    hiddenLabels: new Set<number>(),
     ...overrides
   }
 }
@@ -241,6 +245,55 @@ describe('label palette', () => {
       seen.add(c)
     }
     expect(seen.size).toBe(20)
+  })
+
+  it('labelColorCSS mirrors the packed channels', () => {
+    const c = labelColor(9)
+    expect(labelColorCSS(9)).toBe(`rgb(${c & 0xff}, ${(c >>> 8) & 0xff}, ${(c >>> 16) & 0xff})`)
+  })
+})
+
+describe('hidden labels', () => {
+  it('suppresses only the hidden ids', () => {
+    const vol = mkVol({
+      dims: [4, 2, 2],
+      dtype: 'uint8',
+      value: (i: number) => i, // ids 0..3 along axis 0
+      sform: identity
+    })
+    const layer = mkLayer(vol, { kind: 'labels', hiddenLabels: new Set([2]) })
+    const img = stub(4, 2)
+    extractOverlayRGBA(layer, vol, PLANES[0], 0, 0, img)
+    expect(alphaAt(img, 0, 0)).toBe(0) // id 0: always transparent
+    expect(pixelAt(img, 1, 0)).toBe(labelColor(1))
+    expect(alphaAt(img, 2, 0)).toBe(0) // hidden
+    expect(pixelAt(img, 3, 0)).toBe(labelColor(3))
+  })
+})
+
+describe('listLabelIds', () => {
+  it('uses the embedded name table when present', () => {
+    const vol = mkVol({
+      dims: [4, 2, 2],
+      dtype: 'uint8',
+      value: () => 0,
+      labels: [
+        [7, 'region-b'],
+        [3, 'region-a']
+      ]
+    })
+    expect(listLabelIds(vol)).toEqual([3, 7])
+    expect(listLabelIds(vol)).toBe(listLabelIds(vol)) // memoized
+  })
+
+  it('scans distinct nonzero ids when there is no table', () => {
+    const vol = mkVol({
+      dims: [8, 2, 2],
+      dtype: 'int16',
+      value: (i: number) => (i % 2 === 0 ? 0 : 5 * i) // 5, 15, 25, 35
+    })
+    expect(listLabelIds(vol)).toEqual([5, 15, 25, 35])
+    expect(listLabelIds(vol).length).toBeLessThanOrEqual(MAX_LISTED_LABELS)
   })
 })
 

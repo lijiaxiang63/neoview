@@ -127,7 +127,8 @@ export const useStore = create<AppState>()((set, get) => ({
       visible: true,
       opacity: 0.6,
       range,
-      colormap
+      colormap,
+      hiddenLabels: new Set()
     }
     set((s) => ({ overlays: [...s.overlays, layer], loadState: 'ready', errorMessage: null }))
   },
