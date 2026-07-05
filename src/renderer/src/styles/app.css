@@ -658,6 +658,23 @@ body {
   color: var(--text-0);
 }
 
+/* One field per overlay layer; long file names truncate, hidden layers dim. */
+.status-bar .layer-field .label {
+  max-width: 110px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.status-bar .layer-field .value {
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.status-bar .layer-field.muted {
+  opacity: 0.45;
+}
+
 /* ---------- Empty state ---------- */
 
 .empty-state {

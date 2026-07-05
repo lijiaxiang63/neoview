@@ -3,9 +3,30 @@ import { useStore } from '../store'
 import { applyAffine } from '../volume/affine'
 import { strides } from '../slicing/extract'
 import { sampleOverlayAt, type OverlayLayer } from '../slicing/overlay'
+import type { Volume } from '../volume/types'
 
 function fmt(v: number, digits = 1): string {
   return Number(v.toFixed(digits)).toString()
+}
+
+/** Strip the volume extension so layer readout labels stay short. */
+function shortName(name: string): string {
+  return name.replace(/\.nii(\.gz)?$/i, '')
+}
+
+function layerReadout(
+  layer: OverlayLayer,
+  base: Volume,
+  ijk: [number, number, number],
+  frame: number
+): string {
+  const v = sampleOverlayAt(layer, base, ijk, frame)
+  if (v === null) return '—'
+  if (layer.kind === 'labels') {
+    const id = Math.round(v)
+    return layer.volume.labels?.get(id) ?? `id ${id}`
+  }
+  return fmt(v, 4)
 }
 
 export function StatusBar(): JSX.Element {
@@ -21,15 +42,6 @@ export function StatusBar(): JSX.Element {
 
   const ijk = hover ? hover.ijk : cross
   const [i, j, k] = ijk
-  // Top-most visible layer's value at the cursor.
-  let topLayer: OverlayLayer | null = null
-  for (let n = overlays.length - 1; n >= 0; n--) {
-    if (overlays[n].visible) {
-      topLayer = overlays[n]
-      break
-    }
-  }
-  const layerValue = topLayer ? sampleOverlayAt(topLayer, volume, ijk, frame) : null
   const [x, y, z] = applyAffine(volume.affine, i, j, k)
   const st = strides(volume.dims)
   const frameStride = volume.dims[0] * volume.dims[1] * volume.dims[2]
@@ -61,19 +73,14 @@ export function StatusBar(): JSX.Element {
         <span className="label">value</span>
         <span className="value">{fmt(scaled, 4)}</span>
       </span>
-      {topLayer && (
-        <span className="field">
-          <span className="label">layer</span>
-          <span className="value">
-            {layerValue === null
-              ? '—'
-              : topLayer.kind === 'labels'
-                ? (topLayer.volume.labels?.get(Math.round(layerValue)) ??
-                  `id ${Math.round(layerValue)}`)
-                : fmt(layerValue, 4)}
+      {overlays.map((layer) => (
+        <span key={layer.id} className={`field layer-field${layer.visible ? '' : ' muted'}`}>
+          <span className="label" title={layer.volume.name}>
+            {shortName(layer.volume.name)}
           </span>
+          <span className="value">{layerReadout(layer, volume, ijk, frame)}</span>
         </span>
-      )}
+      ))}
       {volume.frames > 1 && (
         <span className="field">
           <span className="label">t</span>
