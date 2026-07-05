@@ -113,7 +113,12 @@ export default function App(): JSX.Element {
         st.setBrushRadius(st.brushRadius - 1)
       } else if (e.key === ']') {
         st.setBrushRadius(st.brushRadius + 1)
+      } else {
+        return
       }
+      // A focused control must not also act on the handled keystroke (e.g.
+      // Enter re-activating the Box tool button right after the commit).
+      e.preventDefault()
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
