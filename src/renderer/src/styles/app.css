@@ -408,8 +408,9 @@ body {
   transition: opacity 0.12s ease;
 }
 
-/* Per-label visibility: open eye = shown, slashed eye = hidden. */
-.label-row .eye-btn {
+/* Visibility toggles (layer rows and label rows):
+   open eye = shown, slashed eye = hidden. */
+.eye-btn {
   appearance: none;
   flex: none;
   display: flex;
@@ -426,13 +427,9 @@ body {
   transition: color 0.12s ease;
 }
 
-.label-row .eye-btn:hover {
+.eye-btn:hover {
   color: var(--text-0);
   background: var(--bg-1);
-}
-
-.label-row.off .eye-btn {
-  color: var(--text-2);
 }
 
 .label-row .label-jump {

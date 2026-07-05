@@ -173,13 +173,18 @@ export function OverlayPanel({ onAdd }: { onAdd: () => void }): JSX.Element | nu
           <div className="overlay-row" key={layer.id}>
             <div className="layer-head">
               <button
-                className={`preset-btn${layer.visible ? ' active' : ''}`}
+                className="eye-btn"
+                title={layer.visible ? 'Hide layer' : 'Show layer'}
                 aria-pressed={layer.visible}
                 onClick={() => updateOverlay(layer.id, { visible: !layer.visible })}
               >
-                {layer.visible ? 'On' : 'Off'}
+                <EyeIcon off={!layer.visible} />
               </button>
-              <span className="layer-name" title={layer.volume.name}>
+              <span
+                className="layer-name"
+                title={layer.volume.name}
+                style={layer.visible ? undefined : { opacity: 0.38 }}
+              >
                 {layer.volume.name}
               </span>
               <button
