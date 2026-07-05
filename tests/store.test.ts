@@ -5,11 +5,14 @@ import {
   BRIGHTNESS_MIN,
   DENSITY_MAX,
   DENSITY_MIN,
+  floodCap,
   hasUnsavedRegions,
   pickInitialPreset,
   presetRange,
-  useStore
+  useStore,
+  type SegParams
 } from '../src/renderer/src/store'
+import { MAX_RESULT_VOXELS } from '../src/renderer/src/segmentation/segment'
 import type { Volume, VolumeStats } from '../src/renderer/src/volume/types'
 
 function fakeVolume(stats: Partial<VolumeStats>, datatypeCode = 4): Volume {
@@ -221,6 +224,27 @@ describe('regions', () => {
     useStore.getState().deleteRegion(1)
     expect(useStore.getState().regions).toEqual([])
     expect(hasUnsavedRegions()).toBe(true)
+  })
+
+  it('floodCap caps only floods that may roam the whole volume', () => {
+    const p = (over: Partial<SegParams>): SegParams => ({
+      method: 'threshold',
+      low: 55,
+      high: 55,
+      connectivity: 26,
+      minVoxels: 3,
+      growMargin: null,
+      constraint: { type: 'none' },
+      ...over
+    })
+    // Box-bounded threshold: never capped, even under a constraint.
+    expect(floodCap(p({}), false)).toBe(Infinity)
+    expect(floodCap(p({}), true)).toBe(Infinity)
+    // Margin-bounded grow: the dilated box bounds the work.
+    expect(floodCap(p({ method: 'grow', growMargin: 20 }), false)).toBe(Infinity)
+    // Whole-volume grows (unlimited reach or constraint-bounded): capped.
+    expect(floodCap(p({ method: 'grow' }), false)).toBe(MAX_RESULT_VOXELS)
+    expect(floodCap(p({ method: 'grow', growMargin: 20 }), true)).toBe(MAX_RESULT_VOXELS)
   })
 
   it('commit within the preview debounce window applies the fresh mask', () => {

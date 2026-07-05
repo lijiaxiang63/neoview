@@ -105,7 +105,9 @@ export default function App(): JSX.Element {
         st.cancelSeg()
       } else if (e.key === 'Escape' && st.maximizedView !== null) {
         st.toggleMaximized(st.maximizedView)
-      } else if (e.key === 'Enter' && st.preview && st.preview.voxels > 0) {
+      } else if (e.key === 'Enter' && st.segBox) {
+        // No preview guard here: the preview may still be inside its debounce
+        // window; commitPreview folds pending edits in and no-ops on empty.
         st.commitPreview()
       } else if (e.key === '[') {
         st.setBrushRadius(st.brushRadius - 1)

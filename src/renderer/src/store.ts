@@ -14,6 +14,7 @@ import {
   GROW_BOUNDARY_RANGE,
   GROW_SEED_DEFAULT,
   GROW_SEED_RANGE,
+  MAX_RESULT_VOXELS,
   otsuThreshold,
   segmentRegion,
   THRESHOLD_DEFAULT,
@@ -264,6 +265,16 @@ export function pickInitialPreset(vol: Volume): Exclude<Preset, 'custom'> {
   return 'auto'
 }
 
+/** The runaway-flood safety cap applies only where the flood may roam the
+ * whole volume (grow with a constraint or unlimited reach); a user-drawn box
+ * (threshold) or grow margin already bounds the work, and truncating those
+ * would silently commit a partial mask. */
+export function floodCap(p: SegParams, constrained: boolean): number {
+  return p.method === 'grow' && (constrained || p.growMargin === null)
+    ? MAX_RESULT_VOXELS
+    : Infinity
+}
+
 /** Unsaved region edits exist (drives the replace/close confirmation).
  * Deleting the last region is still an unsaved edit — a previously exported
  * file would keep voxels the user just removed. */
@@ -338,7 +349,8 @@ export const useStore = create<AppState>()((set, get) => {
         low: p.method === 'threshold' ? p.low : Math.min(p.low, p.high),
         high: p.method === 'threshold' ? p.low : Math.max(p.low, p.high),
         connectivity: p.connectivity,
-        minVoxels: p.minVoxels
+        minVoxels: p.minVoxels,
+        maxVoxels: floodCap(p, constraint !== null)
       },
       frameOffset,
       constraint
