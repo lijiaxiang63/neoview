@@ -147,3 +147,69 @@ describe('overlay layers', () => {
     expect(useStore.getState().overlays).toEqual([])
   })
 })
+
+describe('regions', () => {
+  /** 2x2x2 volume with two frames; frame 1 values sit 100 above frame 0. */
+  function segVolume(): Volume {
+    const n = 8
+    const raw = new Float32Array(n * 2)
+    for (let i = 0; i < n; i++) {
+      raw[i] = i
+      raw[n + i] = i + 100
+    }
+    const vol = fakeVolume({ dataMin: 0, dataMax: 107 })
+    Object.assign(vol, { dims: [2, 2, 2], frames: 2, raw })
+    return vol
+  }
+
+  /** Load segVolume and hand-plant one region (id 1) on voxels 0 and 1. */
+  function seedRegion(): void {
+    useStore.getState().setVolume(segVolume())
+    const labelMap = new Uint16Array(8)
+    labelMap[0] = 1
+    labelMap[1] = 1
+    useStore.setState({
+      labelMap,
+      regions: [
+        {
+          id: 1,
+          name: 'Region 1',
+          color: '#ff0000',
+          visible: true,
+          voxelCount: 2,
+          stats: { min: 0, max: 1, mean: 0.5 }
+        }
+      ],
+      nextRegionId: 2,
+      segDirty: false
+    })
+  }
+
+  it('metadata edits mark the segmentation unsaved', () => {
+    seedRegion()
+    useStore.getState().updateRegion(1, { name: 'renamed' })
+    expect(useStore.getState().segDirty).toBe(true)
+
+    useStore.setState({ segDirty: false })
+    useStore.getState().updateRegion(1, { visible: false })
+    expect(useStore.getState().segDirty).toBe(true)
+  })
+
+  it('setFrame recomputes region stats for the new frame', () => {
+    seedRegion()
+    useStore.getState().setFrame(1)
+    const region = useStore.getState().regions[0]
+    expect(region.stats).toEqual({ min: 100, max: 101, mean: 100.5 })
+    // Stats refresh alone is not an edit.
+    expect(useStore.getState().segDirty).toBe(false)
+  })
+
+  it('deleteRegion clears a constraint pointing at the deleted region', () => {
+    seedRegion()
+    const params = useStore.getState().segParams
+    useStore.setState({ segParams: { ...params, constraint: { type: 'region', regionId: 1 } } })
+    useStore.getState().deleteRegion(1)
+    expect(useStore.getState().segParams.constraint).toEqual({ type: 'none' })
+    expect(useStore.getState().regions).toEqual([])
+  })
+})

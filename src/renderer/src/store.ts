@@ -493,10 +493,17 @@ export const useStore = create<AppState>()((set, get) => {
     },
 
     setFrame: (t) => {
-      const vol = get().volume
+      const s = get()
+      const vol = s.volume
       if (!vol) return
-      set({ frame: Math.min(Math.max(t, 0), vol.frames - 1) })
-      if (get().segBox) schedulePreview()
+      const frame = Math.min(Math.max(t, 0), vol.frames - 1)
+      // Region stats are per-frame; keep them in step with the slices.
+      const regions =
+        frame !== s.frame && s.labelMap && s.regions.length > 0
+          ? computeRegionStats(vol, s.labelMap, s.regions, frameOffsetOf(vol, frame))
+          : s.regions
+      set({ frame, regions })
+      if (s.segBox) schedulePreview()
     },
 
     setRange: (lo, hi) => set({ range: { lo, hi }, activePreset: 'custom' }),
@@ -753,8 +760,11 @@ export const useStore = create<AppState>()((set, get) => {
       set((s) => ({ maximizedView: s.maximizedView === view ? null : view })),
 
     updateRegion: (id, patch) =>
+      // Name/color feed the exported color table and visibility feeds the
+      // mask union, so any of these edits makes a prior export stale.
       set((s) => ({
-        regions: s.regions.map((r) => (r.id === id ? { ...r, ...patch } : r))
+        regions: s.regions.map((r) => (r.id === id ? { ...r, ...patch } : r)),
+        segDirty: true
       })),
 
     deleteRegion: (id) => {
@@ -776,7 +786,14 @@ export const useStore = create<AppState>()((set, get) => {
           action: { label: 'Undo', kind: 'undo-delete' }
         }
       })
-      if (s.segBox && s.segParams.constraint.type === 'region') schedulePreview()
+      // A constraint pointing at the deleted region would bound the preview
+      // to voxels that no longer exist (setSegParams reschedules the preview).
+      const c = s.segParams.constraint
+      if (c.type === 'region' && c.regionId === id) {
+        get().setSegParams({ constraint: { type: 'none' } })
+      } else if (s.segBox && c.type === 'region') {
+        schedulePreview()
+      }
     },
 
     undoDeleteRegion: () => {
