@@ -1,5 +1,11 @@
 export const MAX_BYTES = 2 * 1024 ** 3
 
+/** Compress a buffer with gzip (for exported files). */
+export async function gzip(buf: ArrayBuffer): Promise<ArrayBuffer> {
+  const stream = new Blob([buf]).stream().pipeThrough(new CompressionStream('gzip'))
+  return new Response(stream).arrayBuffer()
+}
+
 export function isGzip(buf: ArrayBuffer): boolean {
   if (buf.byteLength < 2) return false
   const b = new Uint8Array(buf, 0, 2)

@@ -54,6 +54,18 @@ body {
   display: none;
 }
 
+/* One slice view maximized (double-click in navigate mode). The other views
+   are hidden but stay mounted, so their canvases and the 3D camera survive. */
+.workspace.has-max > .slice-view:not(.view-max),
+.workspace.has-max > .volume-view {
+  display: none;
+}
+
+.workspace.has-max > .view-max {
+  grid-column: 1 / 3;
+  grid-row: 1 / -1;
+}
+
 .workspace > * {
   min-width: 0;
   min-height: 0;
@@ -490,6 +502,350 @@ body {
   padding: 6px;
   color: var(--text-2);
   font-size: 11px;
+}
+
+/* ---------- Region segmentation ---------- */
+
+.slice-view.box-tool .overlay-canvas {
+  cursor: cell;
+}
+
+.slice-view.brush-tool .overlay-canvas {
+  cursor: none;
+}
+
+.seg-controls {
+  border-top: 1px solid var(--border);
+  margin-top: 12px;
+  padding-top: 10px;
+}
+
+.seg-controls .range-slider {
+  margin-top: 10px;
+}
+
+.seg-hint {
+  margin-top: 8px;
+  color: var(--text-2);
+  font-size: 11px;
+}
+
+.seg-field {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.seg-field label {
+  color: var(--text-2);
+  font-size: 11px;
+  flex: none;
+  min-width: 74px;
+}
+
+.seg-field input[type='range'] {
+  flex: 1;
+  min-width: 0;
+  appearance: none;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--bg-3);
+  outline: none;
+}
+
+.seg-field input[type='range']::-webkit-slider-thumb {
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--text-0);
+  border: 2px solid var(--accent);
+  cursor: grab;
+}
+
+.seg-field .seg-unit.mono {
+  min-width: 52px;
+  text-align: right;
+  color: var(--text-1);
+}
+
+.seg-warning {
+  color: var(--warn, #e2b93b);
+}
+
+.seg-editing {
+  color: var(--accent-strong);
+}
+
+/* ---------- Region row context menu ---------- */
+
+.ctx-menu {
+  position: fixed;
+  z-index: 200;
+  min-width: 150px;
+  padding: 4px;
+  background: var(--bg-2);
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+}
+
+.ctx-menu button {
+  display: block;
+  width: 100%;
+  appearance: none;
+  border: none;
+  background: none;
+  color: var(--text-0);
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  padding: 5px 10px;
+  border-radius: 5px;
+  cursor: pointer;
+}
+
+.ctx-menu button:hover {
+  background: var(--bg-3);
+}
+
+.ctx-menu button.danger {
+  color: var(--danger, #e25555);
+}
+
+.seg-histogram-wrap {
+  margin-top: 10px;
+}
+
+.seg-histogram {
+  display: block;
+  width: 100%;
+  height: 54px;
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.seg-field select {
+  flex: 1;
+  min-width: 0;
+  background: var(--bg-2);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  color: var(--text-0);
+  font: inherit;
+  font-size: 11px;
+  padding: 3px 6px;
+  outline: none;
+}
+
+.seg-field select:focus {
+  border-color: var(--accent);
+}
+
+.seg-number {
+  width: 72px;
+  background: var(--bg-2);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  color: var(--text-0);
+  font-size: 11px;
+  padding: 3px 6px;
+  outline: none;
+}
+
+.seg-number:focus {
+  border-color: var(--accent);
+}
+
+.seg-unit {
+  color: var(--text-2);
+  font-size: 11px;
+}
+
+.seg-preview-row {
+  margin-top: 10px;
+}
+
+.seg-preview-stats {
+  color: var(--text-1);
+  font-size: 11px;
+}
+
+.seg-commit:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.region-list {
+  margin-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.region-row {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 6px 8px;
+  cursor: pointer;
+  transition: border-color 0.12s ease;
+}
+
+.region-row:hover {
+  border-color: var(--border-strong);
+}
+
+.region-row.active {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.region-row.off .region-name,
+.region-row.off .region-stats,
+.region-row.off .region-color {
+  opacity: 0.38;
+}
+
+.region-color {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  background: none;
+  cursor: pointer;
+}
+
+.region-color::-webkit-color-swatch-wrapper {
+  padding: 0;
+}
+
+.region-color::-webkit-color-swatch {
+  border: 1px solid var(--border-strong);
+  border-radius: 4px;
+}
+
+.region-name {
+  flex: 1;
+  min-width: 0;
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  color: var(--text-0);
+  font: inherit;
+  font-size: 12px;
+  padding: 1px 5px;
+  outline: none;
+}
+
+.region-name:hover {
+  border-color: var(--border);
+}
+
+.region-name:focus {
+  border-color: var(--accent);
+  background: var(--bg-2);
+}
+
+.region-stats {
+  margin-top: 4px;
+  color: var(--text-2);
+  font-size: 10px;
+}
+
+.export-section {
+  border-top: 1px solid var(--border);
+  margin-top: 12px;
+  padding-top: 4px;
+}
+
+.export-settings {
+  margin-top: 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px;
+}
+
+.export-dir {
+  flex: 1;
+  min-width: 0;
+  color: var(--text-1);
+  font-size: 10px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  direction: rtl;
+  text-align: left;
+}
+
+.seg-status {
+  margin-top: 8px;
+  font-size: 11px;
+  color: var(--ok, #5ec26a);
+}
+
+.seg-status.dirty {
+  color: var(--warn, #e2b93b);
+}
+
+/* ---------- Toast ---------- */
+
+.toast {
+  position: absolute;
+  bottom: calc(var(--statusbar-h) + 14px);
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 80;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 9px 14px;
+  background: var(--bg-2);
+  border: 1px solid var(--border-strong);
+  border-radius: 10px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+  max-width: 70%;
+}
+
+.toast .msg {
+  color: var(--text-0);
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.toast .toast-action {
+  appearance: none;
+  border: none;
+  background: none;
+  color: var(--accent-strong);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.toast .toast-action:hover {
+  text-decoration: underline;
+}
+
+.toast .toast-close {
+  appearance: none;
+  border: none;
+  background: none;
+  color: var(--text-2);
+  font-size: 13px;
+  cursor: pointer;
+  padding: 0 2px;
+}
+
+.toast .toast-close:hover {
+  color: var(--text-0);
 }
 
 /* ---------- Range slider ---------- */
