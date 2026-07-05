@@ -23,11 +23,24 @@ const COLORMAPS: { key: ColormapName; label: string }[] = [
   { key: 'signed', label: 'Signed' }
 ]
 
+function EyeIcon({ off }: { off: boolean }): JSX.Element {
+  return (
+    <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true">
+      <g fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round">
+        <path d="M1.8 8C3.6 4.9 12.4 4.9 14.2 8C12.4 11.1 3.6 11.1 1.8 8Z" />
+        <circle cx="8" cy="8" r="1.9" />
+        {off && <line x1="3" y1="13.2" x2="13" y2="2.8" />}
+      </g>
+    </svg>
+  )
+}
+
 /**
- * Collapsible label list for the labels kind: swatch (click = show/hide),
- * id + name (click = jump the crosshair to that label), voxel count.
- * Collapsed by default — real label volumes can carry hundreds of entries,
- * so the list (and the inventory scan) only happens on expand.
+ * Collapsible label list for the labels kind: color swatch, id + name
+ * (click = jump the crosshair to that label), voxel count, and an eye toggle
+ * for per-label visibility. Collapsed by default — real label volumes can
+ * carry hundreds of entries, so the list (and the inventory scan) only
+ * happens on expand.
  */
 function LabelVisibility({
   layer,
@@ -97,13 +110,7 @@ function LabelVisibility({
               const name = names?.get(id)
               return (
                 <div key={id} className={`label-row${off ? ' off' : ''}`}>
-                  <button
-                    className={`swatch-btn${off ? ' hollow' : ''}`}
-                    style={{ '--swatch': labelColorCSS(id) } as React.CSSProperties}
-                    title={off ? 'Show label' : 'Hide label'}
-                    aria-pressed={!off}
-                    onClick={() => toggle(id)}
-                  />
+                  <span className="swatch" style={{ background: labelColorCSS(id) }} />
                   <button
                     className="label-jump"
                     disabled={!pos}
@@ -114,6 +121,14 @@ function LabelVisibility({
                     <span className="label-name">{name ?? `label ${id}`}</span>
                   </button>
                   <span className="count mono">{count.toLocaleString('en-US')}</span>
+                  <button
+                    className="eye-btn"
+                    title={off ? 'Show label' : 'Hide label'}
+                    aria-pressed={!off}
+                    onClick={() => toggle(id)}
+                  >
+                    <EyeIcon off={off} />
+                  </button>
                 </div>
               )
             })}

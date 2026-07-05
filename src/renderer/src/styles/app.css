@@ -394,27 +394,45 @@ body {
   background: var(--bg-2);
 }
 
+.label-row.off .swatch,
 .label-row.off .label-jump,
 .label-row.off .count {
   opacity: 0.38;
 }
 
-/* Swatch doubles as the visibility toggle: filled = shown, hollow = hidden. */
-.label-row .swatch-btn {
-  appearance: none;
+.label-row .swatch {
   flex: none;
-  width: 14px;
-  height: 14px;
-  padding: 0;
+  width: 12px;
+  height: 12px;
   border-radius: 4px;
-  border: 2px solid var(--swatch);
-  background: var(--swatch);
-  cursor: pointer;
-  transition: background 0.12s ease;
+  transition: opacity 0.12s ease;
 }
 
-.label-row .swatch-btn.hollow {
-  background: transparent;
+/* Per-label visibility: open eye = shown, slashed eye = hidden. */
+.label-row .eye-btn {
+  appearance: none;
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  background: none;
+  border: none;
+  border-radius: 5px;
+  color: var(--text-2);
+  cursor: pointer;
+  transition: color 0.12s ease;
+}
+
+.label-row .eye-btn:hover {
+  color: var(--text-0);
+  background: var(--bg-1);
+}
+
+.label-row.off .eye-btn {
+  color: var(--text-2);
 }
 
 .label-row .label-jump {
