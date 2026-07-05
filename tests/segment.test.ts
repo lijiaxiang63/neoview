@@ -7,6 +7,7 @@ import {
   boxVoxelCount,
   clampBox,
   constraintFromLabelMap,
+  constraintFromVolume,
   dilatedBox,
   OTSU_FLOOR,
   otsuThreshold,
@@ -268,5 +269,25 @@ describe('constraintFromLabelMap', () => {
     expect(pred(0, 0, 0)).toBe(true)
     expect(pred(1, 0, 0)).toBe(false)
     expect(pred(2, 0, 0)).toBe(false)
+  })
+})
+
+describe('constraintFromVolume', () => {
+  it('samples the given frame, clamped to the volume frame count', () => {
+    const base = makeVolume([2, 1, 1], () => 100)
+    // Two frames on the same grid: frame 0 = [1, 1], frame 1 = [1, 0].
+    const con = makeVolume([2, 1, 1], () => 1)
+    Object.assign(con, { frames: 2, raw: new Float32Array([1, 1, 1, 0]) })
+
+    const f0 = constraintFromVolume(base, con, 0)!
+    expect(f0(1, 0, 0)).toBe(true)
+
+    const f1 = constraintFromVolume(base, con, 1)!
+    expect(f1(0, 0, 0)).toBe(true)
+    expect(f1(1, 0, 0)).toBe(false)
+
+    // Past the constraint's own frame count -> its last frame.
+    const beyond = constraintFromVolume(base, con, 7)!
+    expect(beyond(1, 0, 0)).toBe(false)
   })
 })

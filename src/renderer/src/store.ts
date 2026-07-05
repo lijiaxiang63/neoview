@@ -264,10 +264,11 @@ export function pickInitialPreset(vol: Volume): Exclude<Preset, 'custom'> {
   return 'auto'
 }
 
-/** Unsaved region edits exist (drives the replace/close confirmation). */
+/** Unsaved region edits exist (drives the replace/close confirmation).
+ * Deleting the last region is still an unsaved edit — a previously exported
+ * file would keep voxels the user just removed. */
 export function hasUnsavedRegions(): boolean {
-  const s = useStore.getState()
-  return s.segDirty && s.regions.length > 0
+  return useStore.getState().segDirty
 }
 
 // Never reset: layer ids must stay unique across base changes for React keys.
@@ -276,6 +277,9 @@ let nextOverlayId = 1
 // Preview recomputes are debounced so box drags and slider scrubs stay fluid;
 // the box-sized compute happens at most once per delay window.
 let previewTimer: ReturnType<typeof setTimeout> | undefined
+// True while an input change has not been reflected in `preview` yet, so a
+// commit can recompute synchronously instead of applying a stale mask.
+let previewPending = false
 
 function frameOffsetOf(vol: Volume, frame: number): number {
   const n = vol.dims[0] * vol.dims[1] * vol.dims[2]
@@ -291,7 +295,7 @@ export const useStore = create<AppState>()((set, get) => {
     const c = s.segParams.constraint
     if (c.type === 'overlay') {
       const layer = s.overlays.find((l) => l.id === c.overlayId)
-      return layer ? constraintFromVolume(vol, layer.volume) : null
+      return layer ? constraintFromVolume(vol, layer.volume, s.frame) : null
     }
     if (c.type === 'region' && s.labelMap) {
       return constraintFromLabelMap(s.labelMap, vol.dims, c.regionId)
@@ -300,6 +304,7 @@ export const useStore = create<AppState>()((set, get) => {
   }
 
   function computePreviewNow(): void {
+    previewPending = false
     const s = get()
     const vol = s.volume
     if (!vol || !s.segBox) {
@@ -352,8 +357,14 @@ export const useStore = create<AppState>()((set, get) => {
   }
 
   function schedulePreview(): void {
+    previewPending = true
     clearTimeout(previewTimer)
     previewTimer = setTimeout(computePreviewNow, 90)
+  }
+
+  function cancelScheduledPreview(): void {
+    previewPending = false
+    clearTimeout(previewTimer)
   }
 
   /** Grow's seed level: the box mean (the box is, by contract, entirely
@@ -405,7 +416,7 @@ export const useStore = create<AppState>()((set, get) => {
     startLoading: () => set({ loadState: 'loading', errorMessage: null }),
 
     setVolume: (v, sourcePath = null) => {
-      clearTimeout(previewTimer)
+      cancelScheduledPreview()
       const preset = pickInitialPreset(v)
       set({
         volume: v,
@@ -531,7 +542,7 @@ export const useStore = create<AppState>()((set, get) => {
       const vol = get().volume
       if (!vol) return
       if (!box) {
-        clearTimeout(previewTimer)
+        cancelScheduledPreview()
         set({ segBox: null, preview: null })
         return
       }
@@ -618,6 +629,9 @@ export const useStore = create<AppState>()((set, get) => {
     },
 
     commitPreview: () => {
+      // A commit racing the debounce would apply the mask of the previous
+      // parameters/frame/box; fold pending edits in first.
+      if (previewPending) computePreviewNow()
       const s = get()
       const vol = s.volume
       if (!vol || !s.preview || s.preview.voxels === 0) return
@@ -654,7 +668,7 @@ export const useStore = create<AppState>()((set, get) => {
           }
         : s.segSnapshots
       // The box is consumed by the commit; the tool drops back to navigation.
-      clearTimeout(previewTimer)
+      cancelScheduledPreview()
       set({
         labelMap,
         labelMapRev: s.labelMapRev + 1,
@@ -672,7 +686,7 @@ export const useStore = create<AppState>()((set, get) => {
     },
 
     cancelSeg: () => {
-      clearTimeout(previewTimer)
+      cancelScheduledPreview()
       set({ segBox: null, segSlabAxis: null, preview: null, editRegionId: null })
     },
 

@@ -5,6 +5,7 @@ import {
   BRIGHTNESS_MIN,
   DENSITY_MAX,
   DENSITY_MIN,
+  hasUnsavedRegions,
   pickInitialPreset,
   presetRange,
   useStore
@@ -211,5 +212,31 @@ describe('regions', () => {
     useStore.getState().deleteRegion(1)
     expect(useStore.getState().segParams.constraint).toEqual({ type: 'none' })
     expect(useStore.getState().regions).toEqual([])
+  })
+
+  it('deleting the last region still counts as unsaved', () => {
+    seedRegion()
+    useStore.getState().markExported()
+    expect(hasUnsavedRegions()).toBe(false)
+    useStore.getState().deleteRegion(1)
+    expect(useStore.getState().regions).toEqual([])
+    expect(hasUnsavedRegions()).toBe(true)
+  })
+
+  it('commit within the preview debounce window applies the fresh mask', () => {
+    useStore.getState().setVolume(segVolume())
+    const params = useStore.getState().segParams
+    useStore.setState({
+      segParams: { ...params, method: 'threshold', low: 3, high: 3, minVoxels: 1 }
+    })
+    // setSegBox only schedules the (90 ms debounced) preview...
+    useStore.getState().setSegBox({ min: [0, 0, 0], max: [1, 1, 1] })
+    expect(useStore.getState().preview).toBeNull()
+    // ...but an immediate commit must not act on the stale (null) preview.
+    useStore.getState().commitPreview()
+    const s = useStore.getState()
+    expect(s.regions.length).toBe(1)
+    expect(s.regions[0].voxelCount).toBe(5) // values 3..7 of 0..7
+    expect(s.segDirty).toBe(true)
   })
 })

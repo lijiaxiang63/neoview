@@ -73,11 +73,18 @@ export function constraintFromLabelMap(
  * (nearest-neighbor through the affine pair). Null when the constraint
  * volume's affine cannot be inverted.
  */
-export function constraintFromVolume(base: Volume, constraint: Volume): VoxelPredicate | null {
+export function constraintFromVolume(
+  base: Volume,
+  constraint: Volume,
+  frame = 0
+): VoxelPredicate | null {
   const m = composeVoxelMap(base.affine, constraint.affine)
   if (!m) return null
   const [cx, cy, cz] = constraint.dims
   const { raw, slope, inter } = constraint
+  // The shared frame index, clamped to this volume's own frame count
+  // (mirrors how slice display and readout sample overlays).
+  const frameOff = Math.min(Math.max(frame, 0), constraint.frames - 1) * cx * cy * cz
   const m0 = m[0]
   const m1 = m[1]
   const m2 = m[2]
@@ -95,7 +102,7 @@ export function constraintFromVolume(base: Volume, constraint: Volume): VoxelPre
     const yi = Math.round(m4 * i + m5 * j + m6 * k + m7)
     const zi = Math.round(m8 * i + m9 * j + m10 * k + m11)
     if (xi < 0 || xi >= cx || yi < 0 || yi >= cy || zi < 0 || zi >= cz) return false
-    const v = raw[xi + yi * cx + zi * cx * cy] * slope + inter
+    const v = raw[frameOff + xi + yi * cx + zi * cx * cy] * slope + inter
     return v !== 0 && !Number.isNaN(v)
   }
 }
