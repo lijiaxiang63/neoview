@@ -1,0 +1,24 @@
+:root {
+  --bg-0: #0b0d10;
+  --bg-1: #12151a;
+  --bg-2: #1a1e25;
+  --bg-3: #232935;
+  --bg-canvas: #05060a;
+  --border: #262b33;
+  --border-strong: #333a45;
+  --text-0: #e8ebf0;
+  --text-1: #9aa3b0;
+  --text-2: #5c6570;
+  --accent: #4fa3ff;
+  --accent-strong: #77b8ff;
+  --accent-soft: rgba(79, 163, 255, 0.15);
+  --danger: #ff5d5d;
+  --danger-soft: rgba(255, 93, 93, 0.12);
+  --ok: #3ddc97;
+  --radius: 8px;
+  --radius-sm: 5px;
+  --font-ui: 'Inter', system-ui, -apple-system, 'Segoe UI', 'Helvetica Neue', Arial, sans-serif;
+  --font-mono: ui-monospace, 'SF Mono', 'Cascadia Code', Consolas, monospace;
+  --toolbar-h: 44px;
+  --statusbar-h: 28px;
+}
