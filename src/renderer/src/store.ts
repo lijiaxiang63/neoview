@@ -6,6 +6,7 @@ import {
   AUTO_THRESHOLD_FALLBACK,
   boxHistogram,
   boxStats,
+  boxVoxelCount,
   clampBox,
   clampTo,
   constraintFromLabelMap,
@@ -281,13 +282,13 @@ export function normalizeSegParams(p: SegParams, edited: 'low' | 'high'): SegPar
 }
 
 /** The runaway-flood safety cap applies only where the flood may roam the
- * whole volume (grow with a constraint or unlimited reach); a user-drawn box
- * (threshold) or grow margin already bounds the work, and truncating those
- * would silently commit a partial mask. */
-export function floodCap(p: SegParams, constrained: boolean): number {
-  return p.method === 'grow' && (constrained || p.growMargin === null)
-    ? MAX_RESULT_VOXELS
-    : Infinity
+ * whole volume: a grow whose effective bounds cover it, whether explicitly
+ * (constraint present, unlimited reach) or via a margin large enough to
+ * clamp to it. A user-drawn threshold box or a genuinely partial margin
+ * bounds the work already, and truncating those would silently commit a
+ * partial mask. */
+export function floodCap(p: SegParams, boundsVoxels: number, volumeVoxels: number): number {
+  return p.method === 'grow' && boundsVoxels >= volumeVoxels ? MAX_RESULT_VOXELS : Infinity
 }
 
 /** Unsaved region edits exist (drives the replace/close confirmation).
@@ -367,7 +368,7 @@ export const useStore = create<AppState>()((set, get) => {
         high: p.method === 'threshold' ? p.low : p.high,
         connectivity: p.connectivity,
         minVoxels: p.minVoxels,
-        maxVoxels: floodCap(p, constraint !== null)
+        maxVoxels: floodCap(p, boxVoxelCount(bounds), vol.dims[0] * vol.dims[1] * vol.dims[2])
       },
       frameOffset,
       constraint

@@ -226,7 +226,7 @@ describe('regions', () => {
     expect(hasUnsavedRegions()).toBe(true)
   })
 
-  it('floodCap caps only floods that may roam the whole volume', () => {
+  it('floodCap caps only floods whose bounds cover the whole volume', () => {
     const p = (over: Partial<SegParams>): SegParams => ({
       method: 'threshold',
       low: 55,
@@ -237,14 +237,16 @@ describe('regions', () => {
       constraint: { type: 'none' },
       ...over
     })
-    // Box-bounded threshold: never capped, even under a constraint.
-    expect(floodCap(p({}), false)).toBe(Infinity)
-    expect(floodCap(p({}), true)).toBe(Infinity)
-    // Margin-bounded grow: the dilated box bounds the work.
-    expect(floodCap(p({ method: 'grow', growMargin: 20 }), false)).toBe(Infinity)
-    // Whole-volume grows (unlimited reach or constraint-bounded): capped.
-    expect(floodCap(p({ method: 'grow' }), false)).toBe(MAX_RESULT_VOXELS)
-    expect(floodCap(p({ method: 'grow', growMargin: 20 }), true)).toBe(MAX_RESULT_VOXELS)
+    const VOL = 1000
+    // Threshold: never capped, even when the box spans the whole volume.
+    expect(floodCap(p({}), 100, VOL)).toBe(Infinity)
+    expect(floodCap(p({}), VOL, VOL)).toBe(Infinity)
+    // Grow with genuinely partial bounds (margin-dilated box): uncapped.
+    expect(floodCap(p({ method: 'grow', growMargin: 20 }), 400, VOL)).toBe(Infinity)
+    // Grow whose bounds reach the whole volume — unlimited reach,
+    // constraint-bounded, or a margin so large it clamps to the volume.
+    expect(floodCap(p({ method: 'grow' }), VOL, VOL)).toBe(MAX_RESULT_VOXELS)
+    expect(floodCap(p({ method: 'grow', growMargin: 99999 }), VOL, VOL)).toBe(MAX_RESULT_VOXELS)
   })
 
   it('setSegParams keeps voxel-count fields whole', () => {
