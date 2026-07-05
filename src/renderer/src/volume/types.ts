@@ -38,6 +38,8 @@ export interface Volume {
   transformSource: TransformSource
   /** Display-range suggestion from the file header, if present. */
   suggestedRange: { lo: number; hi: number } | null
+  /** Embedded label-name table keyed by voxel value, if the file carries one. */
+  labels: Map<number, string> | null
   stats: VolumeStats
 }
 

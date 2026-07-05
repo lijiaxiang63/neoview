@@ -68,7 +68,8 @@ export function StatusBar(): JSX.Element {
             {layerValue === null
               ? '—'
               : topLayer.kind === 'labels'
-                ? `id ${Math.round(layerValue)}`
+                ? (topLayer.volume.labels?.get(Math.round(layerValue)) ??
+                  `id ${Math.round(layerValue)}`)
                 : fmt(layerValue, 4)}
           </span>
         </span>

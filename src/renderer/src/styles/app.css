@@ -571,6 +571,42 @@ body {
   font-weight: 600;
 }
 
+/* Two-zone variant shown while a base volume is loaded. The zones must be
+   hit-testable (the overlay itself is pointer-events: none) so the drop
+   event's target tells base replacement apart from adding a layer. */
+.drag-overlay.split {
+  align-items: stretch;
+  gap: 16px;
+  padding: 24px;
+}
+
+.drag-overlay.split .drop-zone {
+  pointer-events: auto;
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 2px dashed var(--border-strong);
+  border-radius: 16px;
+  transition: all 0.12s ease;
+}
+
+.drag-overlay.split .drop-zone .inner {
+  border: none;
+  background: none;
+  padding: 0;
+  color: var(--text-1);
+}
+
+.drag-overlay.split .drop-zone.hot {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.drag-overlay.split .drop-zone.hot .inner {
+  color: var(--accent-strong);
+}
+
 /* ---------- Loading shimmer ---------- */
 
 .loading-bar {

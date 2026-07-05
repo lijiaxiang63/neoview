@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 // @ts-expect-error plain mjs helper shared with the fixture generator
 import { buildVolume } from '../scripts/make-test-volumes.mjs'
-import { parseVolume } from '../src/renderer/src/volume/parse'
+import { parseLabelTable, parseVolume } from '../src/renderer/src/volume/parse'
 import { ParseError } from '../src/renderer/src/volume/types'
 import { extractSliceToImageData, PLANES } from '../src/renderer/src/slicing/extract'
 
@@ -108,6 +108,52 @@ describe('parseVolume', () => {
     } catch (e) {
       expect((e as ParseError).code).toBe('bad-header')
     }
+  })
+})
+
+describe('parseLabelTable', () => {
+  const withTable = buildVolume({
+    dims: [4, 4, 2],
+    dtype: 'uint8',
+    value: (i: number) => i,
+    labels: [
+      [1, 'region-a'],
+      [2, 'region-b'],
+      [17, 'region-q']
+    ]
+  })
+
+  it('reads the embedded index/name table and attaches it to the volume', () => {
+    const buf = toArrayBuffer(withTable)
+    const table = parseLabelTable(buf)
+    expect(table).not.toBeNull()
+    expect(table!.size).toBe(3)
+    expect(table!.get(1)).toBe('region-a')
+    expect(table!.get(17)).toBe('region-q')
+    expect(parseVolume('t.nii', buf).labels).toEqual(table)
+  })
+
+  it('leaves the voxel data untouched by the moved data offset', () => {
+    const vol = parseVolume('t.nii', toArrayBuffer(withTable))
+    expect(vol.raw[3]).toBe(3)
+  })
+
+  it('is null without the label intent code', () => {
+    const plain = buildVolume({ dims: [4, 4, 2], dtype: 'uint8', value: () => 0 })
+    expect(parseLabelTable(toArrayBuffer(plain))).toBeNull()
+    expect(parseVolume('t.nii', toArrayBuffer(plain)).labels).toBeNull()
+  })
+
+  it('tolerates extra columns and space-delimited lines', () => {
+    const buf = toArrayBuffer(withTable)
+    // Rewrite the gap text in place: extra column plus a space-delimited row.
+    const text = '1\tregion-a\t255 0 0\n2 region-b\nnot-a-row\n'
+    const bytes = new TextEncoder().encode(text)
+    new Uint8Array(buf, 352, bytes.length).set(bytes)
+    const table = parseLabelTable(buf)!
+    expect(table.get(1)).toBe('region-a')
+    expect(table.get(2)).toBe('region-b')
+    expect(table.size).toBe(2)
   })
 })
 

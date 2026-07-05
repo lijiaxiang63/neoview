@@ -66,7 +66,10 @@ export function OverlayPanel({ onAdd }: { onAdd: () => void }): JSX.Element | nu
                 ✕
               </button>
             </div>
-            <div className="mono layer-dims">{layer.volume.dims.join(' × ')}</div>
+            <div className="mono layer-dims">
+              {layer.volume.dims.join(' × ')}
+              {layer.volume.labels ? ` · ${layer.volume.labels.size} names` : ''}
+            </div>
             <div className="preset-row">
               {KINDS.map((k) => (
                 <button

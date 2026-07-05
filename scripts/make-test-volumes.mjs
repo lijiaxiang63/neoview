@@ -18,7 +18,9 @@ const DT = {
  * Build a complete single-file volume buffer.
  * opts: { dims:[nx,ny,nz,(nt)], dtype, value(i,j,k,t), spacing:[sx,sy,sz],
  *         qfac, sform:{rows:3x4}|null, qform:{b,c,d,ox,oy,oz}|null,
- *         slope, inter, littleEndian }
+ *         slope, inter, littleEndian, labels:[[index, name], ...] }
+ * labels embeds an "index<TAB>name" text table between the header and the
+ * data (intent code 1002, extension flag zero, data offset moved past it).
  */
 export function buildVolume(opts) {
   const le = opts.littleEndian !== false
@@ -27,7 +29,13 @@ export function buildVolume(opts) {
   const ndim = nt > 1 ? 4 : 3
   const dt = DT[opts.dtype]
   const n = nx * ny * nz * nt
-  const buf = new ArrayBuffer(VOX_OFFSET + n * dt.bytes)
+  const table = opts.labels
+    ? new TextEncoder().encode(opts.labels.map(([i, name]) => `${i}\t${name}`).join('\n'))
+    : null
+  const dataOffset = table
+    ? Math.ceil((VOX_OFFSET + table.length) / 16) * 16 // keep voxel data aligned
+    : VOX_OFFSET
+  const buf = new ArrayBuffer(dataOffset + n * dt.bytes)
   const dv = new DataView(buf)
 
   dv.setInt32(0, HEADER, le)
@@ -40,7 +48,8 @@ export function buildVolume(opts) {
   const spacing = opts.spacing ?? [1, 1, 1]
   for (let i = 0; i < 3; i++) dv.setFloat32(80 + i * 4, spacing[i], le)
   if (nt > 1) dv.setFloat32(92, 1, le)
-  dv.setFloat32(108, VOX_OFFSET, le)
+  if (table) dv.setInt16(68, 1002, le)
+  dv.setFloat32(108, dataOffset, le)
   dv.setFloat32(112, opts.slope ?? 0, le)
   dv.setFloat32(116, opts.inter ?? 0, le)
 
@@ -67,7 +76,9 @@ export function buildVolume(opts) {
   dv.setUint8(346, 0x31) // 1
   dv.setUint8(347, 0)
 
-  let o = VOX_OFFSET
+  if (table) new Uint8Array(buf, VOX_OFFSET, table.length).set(table)
+
+  let o = dataOffset
   for (let t = 0; t < nt; t++) {
     for (let k = 0; k < nz; k++) {
       for (let j = 0; j < ny; j++) {
@@ -195,7 +206,8 @@ if (isMain) {
       value: (i, j, k) =>
         i >= 8 && i < 24 && j >= 8 && j < 24 && k >= 5 && k < 15
           ? ((i - 8) >> 2) + 4 * ((j - 8) >> 2) + 1
-          : 0
+          : 0,
+      labels: Array.from({ length: 16 }, (_, n) => [n + 1, `region-${n + 1}`])
     })
   )
 

@@ -269,6 +269,16 @@ describe('guessOverlayKind', () => {
       'map'
     )
   })
+  it('an embedded name table settles it regardless of stats', () => {
+    const vol = mkVol({
+      dims,
+      dtype: 'int16',
+      value: (i: number) => i * 1500, // wide range would otherwise say map
+      labels: [[1, 'region-a']]
+    })
+    expect(vol.labels?.get(1)).toBe('region-a')
+    expect(guessOverlayKind(vol)).toBe('labels')
+  })
 })
 
 describe('defaultLayerSettings', () => {

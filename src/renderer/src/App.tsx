@@ -48,6 +48,7 @@ export default function App(): JSX.Element {
   const dismissError = useStore((s) => s.dismissError)
   const hasVolume = useStore((s) => s.volume !== null)
   const [dragging, setDragging] = useState(false)
+  const [dropTarget, setDropTarget] = useState<LoadTarget>('auto')
   const [sidebarOpen, setSidebarOpen] = useState(true)
 
   // Explicit Open always replaces the base volume (the one way to swap it);
@@ -86,8 +87,17 @@ export default function App(): JSX.Element {
       depth = Math.max(0, depth - 1)
       if (depth === 0) setDragging(false)
     }
+    // With a base volume loaded, the drag overlay splits into two drop zones;
+    // which one the pointer is over decides between replacing the base and
+    // adding an overlay layer.
+    const zoneAt = (e: DragEvent): LoadTarget => {
+      const zone = (e.target as HTMLElement | null)?.closest?.('[data-drop-target]')
+      const t = zone instanceof HTMLElement ? zone.dataset.dropTarget : undefined
+      return t === 'base' || t === 'overlay' ? t : 'auto'
+    }
     const onDragOver = (e: DragEvent): void => {
       e.preventDefault()
+      setDropTarget(zoneAt(e))
     }
     const onDrop = (e: DragEvent): void => {
       e.preventDefault()
@@ -103,7 +113,8 @@ export default function App(): JSX.Element {
         useStore.getState().fail('File is larger than 2 GB, which is not supported.')
         return
       }
-      void file.arrayBuffer().then((buf) => loadFromBuffer(file.name, buf, 'auto'))
+      const target = zoneAt(e)
+      void file.arrayBuffer().then((buf) => loadFromBuffer(file.name, buf, target))
     }
     window.addEventListener('dragenter', onDragEnter)
     window.addEventListener('dragleave', onDragLeave)
@@ -139,11 +150,27 @@ export default function App(): JSX.Element {
         )}
       </main>
       <StatusBar />
-      {dragging && (
-        <div className="drag-overlay">
-          <div className="inner">Release to open</div>
-        </div>
-      )}
+      {dragging &&
+        (hasVolume ? (
+          <div className="drag-overlay split">
+            <div
+              className={`drop-zone${dropTarget === 'base' ? ' hot' : ''}`}
+              data-drop-target="base"
+            >
+              <div className="inner">Replace volume</div>
+            </div>
+            <div
+              className={`drop-zone${dropTarget !== 'base' ? ' hot' : ''}`}
+              data-drop-target="overlay"
+            >
+              <div className="inner">Add overlay</div>
+            </div>
+          </div>
+        ) : (
+          <div className="drag-overlay">
+            <div className="inner">Release to open</div>
+          </div>
+        ))}
       {errorMessage && (
         <div className="error-banner">
           <span className="msg">{errorMessage}</span>

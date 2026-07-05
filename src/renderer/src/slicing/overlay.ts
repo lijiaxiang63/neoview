@@ -140,9 +140,11 @@ export const MASK_COLOR = packRGB(255, 80, 40)
 // ---------------------------------------------------------------------------
 // Kind heuristic and defaults
 
-/** Guess a layer kind from stats: exact {0,1} → mask, small non-negative
- * integer range → labels, anything else → map. */
+/** Guess a layer kind: an embedded name table settles it; otherwise from
+ * stats — exact {0,1} → mask, small non-negative integer range → labels,
+ * anything else → map. */
 export function guessOverlayKind(vol: Volume): OverlayKind {
+  if (vol.labels) return 'labels'
   const { stats, slope, inter } = vol
   if (stats.typeRange !== null && slope === 1 && inter === 0 && stats.dataMin >= 0) {
     if (stats.dataMax === 1) return 'mask'

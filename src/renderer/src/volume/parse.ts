@@ -5,6 +5,7 @@ import { ParseError, type Volume, type VoxelArray } from './types'
 // 348-byte v1 header byte offsets (spec identifiers, not user-facing).
 const OFF_SIZEOF_HDR = 0
 const OFF_DIM = 40
+const OFF_INTENT_CODE = 68
 const OFF_DATATYPE = 70
 const OFF_BITPIX = 72
 const OFF_PIXDIM = 76
@@ -24,6 +25,7 @@ const OFF_MAGIC = 344
 
 const HEADER_SIZE = 348
 const MIN_FILE_SIZE = 352
+const INTENT_LABEL = 1002
 
 interface DatatypeInfo {
   ctor: new (buf: ArrayBuffer, byteOffset?: number, length?: number) => VoxelArray
@@ -50,6 +52,52 @@ function swapBytesInPlace(bytes: Uint8Array, width: number): void {
       bytes[i + b] = t
     }
   }
+}
+
+/**
+ * Embedded label table. When a file is flagged as a label volume (intent code
+ * 1002) and its data offset leaves a gap after the 348-byte header, that gap
+ * holds a plain "index<TAB>name" text table — one entry per line, keyed by
+ * voxel value. It is deliberately *not* a formal header extension: the 4
+ * extension-flag bytes stay zero, so a strict reader simply seeks past the gap
+ * to the voxel data and ignores it. Returns null when no such table is present.
+ */
+export function parseLabelTable(buf: ArrayBuffer): Map<number, string> | null {
+  if (buf.byteLength < MIN_FILE_SIZE) return null
+  const dv = new DataView(buf)
+
+  let le = true
+  if (dv.getInt32(OFF_SIZEOF_HDR, true) !== HEADER_SIZE) {
+    if (dv.getInt32(OFF_SIZEOF_HDR, false) !== HEADER_SIZE) return null
+    le = false
+  }
+
+  if (dv.getInt16(OFF_INTENT_CODE, le) !== INTENT_LABEL) return null
+  // A non-zero extension flag means [352, dataOffset) is a formal extension
+  // list, not raw label text — this convention doesn't apply.
+  if (dv.getUint8(HEADER_SIZE) !== 0) return null
+
+  const dataOffset = Math.round(dv.getFloat32(OFF_VOX_OFFSET, le))
+  if (dataOffset <= MIN_FILE_SIZE || dataOffset > buf.byteLength) return null
+
+  let text = new TextDecoder('latin1').decode(
+    new Uint8Array(buf, MIN_FILE_SIZE, dataOffset - MIN_FILE_SIZE)
+  )
+  // The gap is often padded to an aligned data offset with NULs — cut there.
+  const nul = text.indexOf('\0')
+  if (nul !== -1) text = text.slice(0, nul)
+
+  const labels = new Map<number, string>()
+  for (const line of text.split('\n')) {
+    // "<index><TAB><name>[<TAB>extra…]"; some files append a colour column.
+    // Fall back to whitespace splitting for space-delimited variants.
+    const cols = line.includes('\t') ? line.split('\t') : line.trim().split(/\s+/)
+    if (cols.length < 2) continue
+    const index = Number(cols[0])
+    const name = cols[1].trim()
+    if (Number.isInteger(index) && name) labels.set(index, name)
+  }
+  return labels.size > 0 ? labels : null
 }
 
 export function parseVolume(name: string, buf: ArrayBuffer): Volume {
@@ -191,6 +239,7 @@ export function parseVolume(name: string, buf: ArrayBuffer): Volume {
     affine,
     transformSource,
     suggestedRange,
+    labels: parseLabelTable(buf),
     stats
   }
 }
