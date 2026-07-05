@@ -148,29 +148,103 @@ export function labelColorCSS(id: number): string {
 /** Cap on enumerated ids for volumes without a name table. */
 export const MAX_LISTED_LABELS = 512
 
-const labelIdCache = new WeakMap<Volume, number[]>()
+export interface LabelEntry {
+  id: number
+  /** Voxels carrying this id (frame 0). */
+  count: number
+  /** Representative voxel (the one nearest the label's centroid, so it always
+   * lies on the label even for concave shapes); null when count is 0. */
+  pos: [number, number, number] | null
+}
+
+const inventoryCache = new WeakMap<Volume, LabelEntry[]>()
 
 /**
- * Distinct label ids of a volume, ascending: the name-table keys when one is
- * embedded, otherwise one memoized scan of the raw data (all frames),
- * truncated at MAX_LISTED_LABELS entries.
+ * Per-id voxel counts and representative positions, ascending by id, from one
+ * memoized two-pass scan of frame 0. Name-table ids that never occur in the
+ * data are included with count 0 (so the UI can show them); ids beyond
+ * MAX_LISTED_LABELS distinct values are dropped.
  */
-export function listLabelIds(vol: Volume): number[] {
-  let ids = labelIdCache.get(vol)
-  if (ids) return ids
-  if (vol.labels) {
-    ids = [...vol.labels.keys()].sort((a, b) => a - b)
-  } else {
-    const seen = new Set<number>()
-    const { raw, slope, inter } = vol
-    for (let i = 0; i < raw.length && seen.size <= MAX_LISTED_LABELS; i++) {
-      const id = Math.round(raw[i] * slope + inter)
-      if (id !== 0 && Number.isFinite(id)) seen.add(id)
+export function labelInventory(vol: Volume): LabelEntry[] {
+  let entries = inventoryCache.get(vol)
+  if (entries) return entries
+
+  const [nx, ny, nz] = vol.dims
+  const { raw, slope, inter } = vol
+  const acc = new Map<number, { count: number; si: number; sj: number; sk: number }>()
+
+  // Pass 1: counts and coordinate sums (centroids).
+  let idx = 0
+  for (let k = 0; k < nz; k++) {
+    for (let j = 0; j < ny; j++) {
+      for (let i = 0; i < nx; i++, idx++) {
+        const id = Math.round(raw[idx] * slope + inter)
+        if (id === 0 || !Number.isFinite(id)) continue
+        let a = acc.get(id)
+        if (!a) {
+          if (acc.size >= MAX_LISTED_LABELS) continue
+          a = { count: 0, si: 0, sj: 0, sk: 0 }
+          acc.set(id, a)
+        }
+        a.count++
+        a.si += i
+        a.sj += j
+        a.sk += k
+      }
     }
-    ids = [...seen].sort((a, b) => a - b).slice(0, MAX_LISTED_LABELS)
   }
-  labelIdCache.set(vol, ids)
-  return ids
+
+  // Pass 2: per id, the actual voxel nearest the centroid.
+  const best = new Map<number, { d: number; pos: [number, number, number] }>()
+  idx = 0
+  for (let k = 0; k < nz; k++) {
+    for (let j = 0; j < ny; j++) {
+      for (let i = 0; i < nx; i++, idx++) {
+        const id = Math.round(raw[idx] * slope + inter)
+        const a = id !== 0 && Number.isFinite(id) ? acc.get(id) : undefined
+        if (!a) continue
+        const di = i - a.si / a.count
+        const dj = j - a.sj / a.count
+        const dk = k - a.sk / a.count
+        const d = di * di + dj * dj + dk * dk
+        const b = best.get(id)
+        if (!b || d < b.d) best.set(id, { d, pos: [i, j, k] })
+      }
+    }
+  }
+
+  const ids = new Set<number>(acc.keys())
+  if (vol.labels) for (const id of vol.labels.keys()) ids.add(id)
+  entries = [...ids]
+    .sort((a, b) => a - b)
+    .slice(0, MAX_LISTED_LABELS)
+    .map((id) => ({
+      id,
+      count: acc.get(id)?.count ?? 0,
+      pos: best.get(id)?.pos ?? null
+    }))
+  inventoryCache.set(vol, entries)
+  return entries
+}
+
+/** Distinct label ids, ascending (see labelInventory). */
+export function listLabelIds(vol: Volume): number[] {
+  return labelInventory(vol).map((e) => e.id)
+}
+
+/**
+ * Map an overlay voxel coordinate into the base grid (for jumping the
+ * crosshair to a label); null when the base affine is singular.
+ */
+export function overlayVoxelToBase(
+  base: Volume,
+  overlay: Volume,
+  ijk: [number, number, number]
+): [number, number, number] | null {
+  const m = composeVoxelMap(overlay.affine, base.affine)
+  if (!m) return null
+  const [x, y, z] = applyAffine(m, ijk[0], ijk[1], ijk[2])
+  return [Math.round(x), Math.round(y), Math.round(z)]
 }
 
 // ---------------------------------------------------------------------------

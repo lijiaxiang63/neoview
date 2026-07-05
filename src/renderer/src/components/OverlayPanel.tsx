@@ -4,7 +4,8 @@ import { RangeSlider } from './RangeSlider'
 import { fmt } from '../format'
 import {
   labelColorCSS,
-  listLabelIds,
+  labelInventory,
+  overlayVoxelToBase,
   type ColormapName,
   type OverlayKind,
   type OverlayLayer
@@ -23,9 +24,10 @@ const COLORMAPS: { key: ColormapName; label: string }[] = [
 ]
 
 /**
- * Collapsible per-label visibility list for the labels kind. Collapsed by
- * default — real label volumes can carry hundreds of entries, so the list
- * (and the id scan for volumes without a name table) only happens on expand.
+ * Collapsible label list for the labels kind: swatch (click = show/hide),
+ * id + name (click = jump the crosshair to that label), voxel count.
+ * Collapsed by default — real label volumes can carry hundreds of entries,
+ * so the list (and the inventory scan) only happens on expand.
  */
 function LabelVisibility({
   layer,
@@ -36,13 +38,15 @@ function LabelVisibility({
 }): JSX.Element {
   const [open, setOpen] = useState(false)
   const [filter, setFilter] = useState('')
+  const base = useStore((s) => s.volume)
+  const setCross = useStore((s) => s.setCross)
 
   const hidden = layer.hiddenLabels
-  const ids = open ? listLabelIds(layer.volume) : null
+  const entries = open ? labelInventory(layer.volume) : null
   const names = layer.volume.labels
   const q = filter.trim().toLowerCase()
-  const shown = ids?.filter(
-    (id) => !q || String(id).includes(q) || (names?.get(id) ?? '').toLowerCase().includes(q)
+  const shown = entries?.filter(
+    (e) => !q || String(e.id).includes(q) || (names?.get(e.id) ?? '').toLowerCase().includes(q)
   )
 
   const toggle = (id: number): void => {
@@ -51,19 +55,32 @@ function LabelVisibility({
     onPatch({ hiddenLabels: next })
   }
 
+  const jumpTo = (id: number, pos: [number, number, number]): void => {
+    if (!base) return
+    const target = overlayVoxelToBase(base, layer.volume, pos)
+    if (!target) return
+    setCross(target)
+    // Jumping to a label implies wanting to see it.
+    if (hidden.has(id)) toggle(id)
+  }
+
   return (
     <div className="label-visibility">
       <button className="preset-btn expander" aria-expanded={open} onClick={() => setOpen(!open)}>
-        {open ? '▾' : '▸'} Label visibility
+        {open ? '▾' : '▸'} Labels
+        {entries ? ` · ${entries.length}` : ''}
         {hidden.size > 0 ? ` · ${hidden.size} hidden` : ''}
       </button>
-      {open && ids && shown && (
+      {open && entries && shown && (
         <>
           <div className="preset-row">
             <button className="preset-btn" onClick={() => onPatch({ hiddenLabels: new Set() })}>
               All
             </button>
-            <button className="preset-btn" onClick={() => onPatch({ hiddenLabels: new Set(ids) })}>
+            <button
+              className="preset-btn"
+              onClick={() => onPatch({ hiddenLabels: new Set(entries.map((e) => e.id)) })}
+            >
               None
             </button>
             <input
@@ -75,18 +92,29 @@ function LabelVisibility({
             />
           </div>
           <div className="label-list">
-            {shown.map((id) => {
+            {shown.map(({ id, count, pos }) => {
               const off = hidden.has(id)
+              const name = names?.get(id)
               return (
-                <button
-                  key={id}
-                  className={`label-row${off ? ' off' : ''}`}
-                  onClick={() => toggle(id)}
-                >
-                  <span className="swatch" style={{ background: labelColorCSS(id) }} />
-                  <span className="label-name">{names?.get(id) ?? `id ${id}`}</span>
-                  <span className="tick">{off ? '' : '✓'}</span>
-                </button>
+                <div key={id} className={`label-row${off ? ' off' : ''}`}>
+                  <button
+                    className={`swatch-btn${off ? ' hollow' : ''}`}
+                    style={{ '--swatch': labelColorCSS(id) } as React.CSSProperties}
+                    title={off ? 'Show label' : 'Hide label'}
+                    aria-pressed={!off}
+                    onClick={() => toggle(id)}
+                  />
+                  <button
+                    className="label-jump"
+                    disabled={!pos}
+                    title={pos ? 'Jump to this label' : 'Not present in the data'}
+                    onClick={() => pos && jumpTo(id, pos)}
+                  >
+                    <span className="id-chip mono">{id}</span>
+                    <span className="label-name">{name ?? `label ${id}`}</span>
+                  </button>
+                  <span className="count mono">{count.toLocaleString('en-US')}</span>
+                </div>
               )
             })}
             {shown.length === 0 && <div className="label-empty mono">no match</div>}

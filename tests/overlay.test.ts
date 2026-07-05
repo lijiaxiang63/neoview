@@ -13,7 +13,9 @@ import {
   guessOverlayKind,
   labelColor,
   labelColorCSS,
+  labelInventory,
   listLabelIds,
+  overlayVoxelToBase,
   sampleOverlayAt,
   voxelMapFor,
   type OverlayLayer
@@ -271,22 +273,53 @@ describe('hidden labels', () => {
   })
 })
 
-describe('listLabelIds', () => {
-  it('uses the embedded name table when present', () => {
+describe('labelInventory', () => {
+  it('counts voxels and picks a representative inside a solid block', () => {
+    const vol = mkVol({
+      dims: [8, 8, 4],
+      dtype: 'uint8',
+      value: (i: number, j: number, k: number) => (i >= 1 && i <= 2 && j === 1 && k === 1 ? 2 : 0)
+    })
+    const [entry] = labelInventory(vol)
+    expect(entry.id).toBe(2)
+    expect(entry.count).toBe(2)
+    expect(entry.pos![1]).toBe(1)
+    expect(entry.pos![2]).toBe(1)
+    expect([1, 2]).toContain(entry.pos![0])
+    expect(labelInventory(vol)).toBe(labelInventory(vol)) // memoized
+  })
+
+  it('keeps the representative on the label for split shapes', () => {
+    // Two far-apart voxels: the centroid falls between them on empty space.
+    const vol = mkVol({
+      dims: [8, 2, 2],
+      dtype: 'uint8',
+      value: (i: number, j: number, k: number) =>
+        (i === 0 || i === 6) && j === 0 && k === 0 ? 4 : 0
+    })
+    const [entry] = labelInventory(vol)
+    expect(entry.count).toBe(2)
+    expect([0, 6]).toContain(entry.pos![0])
+  })
+
+  it('includes zero-count table entries with a null position', () => {
     const vol = mkVol({
       dims: [4, 2, 2],
       dtype: 'uint8',
-      value: () => 0,
+      value: (i: number) => (i === 0 ? 3 : 0),
       labels: [
-        [7, 'region-b'],
-        [3, 'region-a']
+        [3, 'region-a'],
+        [9, 'region-x'] // named but absent from the data
       ]
     })
-    expect(listLabelIds(vol)).toEqual([3, 7])
-    expect(listLabelIds(vol)).toBe(listLabelIds(vol)) // memoized
+    const entries = labelInventory(vol)
+    expect(entries.map((e) => e.id)).toEqual([3, 9])
+    expect(entries[0].count).toBe(4) // one voxel per (j,k) combination
+    expect(entries[1].count).toBe(0)
+    expect(entries[1].pos).toBeNull()
   })
 
-  it('scans distinct nonzero ids when there is no table', () => {
+  it('listLabelIds derives from the inventory', () => {
     const vol = mkVol({
       dims: [8, 2, 2],
       dtype: 'int16',
@@ -294,6 +327,26 @@ describe('listLabelIds', () => {
     })
     expect(listLabelIds(vol)).toEqual([5, 15, 25, 35])
     expect(listLabelIds(vol).length).toBeLessThanOrEqual(MAX_LISTED_LABELS)
+  })
+})
+
+describe('overlayVoxelToBase', () => {
+  it('maps a coarse offset overlay voxel into base coordinates', () => {
+    const base = mkVol({ dims: [8, 8, 8], dtype: 'uint8', value: () => 0, sform: identity })
+    const overlay = mkVol({
+      dims: [4, 4, 4],
+      dtype: 'uint8',
+      value: () => 0,
+      sform: {
+        rows: [
+          [2, 0, 0, 1],
+          [0, 2, 0, 0],
+          [0, 0, 2, 0]
+        ]
+      }
+    })
+    // Overlay voxel (1,1,1) sits at world (3,2,2) = base voxel (3,2,2).
+    expect(overlayVoxelToBase(base, overlay, [1, 1, 1])).toEqual([3, 2, 2])
   })
 })
 

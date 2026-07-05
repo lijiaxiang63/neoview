@@ -383,14 +383,50 @@ body {
 }
 
 .label-row {
-  appearance: none;
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 3px 6px;
+  gap: 7px;
+  padding: 2px 6px 2px 4px;
+  border-radius: 6px;
+}
+
+.label-row:hover {
+  background: var(--bg-2);
+}
+
+.label-row.off .label-jump,
+.label-row.off .count {
+  opacity: 0.38;
+}
+
+/* Swatch doubles as the visibility toggle: filled = shown, hollow = hidden. */
+.label-row .swatch-btn {
+  appearance: none;
+  flex: none;
+  width: 14px;
+  height: 14px;
+  padding: 0;
+  border-radius: 4px;
+  border: 2px solid var(--swatch);
+  background: var(--swatch);
+  cursor: pointer;
+  transition: background 0.12s ease;
+}
+
+.label-row .swatch-btn.hollow {
+  background: transparent;
+}
+
+.label-row .label-jump {
+  appearance: none;
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 2px 0;
   background: none;
   border: none;
-  border-radius: 6px;
   color: var(--text-0);
   font: inherit;
   font-size: 11px;
@@ -398,19 +434,25 @@ body {
   cursor: pointer;
 }
 
-.label-row:hover {
-  background: var(--bg-2);
+.label-row .label-jump:disabled {
+  cursor: default;
+  opacity: 0.5;
 }
 
-.label-row.off {
-  opacity: 0.4;
+.label-row .label-jump:not(:disabled):hover .label-name {
+  color: var(--accent-strong);
 }
 
-.label-row .swatch {
-  width: 10px;
-  height: 10px;
-  border-radius: 3px;
+.label-row .id-chip {
   flex: none;
+  min-width: 22px;
+  padding: 0 4px;
+  border-radius: 5px;
+  background: var(--bg-2);
+  color: var(--text-2);
+  font-size: 10px;
+  line-height: 15px;
+  text-align: center;
 }
 
 .label-row .label-name {
@@ -419,12 +461,14 @@ body {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  transition: color 0.12s ease;
 }
 
-.label-row .tick {
-  width: 12px;
+.label-row .count {
   flex: none;
-  color: var(--accent-strong);
+  color: var(--text-2);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
 }
 
 .label-empty {
