@@ -265,6 +265,21 @@ export function pickInitialPreset(vol: Volume): Exclude<Preset, 'custom'> {
   return 'auto'
 }
 
+/** Voxel-count fields stay whole (fractional margins would corrupt integer
+ * box geometry) and grow's seed (high) stays >= boundary (low). `edited`
+ * names the threshold the caller changed; on a crossing the other follows,
+ * so the panel always shows exactly what will be computed. */
+export function normalizeSegParams(p: SegParams, edited: 'low' | 'high'): SegParams {
+  const out = { ...p }
+  if (out.growMargin !== null) out.growMargin = Math.max(0, Math.round(out.growMargin))
+  out.minVoxels = Math.max(1, Math.round(out.minVoxels))
+  if (out.low > out.high) {
+    if (edited === 'high') out.low = out.high
+    else out.high = out.low
+  }
+  return out
+}
+
 /** The runaway-flood safety cap applies only where the flood may roam the
  * whole volume (grow with a constraint or unlimited reach); a user-drawn box
  * (threshold) or grow margin already bounds the work, and truncating those
@@ -346,8 +361,10 @@ export const useStore = create<AppState>()((set, get) => {
       box,
       bounds,
       {
-        low: p.method === 'threshold' ? p.low : Math.min(p.low, p.high),
-        high: p.method === 'threshold' ? p.low : Math.max(p.low, p.high),
+        // normalizeSegParams keeps high >= low, so no silent swap here —
+        // the panel's values are exactly what the engine receives.
+        low: p.low,
+        high: p.method === 'threshold' ? p.low : p.high,
         connectivity: p.connectivity,
         minVoxels: p.minVoxels,
         maxVoxels: floodCap(p, constraint !== null)
@@ -590,7 +607,7 @@ export const useStore = create<AppState>()((set, get) => {
       // Thresholds live on fixed tuning scales, so a new box only refreshes
       // what is box-derived: grow's seed level.
       if (s.segParams.method === 'grow') {
-        set({ segParams: { ...s.segParams, high: seedFromBox() } })
+        set({ segParams: normalizeSegParams({ ...s.segParams, high: seedFromBox() }, 'high') })
       }
       schedulePreview()
     },
@@ -607,7 +624,10 @@ export const useStore = create<AppState>()((set, get) => {
         low = clampTo(p.low, GROW_BOUNDARY_RANGE)
         high = seedFromBox()
       }
-      set({ segParams: { ...p, ...METHOD_DEFAULTS[m], low, high, method: m } })
+      // The seed comes from the box data, so on a crossing it wins.
+      set({
+        segParams: normalizeSegParams({ ...p, ...METHOD_DEFAULTS[m], low, high, method: m }, 'high')
+      })
       if (get().segBox) schedulePreview()
     },
 
@@ -636,7 +656,8 @@ export const useStore = create<AppState>()((set, get) => {
     },
 
     setSegParams: (patch) => {
-      set((s) => ({ segParams: { ...s.segParams, ...patch } }))
+      const edited = patch.high !== undefined && patch.low === undefined ? 'high' : 'low'
+      set((s) => ({ segParams: normalizeSegParams({ ...s.segParams, ...patch }, edited) }))
       if (get().segBox) schedulePreview()
     },
 

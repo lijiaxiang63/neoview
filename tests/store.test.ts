@@ -247,6 +247,27 @@ describe('regions', () => {
     expect(floodCap(p({ method: 'grow', growMargin: 20 }), true)).toBe(MAX_RESULT_VOXELS)
   })
 
+  it('setSegParams keeps voxel-count fields whole', () => {
+    useStore.getState().setVolume(segVolume())
+    useStore.getState().setSegParams({ growMargin: 2.5, minVoxels: 0.4 })
+    expect(useStore.getState().segParams.growMargin).toBe(3)
+    expect(useStore.getState().segParams.minVoxels).toBe(1)
+    useStore.getState().setSegParams({ growMargin: null })
+    expect(useStore.getState().segParams.growMargin).toBeNull()
+  })
+
+  it('grow thresholds never cross: the edited side drags the other', () => {
+    useStore.getState().setVolume(segVolume())
+    const base = useStore.getState().segParams
+    useStore.setState({ segParams: { ...base, method: 'grow', low: 60, high: 300 } })
+    // Lowering the seed below the boundary pulls the boundary down with it.
+    useStore.getState().setSegParams({ high: 45 })
+    expect(useStore.getState().segParams).toMatchObject({ low: 45, high: 45 })
+    // Raising the boundary above the seed pushes the seed up.
+    useStore.getState().setSegParams({ low: 70 })
+    expect(useStore.getState().segParams).toMatchObject({ low: 70, high: 70 })
+  })
+
   it('commit within the preview debounce window applies the fresh mask', () => {
     useStore.getState().setVolume(segVolume())
     const params = useStore.getState().segParams
