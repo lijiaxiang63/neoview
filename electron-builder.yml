@@ -31,8 +31,10 @@ mac:
   entitlementsInherit: build/entitlements.mac.plist
   identity: '-'
   notarize: false
+# Arch in the name so the in-app updater never offers an arm64 dmg to an Intel
+# Mac (or vice versa); the checker keys off the arch token in the asset name.
 dmg:
-  artifactName: ${name}-${version}.${ext}
+  artifactName: ${name}-${version}-${arch}.${ext}
 linux:
   target:
     - AppImage

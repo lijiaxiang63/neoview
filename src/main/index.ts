@@ -2,6 +2,7 @@ import { app, shell, dialog, BrowserWindow, Menu, ipcMain } from 'electron'
 import { join, resolve, sep } from 'path'
 import { promises as fs } from 'fs'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
+import { autoCheckEnabled, checkForUpdates, initUpdater, setAutoCheck } from './update'
 import icon from '../../resources/icon.png?asset'
 
 const MAX_FILE_BYTES = 2 * 1024 ** 3
@@ -194,8 +195,41 @@ async function pickAndReadFile(win: BrowserWindow): Promise<OpenedFile | null> {
 
 function buildMenu(getWindow: () => BrowserWindow | null): void {
   const isMac = process.platform === 'darwin'
+  const updateItems: Electron.MenuItemConstructorOptions[] = [
+    {
+      label: 'Check for Updates…',
+      click: () => {
+        const win = getWindow()
+        if (win) void checkForUpdates(win, true)
+      }
+    },
+    {
+      label: 'Check for Updates Automatically',
+      type: 'checkbox',
+      checked: autoCheckEnabled(),
+      click: (item) => setAutoCheck(item.checked)
+    }
+  ]
+  // The default appMenu role has no room for custom items, so spell it out
+  // to slot the update entries in the conventional place.
+  const macAppMenu: Electron.MenuItemConstructorOptions = {
+    label: app.name,
+    submenu: [
+      { role: 'about' },
+      { type: 'separator' },
+      ...updateItems,
+      { type: 'separator' },
+      { role: 'services' },
+      { type: 'separator' },
+      { role: 'hide' },
+      { role: 'hideOthers' },
+      { role: 'unhide' },
+      { type: 'separator' },
+      { role: 'quit' }
+    ]
+  }
   const template: Electron.MenuItemConstructorOptions[] = [
-    ...(isMac ? [{ role: 'appMenu' as const }] : []),
+    ...(isMac ? [macAppMenu] : []),
     {
       label: 'File',
       submenu: [
@@ -226,7 +260,8 @@ function buildMenu(getWindow: () => BrowserWindow | null): void {
     },
     { role: 'editMenu' },
     { role: 'viewMenu' },
-    { role: 'windowMenu' }
+    { role: 'windowMenu' },
+    ...(isMac ? [] : [{ label: 'Help', submenu: updateItems }])
   ]
   Menu.setApplicationMenu(Menu.buildFromTemplate(template))
 }
@@ -433,6 +468,7 @@ if (!gotLock) {
     })
 
     createWindow()
+    initUpdater(() => BrowserWindow.getAllWindows()[0] ?? null)
     buildMenu(() => BrowserWindow.getAllWindows()[0] ?? null)
 
     app.on('activate', function () {

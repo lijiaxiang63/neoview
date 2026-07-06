@@ -60,6 +60,10 @@ User-drawn regions live in one shared `Uint16Array` label map on the base grid (
 
 Rendering is dirty-flag rAF, never a continuous loop. Interaction renders at quarter step count and half backing-store resolution; a 180 ms settle timer re-arms while the pointer is down and only then renders full quality. Camera (`camera.ts` OrbitCamera) is component-local state in `VolumeView.tsx`, not in the store. Context loss is handled (rebuild from cached data on restore).
 
+### Auto-update (main/update.ts)
+
+Zero-dependency updater against the repo's releases. `updateCheck.ts` is the pure, unit-tested half: numeric version compare vs the latest release tag and per-platform/arch asset pick (dmg / setup.exe / AppImage-then-deb; explicit wrong-arch names are rejected). `update.ts` owns settings (`update-settings.json` in userData: `autoCheck`, `skippedVersion`), the streamed download (temp dir, sha256 digest verify when the API provides one, throttled progress events, abortable), and install hand-off: mac/win quit first — the unsaved-edits close veto still applies — and spawn the installer from `will-quit` so it never races the running app; Linux chmods the file and reveals it. The renderer side is a single `UpdateBanner.tsx` (bottom-right, toast-styled) driven by `update-status`/`update-progress` IPC events; manual check and the auto-check toggle live in the app menu (macOS) / Help menu. Auto-check runs once, 10 s after launch, and is silent unless a new version exists; shared payload types sit in `src/preload/updates.d.ts` (type-only, reachable from all three processes).
+
 ### State
 
 `store.ts` (zustand): volume, crosshair, frame, display range `{lo,hi}` shared by 2D and 3D (3D converts via `scaledToNormalized`), render mode/density/brightness (viewing prefs — not reset on file change), preset heuristic on load.

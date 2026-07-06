@@ -1,0 +1,68 @@
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#fefdfb"/>
+      <stop offset="55%" stop-color="#f3f6fb"/>
+      <stop offset="100%" stop-color="#e5ecf8"/>
+    </linearGradient>
+    <linearGradient id="rim" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#ffffff" stop-opacity="0.9"/>
+      <stop offset="30%" stop-color="#ffffff" stop-opacity="0.25"/>
+      <stop offset="100%" stop-color="#aabcdc" stop-opacity="0.35"/>
+    </linearGradient>
+    <linearGradient id="plane" x1="0" y1="0" x2="0.9" y2="1">
+      <stop offset="0%" stop-color="#b3e3f5"/>
+      <stop offset="100%" stop-color="#74c2e6"/>
+    </linearGradient>
+    <linearGradient id="faceTop" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#fbfdff"/>
+      <stop offset="100%" stop-color="#eef3fc"/>
+    </linearGradient>
+    <filter id="blurM" x="-80%" y="-80%" width="260%" height="260%">
+      <feGaussianBlur stdDeviation="16"/>
+    </filter>
+    <filter id="blurL" x="-100%" y="-100%" width="300%" height="300%">
+      <feGaussianBlur stdDeviation="40"/>
+    </filter>
+    <clipPath id="plate">
+      <rect x="100" y="100" width="824" height="824" rx="185"/>
+    </clipPath>
+    <clipPath id="cube">
+      <path d="M512,202 L780.47,357 L780.47,667 L512,822 L243.53,667 L243.53,357 Z"/>
+    </clipPath>
+  </defs>
+
+  <rect x="108" y="122" width="808" height="808" rx="182" fill="#5a6f9a" opacity="0.28" filter="url(#blurM)"/>
+  <rect x="100" y="100" width="824" height="824" rx="185" fill="url(#bg)"/>
+
+  <g clip-path="url(#plate)">
+    <ellipse cx="512" cy="560" rx="360" ry="300" fill="#bcd6f0" opacity="0.35" filter="url(#blurL)"/>
+
+    <!-- soft pastel cube -->
+    <path d="M512,202 L780.47,357 L512,512 L243.53,357 Z" fill="url(#faceTop)"/>
+    <path d="M243.53,357 L512,512 L512,822 L243.53,667 Z" fill="#dfe7f6"/>
+    <path d="M780.47,357 L780.47,667 L512,822 L512,512 Z" fill="#cfdaef"/>
+
+    <!-- slice plane shadow inside the cube -->
+    <g clip-path="url(#cube)">
+      <path d="M512,362 L823.4,542 L512,722 L200.6,542 Z" fill="#5c719f" opacity="0.20" filter="url(#blurM)"/>
+    </g>
+
+    <path d="M512,202 L780.47,357 L780.47,667 L512,822 L243.53,667 L243.53,357 Z"
+          fill="none" stroke="#93a3c7" stroke-width="6" stroke-linejoin="round" opacity="0.9"/>
+
+    <!-- slice plane -->
+    <path d="M512,332.2 L823.4,512 L512,691.8 L200.6,512 Z"
+          fill="url(#plane)" fill-opacity="0.82"
+          stroke="#61b1da" stroke-width="5" stroke-linejoin="round"/>
+    <path d="M512,332.2 L823.4,512 L512,691.8 L200.6,512 Z"
+          fill="none" stroke="#ffffff" stroke-width="2" stroke-linejoin="round" opacity="0.5"/>
+
+    <!-- crosshair dot -->
+    <circle cx="512" cy="512" r="34" fill="#ffffff" opacity="0.8" filter="url(#blurM)"/>
+    <circle cx="512" cy="512" r="15" fill="#ff9d7e"/>
+    <circle cx="512" cy="512" r="15" fill="none" stroke="#ffffff" stroke-width="4.5"/>
+  </g>
+
+  <rect x="102.5" y="102.5" width="819" height="819" rx="183" fill="none" stroke="url(#rim)" stroke-width="5"/>
+</svg>

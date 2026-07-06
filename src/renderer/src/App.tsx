@@ -13,6 +13,7 @@ import { StatusBar } from './components/StatusBar'
 import { EmptyState } from './components/EmptyState'
 import { FilePanel } from './components/FilePanel'
 import { Toast } from './components/Toast'
+import { UpdateBanner } from './components/UpdateBanner'
 
 /** 'auto' routes to an overlay layer when a base volume is already loaded. */
 type LoadTarget = 'base' | 'overlay' | 'auto'
@@ -155,6 +156,8 @@ export default function App(): JSX.Element {
     const offClose = window.neoview.onCloseRequested(() => {
       if (confirmDiscardRegionWork()) {
         window.neoview.confirmClose()
+      } else {
+        window.neoview.cancelClose()
       }
     })
     return () => {
@@ -310,6 +313,7 @@ export default function App(): JSX.Element {
       </main>
       <StatusBar />
       <Toast />
+      <UpdateBanner />
       {dragging &&
         (hasVolume ? (
           <div className="drag-overlay split">
