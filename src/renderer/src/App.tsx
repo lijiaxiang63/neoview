@@ -72,12 +72,25 @@ async function loadFromBuffer(
     } else {
       const volume = await loadVolume(name, buf)
       if (gen !== baseLoadGen) return // a newer base load owns the view
-      if (isStale?.()) return // the caller's intent moved on mid-parse
+      if (isStale?.()) {
+        // The caller's intent moved on mid-parse. Unlike the generation
+        // case there is no newer load running to settle the loading flag
+        // this call raised, so put the store back to rest ourselves.
+        useStore.getState().dismissError()
+        return
+      }
       useStore.getState().setVolume(volume, path)
     }
   } catch (err) {
     // A superseded load's failure is not the current view's problem.
     if (gen !== null && gen !== baseLoadGen) return
+    if (gen !== null && isStale?.()) {
+      // Neither is a stale target's failure (e.g. a corrupt file the user
+      // already scrubbed past): settle the loading flag instead of
+      // reporting an error for a file nobody is waiting on.
+      useStore.getState().dismissError()
+      return
+    }
     useStore.getState().fail(err instanceof Error ? err.message : 'Could not open file.')
   }
 }
