@@ -3,7 +3,8 @@ import { hasUnsavedRegions, useStore } from './store'
 import { MAX_BYTES } from './volume/gunzip'
 import { loadVolume } from './volume/loadVolume'
 import { composeVoxelMap } from './volume/affine'
-import { adjacentIndex, isUnderRoot, sortEntries, type FolderEntry } from './files/folderList'
+import type { Volume } from './volume/types'
+import { LoadCoordinator } from './files/loadCoordinator'
 import { SliceView } from './components/SliceView'
 import { VolumeView } from './components/VolumeView'
 import { SidePanel } from './components/SidePanel'
@@ -35,291 +36,54 @@ function ipcErrorMessage(err: unknown): string {
   return raw.replace(/^Error invoking remote method '[^']+': (Error: )?/, '')
 }
 
-// Every base load takes a fresh generation and checks it again at commit
-// time: parsing takes seconds, and two loads can be in flight at once (a
-// queued folder navigation and an explicit open). Whichever started LAST
-// owns the view — the older parse discards its result instead of
-// committing over it. loadFromBuffer is the only path that replaces the
-// base, so this one gate covers dialog, menu, drop, and folder navigation.
-let baseLoadGen = 0
-
-async function loadFromBuffer(
-  name: string,
-  buf: ArrayBuffer,
-  target: LoadTarget,
-  path: string | null = null,
-  // Extra commit-time veto for callers whose intent can go stale while the
-  // parse runs (folder navigation: the queued target may have moved on —
-  // that does not start another base load, so the generation alone misses it).
-  isStale?: () => boolean
-): Promise<void> {
-  const store = useStore.getState()
-  const asOverlay = target === 'overlay' || (target === 'auto' && store.volume !== null)
-  if (!asOverlay && !confirmDiscardRegionWork()) return
-  const gen = asOverlay ? null : ++baseLoadGen
-  store.startLoading()
-  try {
-    if (asOverlay) {
-      const volume = await loadVolume(name, buf, { skipTex: true })
-      const base = useStore.getState().volume
-      if (!base) {
-        useStore.getState().fail('Load the base volume first.')
-      } else if (!composeVoxelMap(base.affine, volume.affine)) {
-        useStore.getState().fail('Overlay could not be aligned: its affine is not invertible.')
-      } else {
-        useStore.getState().addOverlay(volume)
-      }
+// All load/scan orchestration — who may commit, who settles the loading
+// flag, navigation queueing, prefetching, scan tokens and invalidation —
+// lives in the coordinator, a pure module whose interleavings are
+// unit-tested (tests/loadCoordinator.test.ts). This file only wires its
+// effects to the store, the preload bridge, and the parser.
+const coordinator = new LoadCoordinator<Volume>({
+  snapshot: () => {
+    const s = useStore.getState()
+    return {
+      sourcePath: s.sourcePath,
+      loading: s.loadState === 'loading',
+      scanning: s.folderLoading,
+      folderRoot: s.folder?.root ?? null,
+      folderFiles: s.folder?.files ?? null
+    }
+  },
+  read: (path) => window.neoview.readFile(path),
+  readWithin: (path, maxBytes) => window.neoview.readFileWithin(path, maxBytes),
+  parseBase: (name, bytes) => loadVolume(name, bytes),
+  commitBase: (volume, path) => useStore.getState().setVolume(volume, path),
+  parseAndAddOverlay: async (name, bytes) => {
+    const volume = await loadVolume(name, bytes, { skipTex: true })
+    const base = useStore.getState().volume
+    if (!base) {
+      useStore.getState().fail('Load the base volume first.')
+    } else if (!composeVoxelMap(base.affine, volume.affine)) {
+      useStore.getState().fail('Overlay could not be aligned: its affine is not invertible.')
     } else {
-      const volume = await loadVolume(name, buf)
-      if (gen !== baseLoadGen) return // a newer base load owns the view
-      if (isStale?.()) {
-        // The caller's intent moved on mid-parse. Unlike the generation
-        // case there is no newer load running to settle the loading flag
-        // this call raised, so put the store back to rest ourselves.
-        useStore.getState().dismissError()
-        return
-      }
-      useStore.getState().setVolume(volume, path)
+      useStore.getState().addOverlay(volume)
     }
-  } catch (err) {
-    // A superseded load's failure is not the current view's problem.
-    if (gen !== null && gen !== baseLoadGen) return
-    if (gen !== null && isStale?.()) {
-      // Neither is a stale target's failure (e.g. a corrupt file the user
-      // already scrubbed past): settle the loading flag instead of
-      // reporting an error for a file nobody is waiting on.
-      useStore.getState().dismissError()
-      return
-    }
-    useStore.getState().fail(err instanceof Error ? err.message : 'Could not open file.')
-  }
-}
-
-// ---- Folder navigation --------------------------------------------------
-// Arrow keys repeat much faster than a volume loads, so navigation is a
-// queue of one: key presses only move the target (shown as the pending row
-// in the list); the pump below loads whatever the target is once the
-// current load settles, discarding reads that went stale along the way.
-// Holding a key therefore scrubs to a destination instead of grinding
-// through every file in between.
-let queuedPath: string | null = null
-let entryPumpActive = false
-
-// One-slot byte cache for the file the next key press most likely wants
-// (the neighbor in the last direction travelled). Consuming a hit skips the
-// disk read — the slowest step on external drives.
-let prefetched: { path: string; bytes: ArrayBuffer } | null = null
-let prefetchActive = false
-let lastDelta: 1 | -1 = 1
-// Bigger prefetches are dropped: the read still warmed the OS page cache,
-// so the real read stays fast without pinning huge buffers.
-const PREFETCH_KEEP_MAX = 512 * 1024 * 1024
-
-// The folder closing (e.g. an outside file replaced it) releases the cached
-// bytes instead of pinning them until the next navigation.
-useStore.subscribe((s) => {
-  if (s.folder === null) prefetched = null
+  },
+  confirmReplaceBase: confirmDiscardRegionWork,
+  raiseLoading: () => useStore.getState().startLoading(),
+  dismissLoading: () => useStore.getState().dismissError(),
+  failParse: (err) =>
+    useStore.getState().fail(err instanceof Error ? err.message : 'Could not open file.'),
+  failRead: (err) => useStore.getState().fail(ipcErrorMessage(err)),
+  setPending: (p) => useStore.getState().setPendingFilePath(p),
+  setFolder: (f) => useStore.getState().setFolder(f),
+  appendFolder: (root, files) => useStore.getState().appendFolderFiles(root, files),
+  setScanning: (b) => useStore.getState().setFolderLoading(b)
 })
 
-function requestFolderEntry(entry: FolderEntry): void {
-  queuedPath = entry.path
-  useStore.getState().setPendingFilePath(entry.path)
-  void pumpEntryLoads()
-}
-
-async function pumpEntryLoads(): Promise<void> {
-  if (entryPumpActive) return
-  entryPumpActive = true
-  try {
-    while (queuedPath) {
-      const st = useStore.getState()
-      const path = queuedPath
-      if (path === st.sourcePath) break
-      // An explicit open already parsing wins over queued navigation. This
-      // must sit before the prefetch branch: cached bytes skip the read
-      // (and its post-await re-checks), and without this a cache hit would
-      // grab a newer load generation and stale the user's own open.
-      if (st.loadState === 'loading') break
-      const entry = st.folder?.files.find((f) => f.path === path)
-      if (!entry) break
-      try {
-        let opened: { name: string; path: string; bytes: ArrayBuffer }
-        if (prefetched && prefetched.path === path) {
-          opened = { name: entry.name, path, bytes: prefetched.bytes }
-          prefetched = null // the load transfers the buffer away
-        } else {
-          opened = await window.neoview.readFile(path)
-          // The target moved on while this file was being read: drop the
-          // bytes unparsed and chase the newer target.
-          if (queuedPath !== path) continue
-          // An explicit open may have started or landed meanwhile — the
-          // user's choice wins over stale folder navigation.
-          const now = useStore.getState()
-          if (
-            now.loadState === 'loading' ||
-            now.sourcePath !== st.sourcePath ||
-            !now.folder?.files.some((f) => f.path === path)
-          ) {
-            break
-          }
-        }
-        // The veto keeps a slow parse from flashing an intermediate file
-        // when the queued target moved on (prefetched bytes skip the read,
-        // so the pre-parse checks alone cannot catch that).
-        await loadFromBuffer(opened.name, opened.bytes, 'base', opened.path, () => {
-          return queuedPath !== path
-        })
-      } catch (err) {
-        useStore.getState().fail(ipcErrorMessage(err))
-        break
-      }
-      if (queuedPath === path) break
-    }
-  } finally {
-    queuedPath = null
-    entryPumpActive = false
-    useStore.getState().setPendingFilePath(null)
-    schedulePrefetch()
-  }
-}
-
-/** After navigation settles, read the neighbor in the direction of travel so
- * the next key press starts from parsing instead of the disk. */
-function schedulePrefetch(): void {
-  if (prefetchActive) return
-  const st = useStore.getState()
-  if (!st.folder || st.sourcePath === null) return
-  const idx = adjacentIndex(st.folder.files, st.sourcePath, lastDelta)
-  if (idx === null) return
-  const target = st.folder.files[idx]
-  if (prefetched?.path === target.path) return
-  prefetchActive = true
-  window.neoview
-    .readFile(target.path)
-    .then((opened) => {
-      const cur = useStore.getState()
-      const relevant = cur.folder?.files.some((f) => f.path === opened.path) ?? false
-      if (relevant && opened.bytes.byteLength <= PREFETCH_KEEP_MAX) {
-        prefetched = { path: opened.path, bytes: opened.bytes }
-      }
-    })
-    .catch(() => {
-      // Prefetch is opportunistic; the real read will surface any error.
-    })
-    .finally(() => {
-      prefetchActive = false
-    })
-}
-
-/** Move the navigation target to the previous/next file (no wrap). */
-function navigateFolder(delta: 1 | -1): void {
-  const s = useStore.getState()
-  if (!s.folder) return
-  lastDelta = delta
-  const idx = adjacentIndex(s.folder.files, queuedPath ?? s.sourcePath, delta)
-  if (idx !== null) requestFolderEntry(s.folder.files[idx])
-}
-
-// Bumped whenever a scan starts or is abandoned. Doubles as the scan token:
-// the main process echoes it in every progress batch, so anything not
-// carrying the current generation is a superseded scan and gets ignored.
-let scanGen = 0
-// Armed when a scan starts; the first non-empty view of the folder consumes
-// it, so the folder's first file loads exactly once (batches keep streaming
-// afterwards without re-prompting anyone who declined the region confirm).
-let folderAutoLoad = false
-
-/** An explicit user action (File > Open, a drop) supersedes a running scan:
- * its remaining batches and final result are ignored rather than fighting
- * the user's choice. The main-process scan just runs out harmlessly. */
-function abandonActiveScan(): void {
-  scanGen++
-  folderAutoLoad = false
-  useStore.getState().setFolderLoading(false)
-}
-
-// The scan generation whose in-flight-load invalidation already ran, so it
-// happens exactly once per scan — and only once the scan is REAL (a folder
-// was picked / the drop was a directory). Invalidating at scan start would
-// let a canceled picker kill an unrelated parse.
-let invalidatedScanGen = 0
-
-/** A confirmed scan is about to publish its folder: stop the pump chasing
- * old targets and invalidate any base parse still in flight, so it cannot
- * commit later and (as an "outside" file) clear the new folder. */
-function invalidateInFlightLoadsOnce(): void {
-  if (invalidatedScanGen === scanGen) return
-  invalidatedScanGen = scanGen
-  queuedPath = null
-  baseLoadGen++
-  // The invalidated parse returns silently, and this scan may trigger no
-  // load of its own (empty folder, current file already inside) — settle
-  // the ownerless loading flag now rather than leaving it raised forever.
-  if (useStore.getState().loadState === 'loading') useStore.getState().dismissError()
-}
-
-function maybeAutoLoad(final: boolean): void {
-  if (!folderAutoLoad) return
-  const st = useStore.getState()
-  if (!st.folder || st.folder.files.length === 0) return
-  const src = st.sourcePath
-  // A loaded file that sits under the root may simply not have streamed in
-  // yet — deciding to replace it belongs to the final scan, not a batch.
-  if (!final && src !== null && isUnderRoot(st.folder.root, src)) return
-  folderAutoLoad = false
-  if (!st.folder.files.some((f) => f.path === src)) {
-    requestFolderEntry(st.folder.files[0])
-  }
-}
-
-/** A streamed scan batch arrived: create or grow the folder it belongs to.
- * The token gate is what keeps a superseded scan (still streaming in the
- * main process) from mutating the list the newer scan now owns. */
-function onScanBatch(token: number, root: string, files: FolderEntry[]): void {
-  if (token !== scanGen) return
-  invalidateInFlightLoadsOnce()
-  const st = useStore.getState()
-  if (st.folder && st.folder.root === root) {
-    st.appendFolderFiles(root, files)
-  } else {
-    st.setFolder({ root, files: sortEntries(files), truncated: false })
-  }
-  maybeAutoLoad(false)
-}
-
-/** Run a scan into folder mode; false when the source is not a directory.
- * The list fills from streamed batches while the scan runs; the resolved
- * scan is the authoritative final state (unless the scan was abandoned). */
-async function scanIntoFolder(
-  scan: (token: number) => Promise<{
-    root: string
-    files: FolderEntry[]
-    truncated: boolean
-  } | null>
-): Promise<boolean> {
-  const gen = ++scanGen
-  folderAutoLoad = true
-  useStore.getState().setFolderLoading(true)
-  try {
-    const result = await scan(gen)
-    if (gen !== scanGen) return true // superseded by an explicit open
-    if (!result) return false
-    // Covers scans that produced no batches (e.g. an empty folder).
-    invalidateInFlightLoadsOnce()
-    useStore.getState().setFolder({
-      root: result.root,
-      files: sortEntries(result.files),
-      truncated: result.truncated
-    })
-    maybeAutoLoad(true)
-    return true
-  } finally {
-    if (gen === scanGen) {
-      folderAutoLoad = false
-      useStore.getState().setFolderLoading(false)
-    }
-  }
-}
+// The folder closing (e.g. an outside file replaced it) releases the cached
+// prefetch bytes instead of pinning them until the next navigation.
+useStore.subscribe((s) => {
+  if (s.folder === null) coordinator.releasePrefetch()
+})
 
 // Covers the picker as well as the scan, so a double-click on the button (or
 // button + menu) cannot stack two dialogs.
@@ -331,7 +95,7 @@ async function openFolderViaDialog(): Promise<void> {
   if (folderFlowActive || useStore.getState().folderLoading) return
   folderFlowActive = true
   try {
-    await scanIntoFolder((token) => window.neoview.openFolderScan(token))
+    await coordinator.scanFolder((token) => window.neoview.openFolderScan(token))
   } catch (err) {
     useStore.getState().fail(ipcErrorMessage(err))
   } finally {
@@ -362,24 +126,19 @@ export default function App(): JSX.Element {
   const openDialog = useCallback(async () => {
     const opened = await window.neoview.openDialog()
     if (!opened) return
-    // A completed explicit pick wins over a folder scan still in flight.
-    if (useStore.getState().folderLoading) abandonActiveScan()
-    await loadFromBuffer(opened.name, opened.bytes, 'base', opened.path)
+    await coordinator.openBase(opened.name, opened.bytes, opened.path)
   }, [])
 
   const addOverlayViaDialog = useCallback(async () => {
     const opened = await window.neoview.openDialog()
-    if (opened) await loadFromBuffer(opened.name, opened.bytes, 'overlay')
+    if (opened) await coordinator.openOverlay(opened.name, opened.bytes)
   }, [])
 
   const openFolder = useCallback(() => void openFolderViaDialog(), [])
 
   useEffect(() => {
     const offOpened = window.neoview.onFileOpened((file) => {
-      // File > Open completed while a folder scan was running: the explicit
-      // pick wins — the scan is abandoned, never the user's file.
-      if (useStore.getState().folderLoading) abandonActiveScan()
-      void loadFromBuffer(file.name, file.bytes, 'base', file.path)
+      void coordinator.openBase(file.name, file.bytes, file.path)
     })
     const offError = window.neoview.onFileOpenError((message) => {
       useStore.getState().fail(message)
@@ -387,7 +146,9 @@ export default function App(): JSX.Element {
     const offFolder = window.neoview.onOpenFolderRequest(() => {
       void openFolderViaDialog()
     })
-    const offScan = window.neoview.onScanFolderProgress(onScanBatch)
+    const offScan = window.neoview.onScanFolderProgress((token, root, files) =>
+      coordinator.onScanBatch(token, root, files)
+    )
     // The main process holds every close until the renderer confirms, so
     // unexported region edits — and a drawn-but-uncommitted box — get a
     // chance to veto it (same guard as replacing the base volume).
@@ -427,7 +188,7 @@ export default function App(): JSX.Element {
       } else if (e.key === ']') {
         st.setBrushRadius(st.brushRadius + 1)
       } else if ((e.key === 'ArrowDown' || e.key === 'ArrowUp') && st.folder) {
-        navigateFolder(e.key === 'ArrowDown' ? 1 : -1)
+        coordinator.navigate(e.key === 'ArrowDown' ? 1 : -1)
       } else {
         return
       }
@@ -479,11 +240,13 @@ export default function App(): JSX.Element {
       void (async () => {
         // A dropped directory enters folder mode regardless of the drop zone
         // (a fresh scan supersedes any scan already running). The read-only
-        // probe comes first: entering scanIntoFolder marks a running scan
+        // probe comes first: entering scanFolder marks a running scan
         // stale, which a plain-file drop must never do.
         if (path && (await window.neoview.isDirectory(path).catch(() => false))) {
           try {
-            if (await scanIntoFolder((token) => window.neoview.scanDroppedFolder(file, token))) {
+            if (
+              await coordinator.scanFolder((token) => window.neoview.scanDroppedFolder(file, token))
+            ) {
               return
             }
           } catch (err) {
@@ -499,12 +262,11 @@ export default function App(): JSX.Element {
           useStore.getState().fail('File is larger than 2 GB, which is not supported.')
           return
         }
-        // A dropped file that will replace the base wins over a running scan.
-        if (resolvedTarget === 'base' && useStore.getState().folderLoading) {
-          abandonActiveScan()
-        }
         const buf = await file.arrayBuffer()
-        await loadFromBuffer(file.name, buf, resolvedTarget, path)
+        // openBase abandons a still-running scan itself: a dropped file that
+        // replaces the base wins over the scan.
+        if (resolvedTarget === 'base') await coordinator.openBase(file.name, buf, path)
+        else await coordinator.openOverlay(file.name, buf)
       })()
     }
     window.addEventListener('dragenter', onDragEnter)
@@ -531,7 +293,9 @@ export default function App(): JSX.Element {
       <main
         className={`workspace${folderOpen && filePanelOpen ? ' has-files' : ''}${sidebarOpen ? '' : ' sidebar-closed'}${hasMaximized ? ' has-max' : ''}`}
       >
-        {folderOpen && filePanelOpen && <FilePanel onSelect={requestFolderEntry} />}
+        {folderOpen && filePanelOpen && (
+          <FilePanel onSelect={(entry) => coordinator.requestEntry(entry.path)} />
+        )}
         {hasVolume ? (
           <>
             <SliceView view={0} />

@@ -85,6 +85,10 @@ const api = {
   },
   /** Read one file from inside a previously opened folder. */
   readFile: (path: string): Promise<OpenedFile> => ipcRenderer.invoke('read-file', path),
+  /** Read a folder file only when its size is within maxBytes; null otherwise
+   * (the size gate runs main-side, before any bytes cross the boundary). */
+  readFileWithin: (path: string, maxBytes: number): Promise<OpenedFile | null> =>
+    ipcRenderer.invoke('read-file-limited', path, maxBytes),
   /** Absolute path of a dropped File ('' when unavailable). */
   pathForFile: (file: File): string => {
     try {

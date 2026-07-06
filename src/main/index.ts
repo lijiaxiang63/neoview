@@ -382,18 +382,38 @@ if (!gotLock) {
       return p.startsWith(prefix)
     }
 
-    ipcMain.handle('read-file', async (_event, path: string) => {
+    /** Validate a renderer-supplied path for reading: volume extension and
+     * containment in a scanned root. Resolves symlinks before the containment
+     * check, so `<root>/link/...` cannot escape the opened folder (the roots
+     * are stored resolved too). The file is still read and reported under the
+     * requested path: the renderer matches it against the folder list by that
+     * identity. */
+    const authorizeReadPath = async (path: unknown): Promise<string> => {
       if (typeof path !== 'string' || !isVolumeName(path)) {
         throw new Error('Not a .nii or .nii.gz file.')
       }
-      // Resolve symlinks before the containment check, so `<root>/link/...`
-      // cannot escape the opened folder (the roots are stored resolved too).
-      // The file is still read and reported under the requested path: the
-      // renderer matches it against the folder list by that identity.
       const full = resolve(path)
       const real = await fs.realpath(full).catch(() => null)
       const inRoot = real !== null && [...scannedRoots].some((root) => isUnder(root, real))
       if (!inRoot) throw new Error('File is outside the opened folder.')
+      return full
+    }
+
+    ipcMain.handle('read-file', async (_event, path: string) => {
+      return readVolumeFile(await authorizeReadPath(path))
+    })
+
+    // Size-gated read for opportunistic prefetching: the size check runs on
+    // the stat, BEFORE any bytes are read or transferred, so warming a large
+    // neighbor can never allocate a huge buffer behind the user's back.
+    ipcMain.handle('read-file-limited', async (_event, path: string, maxBytes: number) => {
+      const full = await authorizeReadPath(path)
+      const limit =
+        typeof maxBytes === 'number' && Number.isFinite(maxBytes)
+          ? Math.min(Math.max(maxBytes, 0), MAX_FILE_BYTES)
+          : 0
+      const stat = await fs.stat(full)
+      if (stat.size > limit) return null
       return readVolumeFile(full)
     })
 
