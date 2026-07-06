@@ -204,11 +204,15 @@ const HOMEPAGE_URL = 'https://lijiaxiang63.github.io/neoview/'
 const REPO_URL = 'https://github.com/lijiaxiang63/neoview'
 
 /** Read a bundled sample file, labelling it with a fixed display name rather
- * than the asset's (possibly hashed) on-disk name. */
+ * than the asset's (possibly hashed) on-disk name. The path is left empty on
+ * purpose: the asset lives inside the (often read-only) installed app bundle,
+ * so it must not become the renderer's source path — otherwise the region
+ * export flow would default to writing next to it. An empty path routes the
+ * sample through the same "unknown source" handling as a pathless file. */
 async function readBuiltinFile(assetPath: string, name: string): Promise<OpenedFile> {
   const buf = await fs.readFile(assetPath)
   const bytes = buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength)
-  return { name, path: assetPath, bytes }
+  return { name, path: '', bytes }
 }
 
 /** Load a bundled sample into the window over `channel` ('file-opened' for the

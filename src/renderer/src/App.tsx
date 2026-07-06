@@ -176,7 +176,10 @@ export default function App(): JSX.Element {
 
   useEffect(() => {
     const offOpened = window.neoview.onFileOpened((file) => {
-      void coordinator.openBase(file.name, file.bytes, file.path)
+      // A bundled sample arrives with an empty path (no user source); pass null
+      // so region export prompts for a folder instead of defaulting into the
+      // read-only app bundle.
+      void coordinator.openBase(file.name, file.bytes, file.path || null)
     })
     const offOverlay = window.neoview.onOverlayOpened((file) => {
       void coordinator.openOverlay(file.name, file.bytes)
