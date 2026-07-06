@@ -22,13 +22,10 @@
     "test": "vitest run",
     "gen:testdata": "node scripts/make-test-volumes.mjs testdata"
   },
-  "dependencies": {
-    "@electron-toolkit/preload": "^3.0.2",
-    "@electron-toolkit/utils": "^4.0.0",
-    "zustand": "^5.0.14"
-  },
   "devDependencies": {
     "@electron-toolkit/eslint-config-prettier": "^3.0.0",
+    "@electron-toolkit/preload": "^3.0.2",
+    "@electron-toolkit/utils": "^4.0.0",
     "@electron-toolkit/eslint-config-ts": "^3.1.0",
     "@electron-toolkit/tsconfig": "^2.0.0",
     "@types/node": "^22.19.1",
@@ -47,7 +44,8 @@
     "react-dom": "^19.2.1",
     "typescript": "^5.9.3",
     "vite": "^7.2.6",
-    "vitest": "^4.1.9"
+    "vitest": "^4.1.9",
+    "zustand": "^5.0.14"
   },
   "allowScripts": {
     "electron@39.8.10": true,

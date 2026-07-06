@@ -14,6 +14,11 @@ files:
   - '!{tsconfig.json,tsconfig.node.json,tsconfig.web.json}'
 asarUnpack:
   - resources/**
+# Chromium's built-in dialog translations; the app UI itself is English-only.
+electronLanguages:
+  - en
+  - zh_CN
+compression: maximum
 fileAssociations:
   - ext: nii
     name: Volume file
