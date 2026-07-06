@@ -129,6 +129,8 @@ interface AppState {
   folderLoading: boolean
   /** File list visibility; the folder stays open while the panel is hidden. */
   filePanelOpen: boolean
+  /** Side panel visibility (a viewing pref — survives file changes). */
+  sidePanelOpen: boolean
   /** Navigation target still being read/loaded (arrow-key scrubbing). */
   pendingFilePath: string | null
   loadState: 'empty' | 'loading' | 'ready' | 'error'
@@ -182,6 +184,7 @@ interface AppState {
   closeFolder: () => void
   setFolderLoading: (b: boolean) => void
   toggleFilePanel: () => void
+  toggleSidePanel: () => void
   setPendingFilePath: (p: string | null) => void
   addOverlay: (v: Volume) => void
   removeOverlay: (id: number) => void
@@ -439,6 +442,7 @@ export const useStore = create<AppState>()((set, get) => {
     folder: null,
     folderLoading: false,
     filePanelOpen: true,
+    sidePanelOpen: true,
     pendingFilePath: null,
     loadState: 'empty',
     errorMessage: null,
@@ -491,6 +495,8 @@ export const useStore = create<AppState>()((set, get) => {
     setFolderLoading: (b) => set({ folderLoading: b }),
 
     toggleFilePanel: () => set((s) => ({ filePanelOpen: !s.filePanelOpen })),
+
+    toggleSidePanel: () => set((s) => ({ sidePanelOpen: !s.sidePanelOpen })),
 
     setPendingFilePath: (p) => set({ pendingFilePath: p }),
 

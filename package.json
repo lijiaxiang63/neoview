@@ -4,7 +4,7 @@
   "description": "Cross-platform desktop volume viewer",
   "main": "./out/main/index.js",
   "author": "neoview",
-  "homepage": "https://electron-vite.org",
+  "homepage": "https://lijiaxiang63.github.io/neoview/",
   "scripts": {
     "format": "prettier --write .",
     "lint": "eslint --cache .",

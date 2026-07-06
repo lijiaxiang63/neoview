@@ -8,7 +8,6 @@ import { LoadCoordinator } from './files/loadCoordinator'
 import { SliceView } from './components/SliceView'
 import { VolumeView } from './components/VolumeView'
 import { SidePanel } from './components/SidePanel'
-import { Toolbar } from './components/Toolbar'
 import { StatusBar } from './components/StatusBar'
 import { EmptyState } from './components/EmptyState'
 import { FilePanel } from './components/FilePanel'
@@ -114,13 +113,14 @@ export default function App(): JSX.Element {
   const errorMessage = useStore((s) => s.errorMessage)
   const dismissError = useStore((s) => s.dismissError)
   const hasVolume = useStore((s) => s.volume !== null)
+  const volumeName = useStore((s) => s.volume?.name ?? null)
   const hasMaximized = useStore((s) => s.maximizedView !== null)
   const folderOpen = useStore((s) => s.folder !== null)
   const folderLoading = useStore((s) => s.folderLoading)
   const filePanelOpen = useStore((s) => s.filePanelOpen)
+  const sidebarOpen = useStore((s) => s.sidePanelOpen)
   const [dragging, setDragging] = useState(false)
   const [dropTarget, setDropTarget] = useState<LoadTarget>('auto')
-  const [sidebarOpen, setSidebarOpen] = useState(true)
 
   // Explicit Open always replaces the base volume (the one way to swap it);
   // drops route to an overlay layer whenever a base is already present.
@@ -136,6 +136,43 @@ export default function App(): JSX.Element {
   }, [])
 
   const openFolder = useCallback(() => void openFolderViaDialog(), [])
+
+  // The title bar is the only place the loaded file's name shows now that
+  // there is no in-app toolbar.
+  useEffect(() => {
+    document.title = volumeName ? `${volumeName} — neoview` : 'neoview'
+  }, [volumeName])
+
+  // The View menu drives the panel toggles; every relevant store change is
+  // mirrored back so the menu's checkboxes (and enabled state) track it.
+  useEffect(() => {
+    const offFilePanel = window.neoview.onToggleFilePanel(() =>
+      useStore.getState().toggleFilePanel()
+    )
+    const offSidePanel = window.neoview.onToggleSidePanel(() =>
+      useStore.getState().toggleSidePanel()
+    )
+    let last = ''
+    const sync = (): void => {
+      const s = useStore.getState()
+      const state = {
+        fileList: s.filePanelOpen,
+        sidePanel: s.sidePanelOpen,
+        folderOpen: s.folder !== null
+      }
+      const key = `${state.fileList}|${state.sidePanel}|${state.folderOpen}`
+      if (key === last) return
+      last = key
+      window.neoview.sendViewState(state)
+    }
+    sync()
+    const unsub = useStore.subscribe(sync)
+    return () => {
+      offFilePanel()
+      offSidePanel()
+      unsub()
+    }
+  }, [])
 
   useEffect(() => {
     const offOpened = window.neoview.onFileOpened((file) => {
@@ -287,12 +324,6 @@ export default function App(): JSX.Element {
   return (
     <div className="app">
       {(loadState === 'loading' || folderLoading) && <div className="loading-bar" />}
-      <Toolbar
-        onOpen={openDialog}
-        onOpenFolder={openFolder}
-        sidebarOpen={sidebarOpen}
-        onToggleSidebar={() => setSidebarOpen((v) => !v)}
-      />
       <main
         className={`workspace${folderOpen && filePanelOpen ? ' has-files' : ''}${sidebarOpen ? '' : ' sidebar-closed'}${hasMaximized ? ' has-max' : ''}`}
       >

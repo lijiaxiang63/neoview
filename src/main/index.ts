@@ -1,10 +1,24 @@
-import { app, shell, dialog, BrowserWindow, Menu, ipcMain, nativeTheme } from 'electron'
+import {
+  app,
+  shell,
+  dialog,
+  BrowserWindow,
+  Menu,
+  ipcMain,
+  nativeTheme,
+  systemPreferences
+} from 'electron'
 import { join, resolve, sep } from 'path'
 import { promises as fs } from 'fs'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import { autoCheckEnabled, checkForUpdates, initUpdater, setAutoCheck } from './update'
 import icon from '../../resources/icon.png?asset'
 import iconLight from '../../resources/icon-light.png?asset'
+
+// The app UI is dark-only; forcing the native theme makes all window chrome
+// (title bar, menu bar, popup menus, dialogs) render dark to match, instead
+// of following the OS setting.
+nativeTheme.themeSource = 'dark'
 
 const MAX_FILE_BYTES = 2 * 1024 ** 3
 
@@ -182,6 +196,9 @@ async function writeExport(req: ExportRequest): Promise<ExportResult> {
   return { path, sidecarPath }
 }
 
+const HOMEPAGE_URL = 'https://lijiaxiang63.github.io/neoview/'
+const REPO_URL = 'https://github.com/lijiaxiang63/neoview'
+
 async function pickAndReadFile(win: BrowserWindow): Promise<OpenedFile | null> {
   const result = await dialog.showOpenDialog(win, {
     properties: ['openFile'],
@@ -196,6 +213,20 @@ async function pickAndReadFile(win: BrowserWindow): Promise<OpenedFile | null> {
 
 function buildMenu(getWindow: () => BrowserWindow | null): void {
   const isMac = process.platform === 'darwin'
+  // Feeds the 'about' role on every platform (macOS ignores iconPath and
+  // uses the app icon; Windows/Linux show the Electron-drawn panel).
+  app.setAboutPanelOptions({
+    applicationName: app.name,
+    applicationVersion: app.getVersion(),
+    credits: 'Made with ♥ by jiaxiang',
+    authors: ['jiaxiang'],
+    website: HOMEPAGE_URL,
+    iconPath: icon
+  })
+  const linkItems: Electron.MenuItemConstructorOptions[] = [
+    { label: 'Website', click: () => void shell.openExternal(HOMEPAGE_URL) },
+    { label: 'GitHub Repository', click: () => void shell.openExternal(REPO_URL) }
+  ]
   const updateItems: Electron.MenuItemConstructorOptions[] = [
     {
       label: 'Check for Updates…',
@@ -259,10 +290,50 @@ function buildMenu(getWindow: () => BrowserWindow | null): void {
         isMac ? { role: 'close' } : { role: 'quit' }
       ]
     },
-    { role: 'editMenu' },
-    { role: 'viewMenu' },
-    { role: 'windowMenu' },
-    ...(isMac ? [] : [{ label: 'Help', submenu: updateItems }])
+    // Edit/Window only on macOS (clipboard shortcuts in text fields need the
+    // menu roles there); on Windows/Linux they would just widen the menu bar.
+    ...(isMac ? [{ role: 'editMenu' as const }] : []),
+    {
+      label: 'View',
+      submenu: [
+        {
+          id: 'view-file-list',
+          label: 'File List',
+          type: 'checkbox',
+          checked: false,
+          enabled: false,
+          accelerator: 'CmdOrCtrl+Shift+B',
+          click: () => getWindow()?.webContents.send('toggle-file-panel')
+        },
+        {
+          id: 'view-side-panel',
+          label: 'Side Panel',
+          type: 'checkbox',
+          checked: true,
+          accelerator: 'CmdOrCtrl+B',
+          click: () => getWindow()?.webContents.send('toggle-side-panel')
+        },
+        { type: 'separator' },
+        { role: 'togglefullscreen' },
+        { type: 'separator' },
+        { role: 'toggleDevTools' }
+      ]
+    },
+    ...(isMac ? [{ role: 'windowMenu' as const }] : []),
+    // macOS keeps updates/About in the app menu, so Help only carries links;
+    // the 'help' role also gives it the system search field.
+    isMac
+      ? { role: 'help' as const, submenu: linkItems }
+      : {
+          label: 'Help',
+          submenu: [
+            ...linkItems,
+            { type: 'separator' as const },
+            ...updateItems,
+            { type: 'separator' as const },
+            { role: 'about' as const }
+          ]
+        }
   ]
   Menu.setApplicationMenu(Menu.buildFromTemplate(template))
 }
@@ -270,9 +341,15 @@ function buildMenu(getWindow: () => BrowserWindow | null): void {
 // macOS can't switch the installed (Finder/Launchpad) icon by appearance, but
 // the running app's Dock icon can follow the system theme: the light artwork in
 // Light Mode, the dark artwork (same as the shipped .icns) in Dark Mode.
+// nativeTheme is forced to 'dark' app-wide, so the OS setting has to be read
+// directly (shouldUseDarkColors would always report dark).
+function macSystemDark(): boolean {
+  return systemPreferences.getUserDefault('AppleInterfaceStyle', 'string') === 'Dark'
+}
+
 function syncDockIcon(): void {
   if (process.platform !== 'darwin' || !app.dock) return
-  app.dock.setIcon(nativeTheme.shouldUseDarkColors ? icon : iconLight)
+  app.dock.setIcon(macSystemDark() ? icon : iconLight)
 }
 
 function createWindow(): BrowserWindow {
@@ -283,9 +360,6 @@ function createWindow(): BrowserWindow {
     minHeight: 640,
     show: false,
     backgroundColor: '#0b0d10',
-    ...(process.platform === 'darwin'
-      ? { titleBarStyle: 'hiddenInset' as const }
-      : { autoHideMenuBar: false }),
     ...(process.platform === 'linux' ? { icon } : {}),
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
@@ -476,12 +550,34 @@ if (!gotLock) {
       if (typeof path === 'string' && path) shell.showItemInFolder(path)
     })
 
+    // The renderer owns panel visibility; it mirrors every change here so the
+    // View menu's checkboxes track it (including toggles it makes itself).
+    ipcMain.on(
+      'view-state',
+      (_event, state: { fileList: boolean; sidePanel: boolean; folderOpen: boolean }) => {
+        const menu = Menu.getApplicationMenu()
+        const fileList = menu?.getMenuItemById('view-file-list')
+        if (fileList) {
+          fileList.enabled = Boolean(state.folderOpen)
+          fileList.checked = Boolean(state.folderOpen && state.fileList)
+        }
+        const sidePanel = menu?.getMenuItemById('view-side-panel')
+        if (sidePanel) sidePanel.checked = Boolean(state.sidePanel)
+      }
+    )
+
     createWindow()
     initUpdater(() => BrowserWindow.getAllWindows()[0] ?? null)
     buildMenu(() => BrowserWindow.getAllWindows()[0] ?? null)
 
     syncDockIcon()
-    nativeTheme.on('updated', syncDockIcon)
+    // nativeTheme 'updated' won't fire for OS theme changes while themeSource
+    // is pinned, so listen to the system notification instead.
+    if (process.platform === 'darwin') {
+      systemPreferences.subscribeNotification('AppleInterfaceThemeChangedNotification', () =>
+        syncDockIcon()
+      )
+    }
 
     app.on('activate', function () {
       if (BrowserWindow.getAllWindows().length === 0) createWindow()
