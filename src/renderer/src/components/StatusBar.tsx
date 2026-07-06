@@ -35,6 +35,11 @@ export function StatusBar(): JSX.Element {
   const cross = useStore((s) => s.cross)
   const frame = useStore((s) => s.frame)
   const overlays = useStore((s) => s.overlays)
+  const labelMap = useStore((s) => s.labelMap)
+  const regions = useStore((s) => s.regions)
+  // Subscribed so brush strokes refresh the readout even though labelMap
+  // mutates in place.
+  useStore((s) => s.labelMapRev)
 
   if (!volume) {
     return <div className="status-bar">Ready</div>
@@ -73,6 +78,14 @@ export function StatusBar(): JSX.Element {
         <span className="label">value</span>
         <span className="value">{fmt(scaled, 4)}</span>
       </span>
+      {labelMap && regions.length > 0 && (
+        <span className="field">
+          <span className="label">region</span>
+          <span className="value">
+            {regions.find((r) => r.id === labelMap[i * st[0] + j * st[1] + k * st[2]])?.name ?? '—'}
+          </span>
+        </span>
+      )}
       {overlays.map((layer) => (
         <span key={layer.id} className={`field layer-field${layer.visible ? '' : ' muted'}`}>
           <span className="label" title={layer.volume.name}>

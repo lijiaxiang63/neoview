@@ -100,6 +100,63 @@ export function parseLabelTable(buf: ArrayBuffer): Map<number, string> | null {
   return labels.size > 0 ? labels : null
 }
 
+export interface SerializeOptions {
+  dims: [number, number, number]
+  spacing: [number, number, number]
+  /** Row-major 4x4 voxel-to-world matrix; its three rows are written out. */
+  affine: Float64Array
+  /** 2 (uint8) or 512 (uint16). */
+  datatypeCode: 2 | 512
+  data: Uint8Array | Uint16Array
+}
+
+/**
+ * Build a complete single-file volume buffer (uncompressed): 348-byte v1
+ * header, little-endian, matrix-rows transform, data at offset 352. The
+ * inverse of parseVolume for the subset this app writes (3D integer data,
+ * identity value scaling).
+ */
+export function serializeVolume(opts: SerializeOptions): ArrayBuffer {
+  const dtype = DATATYPES[opts.datatypeCode]
+  const [nx, ny, nz] = opts.dims
+  if (opts.data.length !== nx * ny * nz) {
+    throw new Error('Data length does not match the volume extent.')
+  }
+  const buf = new ArrayBuffer(MIN_FILE_SIZE + opts.data.length * dtype.bytes)
+  const dv = new DataView(buf)
+
+  dv.setInt32(OFF_SIZEOF_HDR, HEADER_SIZE, true)
+  dv.setInt16(OFF_DIM, 3, true)
+  const dims = [nx, ny, nz, 1, 1, 1, 1]
+  for (let i = 0; i < 7; i++) dv.setInt16(OFF_DIM + 2 + i * 2, dims[i], true)
+  dv.setInt16(OFF_DATATYPE, opts.datatypeCode, true)
+  dv.setInt16(OFF_BITPIX, dtype.bytes * 8, true)
+  dv.setFloat32(OFF_PIXDIM, 1, true) // qfac
+  for (let i = 0; i < 3; i++) dv.setFloat32(OFF_PIXDIM + 4 + i * 4, opts.spacing[i], true)
+  dv.setFloat32(OFF_VOX_OFFSET, MIN_FILE_SIZE, true)
+  dv.setFloat32(OFF_SCL_SLOPE, 1, true)
+  dv.setFloat32(OFF_SCL_INTER, 0, true)
+  dv.setInt16(OFF_QFORM_CODE, 0, true)
+  dv.setInt16(OFF_SFORM_CODE, 1, true)
+  const rowOffsets = [OFF_SROW_X, OFF_SROW_Y, OFF_SROW_Z]
+  for (let r = 0; r < 3; r++) {
+    for (let c = 0; c < 4; c++) {
+      dv.setFloat32(rowOffsets[r] + c * 4, opts.affine[r * 4 + c], true)
+    }
+  }
+  dv.setUint8(OFF_MAGIC, 0x6e) // n
+  dv.setUint8(OFF_MAGIC + 1, 0x2b) // +
+  dv.setUint8(OFF_MAGIC + 2, 0x31) // 1
+  dv.setUint8(OFF_MAGIC + 3, 0)
+
+  if (opts.data instanceof Uint16Array) {
+    new Uint16Array(buf, MIN_FILE_SIZE, opts.data.length).set(opts.data)
+  } else {
+    new Uint8Array(buf, MIN_FILE_SIZE, opts.data.length).set(opts.data)
+  }
+  return buf
+}
+
 export function parseVolume(name: string, buf: ArrayBuffer): Volume {
   if (buf.byteLength < MIN_FILE_SIZE) {
     throw new ParseError('too-small', 'File is too small to contain a valid header.')

@@ -5,10 +5,14 @@ import {
   BRIGHTNESS_MIN,
   DENSITY_MAX,
   DENSITY_MIN,
+  floodCap,
+  hasUnsavedRegions,
   pickInitialPreset,
   presetRange,
-  useStore
+  useStore,
+  type SegParams
 } from '../src/renderer/src/store'
+import { MAX_RESULT_VOXELS } from '../src/renderer/src/segmentation/segment'
 import type { Volume, VolumeStats } from '../src/renderer/src/volume/types'
 
 function fakeVolume(stats: Partial<VolumeStats>, datatypeCode = 4): Volume {
@@ -145,5 +149,141 @@ describe('overlay layers', () => {
     expect(useStore.getState().overlays.length).toBeGreaterThan(0)
     useStore.getState().setVolume(baseVolume())
     expect(useStore.getState().overlays).toEqual([])
+  })
+})
+
+describe('regions', () => {
+  /** 2x2x2 volume with two frames; frame 1 values sit 100 above frame 0. */
+  function segVolume(): Volume {
+    const n = 8
+    const raw = new Float32Array(n * 2)
+    for (let i = 0; i < n; i++) {
+      raw[i] = i
+      raw[n + i] = i + 100
+    }
+    const vol = fakeVolume({ dataMin: 0, dataMax: 107 })
+    Object.assign(vol, { dims: [2, 2, 2], frames: 2, raw })
+    return vol
+  }
+
+  /** Load segVolume and hand-plant one region (id 1) on voxels 0 and 1. */
+  function seedRegion(): void {
+    useStore.getState().setVolume(segVolume())
+    const labelMap = new Uint16Array(8)
+    labelMap[0] = 1
+    labelMap[1] = 1
+    useStore.setState({
+      labelMap,
+      regions: [
+        {
+          id: 1,
+          name: 'Region 1',
+          color: '#ff0000',
+          visible: true,
+          voxelCount: 2,
+          stats: { min: 0, max: 1, mean: 0.5 }
+        }
+      ],
+      nextRegionId: 2,
+      segDirty: false
+    })
+  }
+
+  it('metadata edits mark the segmentation unsaved', () => {
+    seedRegion()
+    useStore.getState().updateRegion(1, { name: 'renamed' })
+    expect(useStore.getState().segDirty).toBe(true)
+
+    useStore.setState({ segDirty: false })
+    useStore.getState().updateRegion(1, { visible: false })
+    expect(useStore.getState().segDirty).toBe(true)
+  })
+
+  it('setFrame recomputes region stats for the new frame', () => {
+    seedRegion()
+    useStore.getState().setFrame(1)
+    const region = useStore.getState().regions[0]
+    expect(region.stats).toEqual({ min: 100, max: 101, mean: 100.5 })
+    // Stats refresh alone is not an edit.
+    expect(useStore.getState().segDirty).toBe(false)
+  })
+
+  it('deleteRegion clears a constraint pointing at the deleted region', () => {
+    seedRegion()
+    const params = useStore.getState().segParams
+    useStore.setState({ segParams: { ...params, constraint: { type: 'region', regionId: 1 } } })
+    useStore.getState().deleteRegion(1)
+    expect(useStore.getState().segParams.constraint).toEqual({ type: 'none' })
+    expect(useStore.getState().regions).toEqual([])
+  })
+
+  it('deleting the last region still counts as unsaved', () => {
+    seedRegion()
+    useStore.getState().markExported()
+    expect(hasUnsavedRegions()).toBe(false)
+    useStore.getState().deleteRegion(1)
+    expect(useStore.getState().regions).toEqual([])
+    expect(hasUnsavedRegions()).toBe(true)
+  })
+
+  it('floodCap caps only floods whose bounds cover the whole volume', () => {
+    const p = (over: Partial<SegParams>): SegParams => ({
+      method: 'threshold',
+      low: 55,
+      high: 55,
+      connectivity: 26,
+      minVoxels: 3,
+      growMargin: null,
+      constraint: { type: 'none' },
+      ...over
+    })
+    const VOL = 1000
+    // Threshold: never capped, even when the box spans the whole volume.
+    expect(floodCap(p({}), 100, VOL)).toBe(Infinity)
+    expect(floodCap(p({}), VOL, VOL)).toBe(Infinity)
+    // Grow with genuinely partial bounds (margin-dilated box): uncapped.
+    expect(floodCap(p({ method: 'grow', growMargin: 20 }), 400, VOL)).toBe(Infinity)
+    // Grow whose bounds reach the whole volume — unlimited reach,
+    // constraint-bounded, or a margin so large it clamps to the volume.
+    expect(floodCap(p({ method: 'grow' }), VOL, VOL)).toBe(MAX_RESULT_VOXELS)
+    expect(floodCap(p({ method: 'grow', growMargin: 99999 }), VOL, VOL)).toBe(MAX_RESULT_VOXELS)
+  })
+
+  it('setSegParams keeps voxel-count fields whole', () => {
+    useStore.getState().setVolume(segVolume())
+    useStore.getState().setSegParams({ growMargin: 2.5, minVoxels: 0.4 })
+    expect(useStore.getState().segParams.growMargin).toBe(3)
+    expect(useStore.getState().segParams.minVoxels).toBe(1)
+    useStore.getState().setSegParams({ growMargin: null })
+    expect(useStore.getState().segParams.growMargin).toBeNull()
+  })
+
+  it('grow thresholds never cross: the edited side drags the other', () => {
+    useStore.getState().setVolume(segVolume())
+    const base = useStore.getState().segParams
+    useStore.setState({ segParams: { ...base, method: 'grow', low: 60, high: 300 } })
+    // Lowering the seed below the boundary pulls the boundary down with it.
+    useStore.getState().setSegParams({ high: 45 })
+    expect(useStore.getState().segParams).toMatchObject({ low: 45, high: 45 })
+    // Raising the boundary above the seed pushes the seed up.
+    useStore.getState().setSegParams({ low: 70 })
+    expect(useStore.getState().segParams).toMatchObject({ low: 70, high: 70 })
+  })
+
+  it('commit within the preview debounce window applies the fresh mask', () => {
+    useStore.getState().setVolume(segVolume())
+    const params = useStore.getState().segParams
+    useStore.setState({
+      segParams: { ...params, method: 'threshold', low: 3, high: 3, minVoxels: 1 }
+    })
+    // setSegBox only schedules the (90 ms debounced) preview...
+    useStore.getState().setSegBox({ min: [0, 0, 0], max: [1, 1, 1] })
+    expect(useStore.getState().preview).toBeNull()
+    // ...but an immediate commit must not act on the stale (null) preview.
+    useStore.getState().commitPreview()
+    const s = useStore.getState()
+    expect(s.regions.length).toBe(1)
+    expect(s.regions[0].voxelCount).toBe(5) // values 3..7 of 0..7
+    expect(s.segDirty).toBe(true)
   })
 })

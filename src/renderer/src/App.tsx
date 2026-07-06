@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState, type JSX } from 'react'
-import { useStore } from './store'
+import { hasUnsavedRegions, useStore } from './store'
 import { MAX_BYTES } from './volume/gunzip'
 import { loadVolume } from './volume/loadVolume'
 import { composeVoxelMap } from './volume/affine'
@@ -9,13 +9,23 @@ import { SidePanel } from './components/SidePanel'
 import { Toolbar } from './components/Toolbar'
 import { StatusBar } from './components/StatusBar'
 import { EmptyState } from './components/EmptyState'
+import { Toast } from './components/Toast'
 
 /** 'auto' routes to an overlay layer when a base volume is already loaded. */
 type LoadTarget = 'base' | 'overlay' | 'auto'
 
-async function loadFromBuffer(name: string, buf: ArrayBuffer, target: LoadTarget): Promise<void> {
+const UNSAVED_WARNING =
+  'There are region edits that have not been exported. They will be lost. Continue?'
+
+async function loadFromBuffer(
+  name: string,
+  buf: ArrayBuffer,
+  target: LoadTarget,
+  path: string | null = null
+): Promise<void> {
   const store = useStore.getState()
   const asOverlay = target === 'overlay' || (target === 'auto' && store.volume !== null)
+  if (!asOverlay && hasUnsavedRegions() && !window.confirm(UNSAVED_WARNING)) return
   store.startLoading()
   try {
     if (asOverlay) {
@@ -30,7 +40,7 @@ async function loadFromBuffer(name: string, buf: ArrayBuffer, target: LoadTarget
       }
     } else {
       const volume = await loadVolume(name, buf)
-      useStore.getState().setVolume(volume)
+      useStore.getState().setVolume(volume, path)
     }
   } catch (err) {
     useStore.getState().fail(err instanceof Error ? err.message : 'Could not open file.')
@@ -47,6 +57,7 @@ export default function App(): JSX.Element {
   const errorMessage = useStore((s) => s.errorMessage)
   const dismissError = useStore((s) => s.dismissError)
   const hasVolume = useStore((s) => s.volume !== null)
+  const hasMaximized = useStore((s) => s.maximizedView !== null)
   const [dragging, setDragging] = useState(false)
   const [dropTarget, setDropTarget] = useState<LoadTarget>('auto')
   const [sidebarOpen, setSidebarOpen] = useState(true)
@@ -55,7 +66,7 @@ export default function App(): JSX.Element {
   // drops route to an overlay layer whenever a base is already present.
   const openDialog = useCallback(async () => {
     const opened = await window.neoview.openDialog()
-    if (opened) await loadFromBuffer(opened.name, opened.bytes, 'base')
+    if (opened) await loadFromBuffer(opened.name, opened.bytes, 'base', opened.path)
   }, [])
 
   const addOverlayViaDialog = useCallback(async () => {
@@ -65,15 +76,52 @@ export default function App(): JSX.Element {
 
   useEffect(() => {
     const offOpened = window.neoview.onFileOpened((file) => {
-      void loadFromBuffer(file.name, file.bytes, 'base')
+      void loadFromBuffer(file.name, file.bytes, 'base', file.path)
     })
     const offError = window.neoview.onFileOpenError((message) => {
       useStore.getState().fail(message)
     })
+    // The main process holds every close until the renderer confirms, so
+    // unexported region edits get a chance to veto it.
+    const offClose = window.neoview.onCloseRequested(() => {
+      if (!hasUnsavedRegions() || window.confirm(UNSAVED_WARNING)) {
+        window.neoview.confirmClose()
+      }
+    })
     return () => {
       offOpened()
       offError()
+      offClose()
     }
+  }, [])
+
+  // Segmentation keyboard shortcuts (skip while typing in a field).
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent): void => {
+      const tag = (e.target as HTMLElement | null)?.tagName
+      if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return
+      const st = useStore.getState()
+      if (e.key === 'Escape' && st.segBox) {
+        st.cancelSeg()
+      } else if (e.key === 'Escape' && st.maximizedView !== null) {
+        st.toggleMaximized(st.maximizedView)
+      } else if (e.key === 'Enter' && st.segBox) {
+        // No preview guard here: the preview may still be inside its debounce
+        // window; commitPreview folds pending edits in and no-ops on empty.
+        st.commitPreview()
+      } else if (e.key === '[') {
+        st.setBrushRadius(st.brushRadius - 1)
+      } else if (e.key === ']') {
+        st.setBrushRadius(st.brushRadius + 1)
+      } else {
+        return
+      }
+      // A focused control must not also act on the handled keystroke (e.g.
+      // Enter re-activating the Box tool button right after the commit).
+      e.preventDefault()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
   }, [])
 
   useEffect(() => {
@@ -114,7 +162,8 @@ export default function App(): JSX.Element {
         return
       }
       const target = zoneAt(e)
-      void file.arrayBuffer().then((buf) => loadFromBuffer(file.name, buf, target))
+      const path = window.neoview.pathForFile(file) || null
+      void file.arrayBuffer().then((buf) => loadFromBuffer(file.name, buf, target, path))
     }
     window.addEventListener('dragenter', onDragEnter)
     window.addEventListener('dragleave', onDragLeave)
@@ -136,7 +185,9 @@ export default function App(): JSX.Element {
         sidebarOpen={sidebarOpen}
         onToggleSidebar={() => setSidebarOpen((v) => !v)}
       />
-      <main className={`workspace${sidebarOpen ? '' : ' sidebar-closed'}`}>
+      <main
+        className={`workspace${sidebarOpen ? '' : ' sidebar-closed'}${hasMaximized ? ' has-max' : ''}`}
+      >
         {hasVolume ? (
           <>
             <SliceView view={0} />
@@ -150,6 +201,7 @@ export default function App(): JSX.Element {
         )}
       </main>
       <StatusBar />
+      <Toast />
       {dragging &&
         (hasVolume ? (
           <div className="drag-overlay split">
