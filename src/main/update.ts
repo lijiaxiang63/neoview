@@ -157,7 +157,8 @@ let installerPath: string | null = null
 /**
  * Hand off to the downloaded installer as the app quits, so it never races
  * the running instance. Runs on 'will-quit', i.e. only after the renderer's
- * unsaved-edits veto has let the quit through.
+ * unsaved-edits veto has let the quit through. If that veto cancels the quit,
+ * 'close-cancelled' disarms this first so a later unrelated quit stays inert.
  */
 function launchInstallerOnQuit(): void {
   if (!installerPath) return
@@ -202,6 +203,12 @@ export function initUpdater(getWindow: () => BrowserWindow | null): void {
       settings.skippedVersion = version
       saveSettings()
     }
+  })
+
+  // The install hand-off quits via the renderer's close flow; if the user
+  // vetoes that quit, drop the armed installer so it never fires on a later one.
+  ipcMain.on('close-cancelled', () => {
+    installerPath = null
   })
 
   app.on('will-quit', launchInstallerOnQuit)

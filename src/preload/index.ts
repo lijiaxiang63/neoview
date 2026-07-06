@@ -42,13 +42,17 @@ const api = {
   exportFile: (req: ExportRequest): Promise<ExportResult> => ipcRenderer.invoke('export-file', req),
   pickDirectory: (): Promise<string | null> => ipcRenderer.invoke('pick-directory'),
   revealInFolder: (path: string): void => ipcRenderer.send('reveal-in-folder', path),
-  /** Window close was requested; reply with confirmClose() to let it through. */
+  /**
+   * Window close was requested; reply with confirmClose() to let it through,
+   * or cancelClose() when the user declines so the main process can stand down.
+   */
   onCloseRequested: (cb: () => void): (() => void) => {
     const listener = (): void => cb()
     ipcRenderer.on('close-requested', listener)
     return () => ipcRenderer.removeListener('close-requested', listener)
   },
   confirmClose: (): void => ipcRenderer.send('close-confirmed'),
+  cancelClose: (): void => ipcRenderer.send('close-cancelled'),
   platform: process.platform,
   onUpdateStatus: (cb: (status: UpdateStatus) => void): (() => void) => {
     const listener = (_e: Electron.IpcRendererEvent, status: UpdateStatus): void => cb(status)

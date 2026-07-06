@@ -87,6 +87,8 @@ export default function App(): JSX.Element {
     const offClose = window.neoview.onCloseRequested(() => {
       if (!hasUnsavedRegions() || window.confirm(UNSAVED_WARNING)) {
         window.neoview.confirmClose()
+      } else {
+        window.neoview.cancelClose()
       }
     })
     return () => {
