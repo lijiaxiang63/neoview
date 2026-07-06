@@ -135,6 +135,11 @@ async function pumpEntryLoads(): Promise<void> {
       const st = useStore.getState()
       const path = queuedPath
       if (path === st.sourcePath) break
+      // An explicit open already parsing wins over queued navigation. This
+      // must sit before the prefetch branch: cached bytes skip the read
+      // (and its post-await re-checks), and without this a cache hit would
+      // grab a newer load generation and stale the user's own open.
+      if (st.loadState === 'loading') break
       const entry = st.folder?.files.find((f) => f.path === path)
       if (!entry) break
       try {
@@ -272,6 +277,16 @@ async function scanIntoFolder(
   } | null>
 ): Promise<boolean> {
   const gen = ++scanGen
+  // The new folder supersedes navigation within — and loads from — the old
+  // one: stop the pump chasing old targets and invalidate any base parse
+  // still in flight, so it cannot commit later and (as an "outside" file)
+  // clear the folder this scan is about to open.
+  queuedPath = null
+  baseLoadGen++
+  // The invalidated parse returns silently, and this scan may trigger no
+  // load of its own (empty folder, current file already inside) — settle
+  // the ownerless loading flag now rather than leaving it raised forever.
+  if (useStore.getState().loadState === 'loading') useStore.getState().dismissError()
   folderAutoLoad = true
   useStore.getState().setFolderLoading(true)
   try {
