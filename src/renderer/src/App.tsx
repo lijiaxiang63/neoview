@@ -238,6 +238,26 @@ function abandonActiveScan(): void {
   useStore.getState().setFolderLoading(false)
 }
 
+// The scan generation whose in-flight-load invalidation already ran, so it
+// happens exactly once per scan — and only once the scan is REAL (a folder
+// was picked / the drop was a directory). Invalidating at scan start would
+// let a canceled picker kill an unrelated parse.
+let invalidatedScanGen = 0
+
+/** A confirmed scan is about to publish its folder: stop the pump chasing
+ * old targets and invalidate any base parse still in flight, so it cannot
+ * commit later and (as an "outside" file) clear the new folder. */
+function invalidateInFlightLoadsOnce(): void {
+  if (invalidatedScanGen === scanGen) return
+  invalidatedScanGen = scanGen
+  queuedPath = null
+  baseLoadGen++
+  // The invalidated parse returns silently, and this scan may trigger no
+  // load of its own (empty folder, current file already inside) — settle
+  // the ownerless loading flag now rather than leaving it raised forever.
+  if (useStore.getState().loadState === 'loading') useStore.getState().dismissError()
+}
+
 function maybeAutoLoad(final: boolean): void {
   if (!folderAutoLoad) return
   const st = useStore.getState()
@@ -257,6 +277,7 @@ function maybeAutoLoad(final: boolean): void {
  * main process) from mutating the list the newer scan now owns. */
 function onScanBatch(token: number, root: string, files: FolderEntry[]): void {
   if (token !== scanGen) return
+  invalidateInFlightLoadsOnce()
   const st = useStore.getState()
   if (st.folder && st.folder.root === root) {
     st.appendFolderFiles(root, files)
@@ -277,22 +298,14 @@ async function scanIntoFolder(
   } | null>
 ): Promise<boolean> {
   const gen = ++scanGen
-  // The new folder supersedes navigation within — and loads from — the old
-  // one: stop the pump chasing old targets and invalidate any base parse
-  // still in flight, so it cannot commit later and (as an "outside" file)
-  // clear the folder this scan is about to open.
-  queuedPath = null
-  baseLoadGen++
-  // The invalidated parse returns silently, and this scan may trigger no
-  // load of its own (empty folder, current file already inside) — settle
-  // the ownerless loading flag now rather than leaving it raised forever.
-  if (useStore.getState().loadState === 'loading') useStore.getState().dismissError()
   folderAutoLoad = true
   useStore.getState().setFolderLoading(true)
   try {
     const result = await scan(gen)
     if (gen !== scanGen) return true // superseded by an explicit open
     if (!result) return false
+    // Covers scans that produced no batches (e.g. an empty folder).
+    invalidateInFlightLoadsOnce()
     useStore.getState().setFolder({
       root: result.root,
       files: sortEntries(result.files),
@@ -376,9 +389,10 @@ export default function App(): JSX.Element {
     })
     const offScan = window.neoview.onScanFolderProgress(onScanBatch)
     // The main process holds every close until the renderer confirms, so
-    // unexported region edits get a chance to veto it.
+    // unexported region edits — and a drawn-but-uncommitted box — get a
+    // chance to veto it (same guard as replacing the base volume).
     const offClose = window.neoview.onCloseRequested(() => {
-      if (!hasUnsavedRegions() || window.confirm(UNSAVED_WARNING)) {
+      if (confirmDiscardRegionWork()) {
         window.neoview.confirmClose()
       }
     })
