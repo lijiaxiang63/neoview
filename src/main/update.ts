@@ -57,12 +57,23 @@ function sendStatus(win: BrowserWindow, status: UpdateStatus): void {
 const userAgent = (): string => `neoview/${app.getVersion()}`
 
 let checking = false
+// Whether the in-flight check must report its result to a manual caller. A
+// silent auto-check only speaks up on an available update, so a manual request
+// that arrives mid-flight promotes this — otherwise the user gets no reply.
+let reportManual = false
 let pendingUpdate: UpdateInfo | null = null
 
 export async function checkForUpdates(win: BrowserWindow, manual: boolean): Promise<void> {
-  if (checking) return
+  if (checking) {
+    if (manual && !reportManual) {
+      reportManual = true
+      sendStatus(win, { kind: 'checking', manual: true })
+    }
+    return
+  }
   checking = true
-  if (manual) sendStatus(win, { kind: 'checking', manual })
+  reportManual = manual
+  if (reportManual) sendStatus(win, { kind: 'checking', manual: true })
   try {
     const res = await fetch(RELEASE_API, {
       headers: { 'User-Agent': userAgent(), Accept: 'application/vnd.github+json' },
@@ -72,14 +83,14 @@ export async function checkForUpdates(win: BrowserWindow, manual: boolean): Prom
     const release = await res.json()
     const update = findUpdate(release, app.getVersion(), process.platform, process.arch)
     if (!update) {
-      if (manual) sendStatus(win, { kind: 'none', manual, version: app.getVersion() })
-    } else if (!manual && update.version === settings.skippedVersion) {
+      if (reportManual) sendStatus(win, { kind: 'none', manual: true, version: app.getVersion() })
+    } else if (!reportManual && update.version === settings.skippedVersion) {
       // The user skipped this version; stay quiet until the next one.
     } else {
       pendingUpdate = update
       sendStatus(win, {
         kind: 'available',
-        manual,
+        manual: reportManual,
         version: update.version,
         notesUrl: update.notesUrl,
         assetName: update.asset.name,
@@ -87,12 +98,13 @@ export async function checkForUpdates(win: BrowserWindow, manual: boolean): Prom
       })
     }
   } catch (err) {
-    if (manual) {
+    if (reportManual) {
       const message = err instanceof Error ? err.message : 'update check failed'
-      sendStatus(win, { kind: 'error', manual, message })
+      sendStatus(win, { kind: 'error', manual: true, message })
     }
   } finally {
     checking = false
+    reportManual = false
   }
 }
 
