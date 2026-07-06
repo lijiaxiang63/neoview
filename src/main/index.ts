@@ -332,7 +332,9 @@ if (!gotLock) {
       if (!stat?.isDirectory()) return null
       // Registered before the scan: the renderer starts loading streamed
       // files while the scan is still running.
-      scannedRoots.add(resolve(path))
+      // Store the real path: 'read-file' compares real paths so a symlink
+      // inside the tree cannot smuggle reads out of the root.
+      scannedRoots.add(await fs.realpath(path))
       return scanFolder(path, (batch) => {
         if (!event.sender.isDestroyed()) {
           event.sender.send('scan-folder-progress', { root: path, files: batch })
@@ -344,12 +346,19 @@ if (!gotLock) {
       if (typeof path !== 'string' || !isVolumeName(path)) {
         throw new Error('Not a .nii or .nii.gz file.')
       }
+      // Resolve symlinks before the containment check, so `<root>/link/...`
+      // cannot escape the opened folder (the roots are stored resolved too).
+      // The file is still read and reported under the requested path: the
+      // renderer matches it against the folder list by that identity.
       const full = resolve(path)
+      const real = await fs.realpath(full).catch(() => null)
       let inRoot = false
-      for (const root of scannedRoots) {
-        if (full === root || full.startsWith(root + sep)) {
-          inRoot = true
-          break
+      if (real !== null) {
+        for (const root of scannedRoots) {
+          if (real === root || real.startsWith(root + sep)) {
+            inRoot = true
+            break
+          }
         }
       }
       if (!inRoot) throw new Error('File is outside the opened folder.')

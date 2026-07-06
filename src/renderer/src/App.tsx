@@ -178,12 +178,21 @@ let scanningRoot: string | null = null
 // afterwards without re-prompting anyone who declined the region confirm).
 let folderAutoLoad = false
 
-function maybeAutoLoad(): void {
+function maybeAutoLoad(final: boolean): void {
   if (!folderAutoLoad) return
   const st = useStore.getState()
   if (!st.folder || st.folder.files.length === 0) return
+  const src = st.sourcePath
+  // A loaded file that sits under the root may simply not have streamed in
+  // yet — deciding to replace it belongs to the final scan, not a batch.
+  const underRoot =
+    src !== null &&
+    (src === st.folder.root ||
+      src.startsWith(st.folder.root + '/') ||
+      src.startsWith(st.folder.root + '\\'))
+  if (!final && underRoot) return
   folderAutoLoad = false
-  if (!st.folder.files.some((f) => f.path === st.sourcePath)) {
+  if (!st.folder.files.some((f) => f.path === src)) {
     requestFolderEntry(st.folder.files[0])
   }
 }
@@ -198,7 +207,7 @@ function onScanBatch(root: string, files: FolderEntry[]): void {
   } else {
     return
   }
-  maybeAutoLoad()
+  maybeAutoLoad(false)
 }
 
 /** Scan a path into folder mode; false when it is not a directory. The list
@@ -216,7 +225,7 @@ async function scanIntoFolder(path: string): Promise<boolean> {
       files: sortEntries(scan.files),
       truncated: scan.truncated
     })
-    maybeAutoLoad()
+    maybeAutoLoad(true)
     return true
   } finally {
     scanningRoot = null

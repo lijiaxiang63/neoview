@@ -1,6 +1,6 @@
 # neoview
 
-A cross-platform desktop viewer for `.nii` / `.nii.gz` volume files, built with Electron, React, and TypeScript.
+A cross-platform desktop viewer for `.nii` / `.nii.gz` volumes — tri-planar slicing, 3D raycast rendering, and interactive region segmentation. Built with Electron, React, and TypeScript.
 
 ## Features
 
