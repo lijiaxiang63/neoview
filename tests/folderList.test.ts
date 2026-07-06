@@ -3,6 +3,7 @@ import {
   adjacentIndex,
   compareNatural,
   groupEntries,
+  isUnderRoot,
   sortEntries,
   splitDisplayName,
   type FolderEntry
@@ -95,6 +96,20 @@ describe('adjacentIndex', () => {
 
   it('returns null for an empty list', () => {
     expect(adjacentIndex([], null, 1)).toBeNull()
+  })
+})
+
+describe('isUnderRoot', () => {
+  it('matches the root itself and true descendants only', () => {
+    expect(isUnderRoot('/data/set', '/data/set')).toBe(true)
+    expect(isUnderRoot('/data/set', '/data/set/a.nii')).toBe(true)
+    expect(isUnderRoot('/data/set', '/data/set-other/a.nii')).toBe(false)
+    expect(isUnderRoot('/data/set', '/elsewhere/a.nii')).toBe(false)
+  })
+
+  it('handles filesystem roots without doubling the separator', () => {
+    expect(isUnderRoot('/', '/a.nii')).toBe(true)
+    expect(isUnderRoot('C:\\', 'C:\\scans\\a.nii')).toBe(true)
   })
 })
 

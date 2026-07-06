@@ -3,7 +3,7 @@ import { hasUnsavedRegions, useStore } from './store'
 import { MAX_BYTES } from './volume/gunzip'
 import { loadVolume } from './volume/loadVolume'
 import { composeVoxelMap } from './volume/affine'
-import { adjacentIndex, sortEntries, type FolderEntry } from './files/folderList'
+import { adjacentIndex, isUnderRoot, sortEntries, type FolderEntry } from './files/folderList'
 import { SliceView } from './components/SliceView'
 import { VolumeView } from './components/VolumeView'
 import { SidePanel } from './components/SidePanel'
@@ -170,13 +170,26 @@ function navigateFolder(delta: 1 | -1): void {
   if (idx !== null) requestFolderEntry(s.folder.files[idx])
 }
 
-// The root whose scan is in flight; progress batches for any other root are
-// stale and get ignored.
-let scanningRoot: string | null = null
+// The root whose scan is in flight ('pending' until the picker flow's first
+// batch reveals it); progress batches for any other root are stale.
+let scanningRoot: string | 'pending' | null = null
+// Bumped whenever a scan starts or is abandoned; a scan whose generation is
+// stale discards its result instead of applying it.
+let scanGen = 0
 // Armed when a scan starts; the first non-empty view of the folder consumes
 // it, so the folder's first file loads exactly once (batches keep streaming
 // afterwards without re-prompting anyone who declined the region confirm).
 let folderAutoLoad = false
+
+/** An explicit user action (File > Open, a drop) supersedes a running scan:
+ * its remaining batches and final result are ignored rather than fighting
+ * the user's choice. The main-process scan just runs out harmlessly. */
+function abandonActiveScan(): void {
+  scanGen++
+  scanningRoot = null
+  folderAutoLoad = false
+  useStore.getState().setFolderLoading(false)
+}
 
 function maybeAutoLoad(final: boolean): void {
   if (!folderAutoLoad) return
@@ -185,12 +198,7 @@ function maybeAutoLoad(final: boolean): void {
   const src = st.sourcePath
   // A loaded file that sits under the root may simply not have streamed in
   // yet — deciding to replace it belongs to the final scan, not a batch.
-  const underRoot =
-    src !== null &&
-    (src === st.folder.root ||
-      src.startsWith(st.folder.root + '/') ||
-      src.startsWith(st.folder.root + '\\'))
-  if (!final && underRoot) return
+  if (!final && src !== null && isUnderRoot(st.folder.root, src)) return
   folderAutoLoad = false
   if (!st.folder.files.some((f) => f.path === src)) {
     requestFolderEntry(st.folder.files[0])
@@ -202,7 +210,8 @@ function onScanBatch(root: string, files: FolderEntry[]): void {
   const st = useStore.getState()
   if (st.folder && st.folder.root === root) {
     st.appendFolderFiles(root, files)
-  } else if (scanningRoot === root) {
+  } else if (scanningRoot === root || scanningRoot === 'pending') {
+    scanningRoot = root
     st.setFolder({ root, files: sortEntries(files), truncated: false })
   } else {
     return
@@ -210,27 +219,34 @@ function onScanBatch(root: string, files: FolderEntry[]): void {
   maybeAutoLoad(false)
 }
 
-/** Scan a path into folder mode; false when it is not a directory. The list
- * fills from streamed batches while the scan runs; the resolved scan is the
- * authoritative final state. */
-async function scanIntoFolder(path: string): Promise<boolean> {
-  scanningRoot = path
+/** Run a scan into folder mode; false when the source is not a directory.
+ * The list fills from streamed batches while the scan runs; the resolved
+ * scan is the authoritative final state (unless the scan was abandoned). */
+async function scanIntoFolder(
+  scan: () => Promise<{ root: string; files: FolderEntry[]; truncated: boolean } | null>,
+  knownRoot: string | null
+): Promise<boolean> {
+  const gen = ++scanGen
+  scanningRoot = knownRoot ?? 'pending'
   folderAutoLoad = true
   useStore.getState().setFolderLoading(true)
   try {
-    const scan = await window.neoview.scanFolder(path)
-    if (!scan) return false
+    const result = await scan()
+    if (gen !== scanGen) return true // superseded by an explicit open
+    if (!result) return false
     useStore.getState().setFolder({
-      root: scan.root,
-      files: sortEntries(scan.files),
-      truncated: scan.truncated
+      root: result.root,
+      files: sortEntries(result.files),
+      truncated: result.truncated
     })
     maybeAutoLoad(true)
     return true
   } finally {
-    scanningRoot = null
-    folderAutoLoad = false
-    useStore.getState().setFolderLoading(false)
+    if (gen === scanGen) {
+      scanningRoot = null
+      folderAutoLoad = false
+      useStore.getState().setFolderLoading(false)
+    }
   }
 }
 
@@ -238,14 +254,13 @@ async function scanIntoFolder(path: string): Promise<boolean> {
 // button + menu) cannot stack two dialogs.
 let folderFlowActive = false
 
-/** Directory picker → scan → folder mode, with loading feedback and a
+/** Main-owned picker + scan → folder mode, with loading feedback and a
  * re-entry guard (big folders take a moment to scan). */
 async function openFolderViaDialog(): Promise<void> {
   if (folderFlowActive || useStore.getState().folderLoading) return
   folderFlowActive = true
   try {
-    const dir = await window.neoview.pickDirectory()
-    if (dir) await scanIntoFolder(dir)
+    await scanIntoFolder(() => window.neoview.openFolderScan(), null)
   } catch (err) {
     useStore.getState().fail(ipcErrorMessage(err))
   } finally {
@@ -274,13 +289,14 @@ export default function App(): JSX.Element {
   // Explicit Open always replaces the base volume (the one way to swap it);
   // drops route to an overlay layer whenever a base is already present.
   const openDialog = useCallback(async () => {
-    if (useStore.getState().folderLoading) return
     const opened = await window.neoview.openDialog()
-    if (opened) await loadFromBuffer(opened.name, opened.bytes, 'base', opened.path)
+    if (!opened) return
+    // A completed explicit pick wins over a folder scan still in flight.
+    if (useStore.getState().folderLoading) abandonActiveScan()
+    await loadFromBuffer(opened.name, opened.bytes, 'base', opened.path)
   }, [])
 
   const addOverlayViaDialog = useCallback(async () => {
-    if (useStore.getState().folderLoading) return
     const opened = await window.neoview.openDialog()
     if (opened) await loadFromBuffer(opened.name, opened.bytes, 'overlay')
   }, [])
@@ -289,7 +305,9 @@ export default function App(): JSX.Element {
 
   useEffect(() => {
     const offOpened = window.neoview.onFileOpened((file) => {
-      if (useStore.getState().folderLoading) return
+      // File > Open completed while a folder scan was running: the explicit
+      // pick wins — the scan is abandoned, never the user's file.
+      if (useStore.getState().folderLoading) abandonActiveScan()
       void loadFromBuffer(file.name, file.bytes, 'base', file.path)
     })
     const offError = window.neoview.onFileOpenError((message) => {
@@ -378,14 +396,14 @@ export default function App(): JSX.Element {
       setDragging(false)
       const file = e.dataTransfer?.files[0]
       if (!file) return
-      if (useStore.getState().folderLoading) return
       const target = zoneAt(e)
       const path = window.neoview.pathForFile(file) || null
       void (async () => {
-        // A dropped directory enters folder mode regardless of the drop zone.
+        // A dropped directory enters folder mode regardless of the drop zone
+        // (a fresh scan supersedes any scan already running).
         if (path) {
           try {
-            if (await scanIntoFolder(path)) return
+            if (await scanIntoFolder(() => window.neoview.scanDroppedFolder(file), path)) return
           } catch (err) {
             useStore.getState().fail(ipcErrorMessage(err))
             return
@@ -399,6 +417,10 @@ export default function App(): JSX.Element {
           useStore.getState().fail('File is larger than 2 GB, which is not supported.')
           return
         }
+        // A dropped file that will replace the base wins over a running scan.
+        const st = useStore.getState()
+        const asBase = target === 'base' || (target === 'auto' && st.volume === null)
+        if (asBase && st.folderLoading) abandonActiveScan()
         const buf = await file.arrayBuffer()
         await loadFromBuffer(file.name, buf, target, path)
       })()

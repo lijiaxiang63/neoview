@@ -43,8 +43,24 @@ const api = {
     ipcRenderer.on('file-open-error', listener)
     return () => ipcRenderer.removeListener('file-open-error', listener)
   },
-  /** Scan a directory for volume files; null when the path is not a directory. */
-  scanFolder: (path: string): Promise<FolderScan | null> => ipcRenderer.invoke('scan-folder', path),
+  /** Directory picker + recursive scan, both owned by the main process. */
+  openFolderScan: (): Promise<FolderScan | null> => ipcRenderer.invoke('open-folder-scan'),
+  /**
+   * Scan a dropped directory for volume files; null when the drop is not a
+   * directory. The path is derived here from the File object itself — page
+   * script cannot mint a File with an on-disk path, so only genuine drops
+   * (or picks) can register a scan root.
+   */
+  scanDroppedFolder: (file: File): Promise<FolderScan | null> => {
+    let path = ''
+    try {
+      path = webUtils.getPathForFile(file)
+    } catch {
+      return Promise.resolve(null)
+    }
+    if (!path) return Promise.resolve(null)
+    return ipcRenderer.invoke('scan-folder', path)
+  },
   /** Batches of files found while a scan-folder call is still running. */
   onScanFolderProgress: (cb: (root: string, files: FolderEntry[]) => void): (() => void) => {
     const listener = (

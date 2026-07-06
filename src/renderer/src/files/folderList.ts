@@ -57,6 +57,14 @@ export function adjacentIndex(
   return next >= 0 && next < files.length ? next : null
 }
 
+/** Whether `p` is `root` or sits beneath it. Safe for filesystem roots
+ * ('/', drive roots), where naively appending a separator doubles it. */
+export function isUnderRoot(root: string, p: string): boolean {
+  if (p === root) return true
+  const r = root.endsWith('/') || root.endsWith('\\') ? root.slice(0, -1) : root
+  return p.startsWith(r + '/') || p.startsWith(r + '\\')
+}
+
 /** Split a file name into stem and a '.nii' / '.nii.gz' badge (case-insensitive). */
 export function splitDisplayName(name: string): { stem: string; ext: string } {
   const m = /\.nii(\.gz)?$/i.exec(name)

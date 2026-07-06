@@ -324,23 +324,50 @@ if (!gotLock) {
       return pickAndReadFile(win)
     })
 
-    // Path from the directory picker or a drag&drop; null when it is not a
-    // directory (the caller falls back to single-file handling).
+    // Scans stream found files to the requesting window while they run, so
+    // the list fills (and the first file can load) before the scan finishes.
+    // The scanned root is registered before scanning starts — 'read-file'
+    // serves streamed paths immediately — and stored as a real path so the
+    // symlink-resolved containment check below lines up.
+    const scanAndStream = async (
+      sender: Electron.WebContents,
+      path: string
+    ): Promise<FolderScan> => {
+      scannedRoots.add(await fs.realpath(path))
+      return scanFolder(path, (batch) => {
+        if (!sender.isDestroyed()) {
+          sender.send('scan-folder-progress', { root: path, files: batch })
+        }
+      })
+    }
+
+    // Directory picker + scan in one main-owned flow: the renderer never
+    // supplies the path, so it cannot register arbitrary roots this way.
+    ipcMain.handle('open-folder-scan', async (event) => {
+      const win = BrowserWindow.fromWebContents(event.sender)
+      if (!win) return null
+      const result = await dialog.showOpenDialog(win, { properties: ['openDirectory'] })
+      if (result.canceled || result.filePaths.length === 0) return null
+      return scanAndStream(event.sender, result.filePaths[0])
+    })
+
+    // Drag&drop path; null when it is not a directory (the caller falls back
+    // to single-file handling). The preload derives the path from the dropped
+    // File object itself, so page script cannot funnel arbitrary strings here.
     ipcMain.handle('scan-folder', async (event, path: string) => {
       if (typeof path !== 'string' || !path) return null
       const stat = await fs.stat(path).catch(() => null)
       if (!stat?.isDirectory()) return null
-      // Registered before the scan: the renderer starts loading streamed
-      // files while the scan is still running.
-      // Store the real path: 'read-file' compares real paths so a symlink
-      // inside the tree cannot smuggle reads out of the root.
-      scannedRoots.add(await fs.realpath(path))
-      return scanFolder(path, (batch) => {
-        if (!event.sender.isDestroyed()) {
-          event.sender.send('scan-folder-progress', { root: path, files: batch })
-        }
-      })
+      return scanAndStream(event.sender, path)
     })
+
+    /** `p` is `root` or beneath it (roots may already end with the separator,
+     * e.g. '/' or a drive root — appending another would break the test). */
+    const isUnder = (root: string, p: string): boolean => {
+      if (p === root) return true
+      const prefix = root.endsWith(sep) ? root : root + sep
+      return p.startsWith(prefix)
+    }
 
     ipcMain.handle('read-file', async (_event, path: string) => {
       if (typeof path !== 'string' || !isVolumeName(path)) {
@@ -352,15 +379,7 @@ if (!gotLock) {
       // renderer matches it against the folder list by that identity.
       const full = resolve(path)
       const real = await fs.realpath(full).catch(() => null)
-      let inRoot = false
-      if (real !== null) {
-        for (const root of scannedRoots) {
-          if (real === root || real.startsWith(root + sep)) {
-            inRoot = true
-            break
-          }
-        }
-      }
+      const inRoot = real !== null && [...scannedRoots].some((root) => isUnder(root, real))
       if (!inRoot) throw new Error('File is outside the opened folder.')
       return readVolumeFile(full)
     })
