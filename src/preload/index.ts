@@ -45,6 +45,8 @@ const api = {
   },
   /** Directory picker + recursive scan, both owned by the main process. */
   openFolderScan: (): Promise<FolderScan | null> => ipcRenderer.invoke('open-folder-scan'),
+  /** Whether a path names a directory (read-only probe, registers nothing). */
+  isDirectory: (path: string): Promise<boolean> => ipcRenderer.invoke('is-directory', path),
   /**
    * Scan a dropped directory for volume files; null when the drop is not a
    * directory. The path is derived here from the File object itself — page

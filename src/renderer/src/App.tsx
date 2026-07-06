@@ -400,8 +400,10 @@ export default function App(): JSX.Element {
       const path = window.neoview.pathForFile(file) || null
       void (async () => {
         // A dropped directory enters folder mode regardless of the drop zone
-        // (a fresh scan supersedes any scan already running).
-        if (path) {
+        // (a fresh scan supersedes any scan already running). The read-only
+        // probe comes first: entering scanIntoFolder marks a running scan
+        // stale, which a plain-file drop must never do.
+        if (path && (await window.neoview.isDirectory(path).catch(() => false))) {
           try {
             if (await scanIntoFolder(() => window.neoview.scanDroppedFolder(file), path)) return
           } catch (err) {

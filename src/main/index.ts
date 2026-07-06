@@ -351,6 +351,14 @@ if (!gotLock) {
       return scanAndStream(event.sender, result.filePaths[0])
     })
 
+    // Read-only metadata probe (registers nothing): drops ask this before
+    // starting a scan, so a plain-file drop never touches scan state.
+    ipcMain.handle('is-directory', async (_event, path: string) => {
+      if (typeof path !== 'string' || !path) return false
+      const stat = await fs.stat(path).catch(() => null)
+      return stat?.isDirectory() ?? false
+    })
+
     // Drag&drop path; null when it is not a directory (the caller falls back
     // to single-file handling). The preload derives the path from the dropped
     // File object itself, so page script cannot funnel arbitrary strings here.
