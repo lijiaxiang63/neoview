@@ -35,6 +35,14 @@ function ipcErrorMessage(err: unknown): string {
   return raw.replace(/^Error invoking remote method '[^']+': (Error: )?/, '')
 }
 
+// Every base load takes a fresh generation and checks it again at commit
+// time: parsing takes seconds, and two loads can be in flight at once (a
+// queued folder navigation and an explicit open). Whichever started LAST
+// owns the view — the older parse discards its result instead of
+// committing over it. loadFromBuffer is the only path that replaces the
+// base, so this one gate covers dialog, menu, drop, and folder navigation.
+let baseLoadGen = 0
+
 async function loadFromBuffer(
   name: string,
   buf: ArrayBuffer,
@@ -44,6 +52,7 @@ async function loadFromBuffer(
   const store = useStore.getState()
   const asOverlay = target === 'overlay' || (target === 'auto' && store.volume !== null)
   if (!asOverlay && !confirmDiscardRegionWork()) return
+  const gen = asOverlay ? null : ++baseLoadGen
   store.startLoading()
   try {
     if (asOverlay) {
@@ -58,9 +67,12 @@ async function loadFromBuffer(
       }
     } else {
       const volume = await loadVolume(name, buf)
+      if (gen !== baseLoadGen) return // a newer base load owns the view
       useStore.getState().setVolume(volume, path)
     }
   } catch (err) {
+    // A superseded load's failure is not the current view's problem.
+    if (gen !== null && gen !== baseLoadGen) return
     useStore.getState().fail(err instanceof Error ? err.message : 'Could not open file.')
   }
 }
