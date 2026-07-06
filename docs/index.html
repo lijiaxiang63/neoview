@@ -90,9 +90,11 @@ img{max-width:100%;display:block}
 .nav-links a{transition:color .18s}
 .nav-links a:hover{color:var(--ink)}
 .nav-cta{
+  display:inline-flex;align-items:center;gap:7px;
   border:1px solid var(--line-2);border-radius:8px;padding:7px 15px;
   font-weight:500;color:var(--ink);transition:border-color .18s,background .18s;
 }
+.nav-cta svg{width:15px;height:15px;flex:0 0 auto}
 .nav-cta:hover{border-color:var(--ink-3);background:#fff}
 @media(max-width:720px){
   .nav-links a.hide-sm{display:none}
@@ -134,6 +136,56 @@ h1 em{font-style:italic;color:var(--accent-ink);padding-right:.1em}
 .btn-ghost{border:1px solid var(--line-2);background:#fff;color:var(--ink)}
 .btn-ghost:hover{border-color:var(--ink-3);transform:translateY(-1px)}
 .btn svg{width:17px;height:17px}
+
+/* ---------- download split button ---------- */
+.dl{display:inline-flex;align-items:stretch;position:relative}
+.dl-main{
+  border-radius:10px 0 0 10px;padding:12px 16px 12px 20px;gap:11px;
+}
+.dl-main .dl-ic{display:inline-flex;align-items:center}
+.dl-main .dl-ic svg{width:20px;height:20px;display:block}
+.dl-txt{display:flex;flex-direction:column;line-height:1.16;align-items:flex-start}
+.dl-sub{font-family:var(--mono);font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:rgba(255,255,255,.6);font-weight:400}
+.dl-plat{font-size:15.5px;font-weight:500;margin-top:1px}
+.dl-ver{
+  align-self:center;margin-left:2px;
+  font-family:var(--mono);font-size:11px;letter-spacing:.02em;font-weight:500;
+  background:rgba(255,255,255,.12);border:1px solid rgba(255,255,255,.2);
+  border-radius:100px;padding:3px 9px;color:#fff;
+}
+.dl-caret{
+  border:0;border-left:1px solid rgba(255,255,255,.16);
+  background:var(--ink);color:#fff;cursor:pointer;
+  border-radius:0 10px 10px 0;padding:0 13px;
+  display:inline-flex;align-items:center;transition:background .2s;
+}
+.dl-caret:hover{background:#000}
+.dl-caret svg{width:16px;height:16px}
+.dl-menu{
+  position:absolute;top:calc(100% + 8px);left:0;min-width:268px;list-style:none;
+  margin:0;padding:6px;background:#fff;border:1px solid var(--line);border-radius:12px;
+  box-shadow:0 20px 44px -22px rgba(21,23,28,.4),0 4px 14px -8px rgba(21,23,28,.2);
+  z-index:60;
+}
+.dl-menu[hidden]{display:none}
+.dl-menu li{margin:0}
+.dl-menu a{
+  display:flex;align-items:center;gap:12px;padding:9px 11px;border-radius:8px;
+  color:var(--ink);transition:background .15s;
+}
+.dl-menu a:hover,.dl-menu a.sel{background:var(--paper-2)}
+.dl-menu .ic{width:20px;height:20px;flex:0 0 auto;display:inline-flex;align-items:center;justify-content:center;color:var(--ink-2)}
+.dl-menu .ic svg{width:18px;height:18px}
+.dl-menu .nm{font-size:14.5px;font-weight:500}
+.dl-menu .nm small{font-weight:400;color:var(--ink-3);font-size:12.5px}
+.dl-menu .ext{margin-left:auto;font-family:var(--mono);font-size:11px;color:var(--ink-3);text-transform:uppercase}
+.dl-menu .sep{height:1px;background:var(--line);margin:5px 8px}
+.dl-menu .more{font-size:13.5px;color:var(--ink-2)}
+.dl-menu .more:hover{color:var(--ink)}
+@media(max-width:520px){
+  .dl-main{padding:11px 14px}
+  .dl-ver{display:none}
+}
 
 /* spec strip */
 .spec{
@@ -345,7 +397,7 @@ footer{border-top:1px solid var(--line);padding:44px 0}
       <a class="hide-sm" href="#overlays">Overlays</a>
       <a class="hide-sm" href="#segmentation">Segmentation</a>
       <a class="hide-sm" href="#engine">Engine</a>
-      <a class="nav-cta" href="https://github.com/lijiaxiang63/neoview" target="_blank" rel="noopener">GitHub ↗</a>
+      <a class="nav-cta" href="https://github.com/lijiaxiang63/neoview" target="_blank" rel="noopener"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 2C6.48 2 2 6.58 2 12.26c0 4.5 2.87 8.32 6.84 9.67.5.1.68-.22.68-.49l-.01-1.7c-2.78.62-3.37-1.36-3.37-1.36-.46-1.18-1.11-1.5-1.11-1.5-.9-.63.07-.62.07-.62 1 .07 1.53 1.06 1.53 1.06.89 1.56 2.34 1.11 2.91.85.09-.66.35-1.11.63-1.37-2.22-.26-4.55-1.14-4.55-5.06 0-1.12.39-2.03 1.03-2.75-.1-.26-.45-1.3.1-2.71 0 0 .84-.28 2.75 1.05a9.4 9.4 0 0 1 5 0c1.9-1.33 2.74-1.05 2.74-1.05.55 1.41.2 2.45.1 2.71.64.72 1.03 1.63 1.03 2.75 0 3.93-2.34 4.79-4.57 5.05.36.32.68.94.68 1.9l-.01 2.82c0 .27.18.6.69.49A10.02 10.02 0 0 0 22 12.26C22 6.58 17.52 2 12 2Z"/></svg>GitHub ↗</a>
     </div>
   </div>
 </nav>
@@ -362,10 +414,20 @@ footer{border-top:1px solid var(--line);padding:44px 0}
       GPU raycast rendering, and interactive region segmentation, in one quiet, fast window.
     </p>
     <div class="cta-row">
-      <a class="btn btn-primary" href="https://github.com/lijiaxiang63/neoview" target="_blank" rel="noopener">
-        <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.48 2 2 6.58 2 12.26c0 4.5 2.87 8.32 6.84 9.67.5.1.68-.22.68-.49l-.01-1.7c-2.78.62-3.37-1.36-3.37-1.36-.46-1.18-1.11-1.5-1.11-1.5-.9-.63.07-.62.07-.62 1 .07 1.53 1.06 1.53 1.06.89 1.56 2.34 1.11 2.91.85.09-.66.35-1.11.63-1.37-2.22-.26-4.55-1.14-4.55-5.06 0-1.12.39-2.03 1.03-2.75-.1-.26-.45-1.3.1-2.71 0 0 .84-.28 2.75 1.05a9.4 9.4 0 0 1 5 0c1.9-1.33 2.74-1.05 2.74-1.05.55 1.41.2 2.45.1 2.71.64.72 1.03 1.63 1.03 2.75 0 3.93-2.34 4.79-4.57 5.05.36.32.68.94.68 1.9l-.01 2.82c0 .27.18.6.69.49A10.02 10.02 0 0 0 22 12.26C22 6.58 17.52 2 12 2Z"/></svg>
-        View source
-      </a>
+      <div class="dl" id="dl">
+        <a class="dl-main btn btn-primary" id="dlMain" href="https://github.com/lijiaxiang63/neoview/releases/latest" target="_blank" rel="noopener">
+          <span class="dl-ic" id="dlIc"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3v12m0 0l-4-4m4 4l4-4M4 20h16" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+          <span class="dl-txt">
+            <span class="dl-sub">Download</span>
+            <span class="dl-plat" id="dlPlat">neoview</span>
+          </span>
+          <span class="dl-ver" id="dlVer" hidden></span>
+        </a>
+        <button class="dl-caret" id="dlCaret" type="button" aria-haspopup="menu" aria-expanded="false" aria-label="Choose platform">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
+        <ul class="dl-menu" id="dlMenu" role="menu" hidden></ul>
+      </div>
       <a class="btn btn-ghost" href="#slicing">Explore features</a>
     </div>
 
@@ -649,6 +711,121 @@ addEventListener('scroll',()=>nav.classList.toggle('scrolled',scrollY>8),{passiv
 // reveal on scroll
 const io=new IntersectionObserver((es)=>{es.forEach(e=>{if(e.isIntersecting){e.target.classList.add('in');io.unobserve(e.target)}})},{threshold:.12});
 document.querySelectorAll('.reveal').forEach(el=>io.observe(el));
+
+// ---------- download split button ----------
+(function(){
+  const REPO='lijiaxiang63/neoview';
+  const CACHE_KEY='neoview.dl.cache';
+  const CACHE_TTL=60*60*1000;
+  const dlEl=document.getElementById('dl');if(!dlEl)return;
+  const mainBtn=document.getElementById('dlMain');
+  const platEl=document.getElementById('dlPlat');
+  const subEl=document.querySelector('.dl-sub');
+  const icEl=document.getElementById('dlIc');
+  const verEl=document.getElementById('dlVer');
+  const caret=document.getElementById('dlCaret');
+  const menu=document.getElementById('dlMenu');
+
+  const IC={
+    mac:'<svg viewBox="0 0 24 24" fill="currentColor"><path d="M16.36 1.43c.04 1.23-.45 2.42-1.16 3.3-.74.9-2.02 1.6-3.24 1.5-.08-1.2.46-2.4 1.16-3.22.76-.9 2.06-1.56 3.24-1.58zm3.78 17.7c-.5 1.16-.74 1.68-1.38 2.7-.9 1.42-2.18 3.18-3.76 3.2-1.4.02-1.76-.92-3.66-.9-1.9.02-2.3.92-3.7.9-1.58-.02-2.78-1.6-3.68-3.02C2.04 16.94 1.8 12.06 3.6 9.5c.9-1.3 2.46-2.12 3.92-2.12 1.5 0 2.44.84 3.68.84 1.2 0 1.94-.84 3.68-.84 1.32 0 2.72.72 3.72 1.96-3.28 1.8-2.74 6.5.26 7.42-.06.14-.12.28-.2.42z"/></svg>',
+    win:'<svg viewBox="0 0 24 24" fill="currentColor"><path d="M3 5.5 10.5 4.4v7.2H3V5.5zm0 7.4h7.5v7.2L3 18.9v-6zm8.5-8.6L21 3v8.6h-9.5V4.3zm0 8.6H21V21l-9.5-1.3v-6z"/></svg>',
+    linux:'<svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2c-1.8 0-3 1.4-3 3 0 .5.1 1 .3 1.4-.9.7-1.6 1.7-2 2.9-.6 1.8-.9 3.8-1.8 5.1-.5.7-1.2 1.1-1.7 1.8-.4.6-.5 1.4-.2 2 .3.5.8.7 1.3.7.4 0 .8-.1 1.2-.3.3.5.8.8 1.4.8.7 0 1.2-.3 1.6-.9.4.5.9.9 1.7.9.8 0 1.3-.4 1.7-.9.4.6.9.9 1.6.9.6 0 1.1-.3 1.4-.8.4.2.8.3 1.2.3.5 0 1-.2 1.3-.7.3-.6.2-1.4-.2-2-.5-.7-1.2-1.1-1.7-1.8-.9-1.3-1.2-3.3-1.8-5.1-.4-1.2-1.1-2.2-2-2.9.2-.4.3-.9.3-1.4 0-1.6-1.2-3-3-3zm-1.4 3.6c.4.2.9.3 1.4.3s1-.1 1.4-.3c.5.6.9 1.4 1.1 2.3.1.3-.1.6-.4.7-.3.1-.6-.1-.7-.4-.2-.5-.5-.7-1.1-.7s-.9.2-1.1.7c-.1.3-.4.5-.7.4-.3-.1-.5-.4-.4-.7.2-.9.6-1.7 1.1-2.3z"/></svg>',
+    dl:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3v12m0 0l-4-4m4 4l4-4M4 20h16" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+    gh:'<svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.48 2 2 6.58 2 12.26c0 4.5 2.87 8.32 6.84 9.67.5.1.68-.22.68-.49l-.01-1.7c-2.78.62-3.37-1.36-3.37-1.36-.46-1.18-1.11-1.5-1.11-1.5-.9-.63.07-.62.07-.62 1 .07 1.53 1.06 1.53 1.06.89 1.56 2.34 1.11 2.91.85.09-.66.35-1.11.63-1.37-2.22-.26-4.55-1.14-4.55-5.06 0-1.12.39-2.03 1.03-2.75-.1-.26-.45-1.3.1-2.71 0 0 .84-.28 2.75 1.05a9.4 9.4 0 0 1 5 0c1.9-1.33 2.74-1.05 2.74-1.05.55 1.41.2 2.45.1 2.71.64.72 1.03 1.63 1.03 2.75 0 3.93-2.34 4.79-4.57 5.05.36.32.68.94.68 1.9l-.01 2.82c0 .27.18.6.69.49A10.02 10.02 0 0 0 22 12.26C22 6.58 17.52 2 12 2Z"/></svg>'
+  };
+  // dropdown spec — order shown; each entry tries matchers top-down
+  const SPEC=[
+    {key:'mac',label:'macOS',sub:'Apple Silicon',icon:IC.mac,match:[/neoview-.*-arm64\.dmg$/i,/neoview-.*-x64\.dmg$/i,/neoview-.*\.dmg$/i],det:'mac'},
+    {key:'win',label:'Windows',sub:'Installer',icon:IC.win,match:[/neoview-.*-setup\.exe$/i,/neoview-.*\.exe$/i],det:'win'},
+    {key:'lnx1',label:'Linux',sub:'AppImage',icon:IC.linux,match:[/neoview-.*\.AppImage$/i],det:'linux'},
+    {key:'lnx2',label:'Linux',sub:'deb',icon:IC.linux,match:[/neoview_.*\.deb$/i],det:'linux'}
+  ];
+
+  function detect(){
+    const ua=navigator.userAgent||'';
+    const p=navigator.platform||'';
+    const uad=navigator.userAgentData;
+    if(uad&&uad.platform){const up=uad.platform.toLowerCase();if(up.includes('mac'))return 'mac';if(up.includes('win'))return 'win';if(up.includes('linux'))return 'linux';}
+    if(/Mac/i.test(p)||/Macintosh|Mac OS X/i.test(ua))return 'mac';
+    if(/Win/i.test(p)||/Windows/i.test(ua))return 'win';
+    if(/Linux/i.test(p)||(/Linux/i.test(ua)&&!/Android/i.test(ua)))return 'linux';
+    return null;
+  }
+  function assetFor(spec,assets){
+    for(const re of spec.match){const a=assets.find(x=>re.test(x.name));if(a)return a;}
+    return null;
+  }
+  function applyMain(spec,asset,version){
+    mainBtn.href=asset?asset.browser_download_url:('https://github.com/'+REPO+'/releases/latest');
+    platEl.textContent=spec?spec.label:'neoview';
+    subEl.textContent=spec?'Download for':'Download';
+    icEl.innerHTML=spec?spec.icon:IC.dl;
+    if(version){verEl.textContent='v'+version;verEl.hidden=false;}
+    else{verEl.textContent='';verEl.hidden=true;}
+  }
+  function buildMenu(items,version,currentKey){
+    menu.innerHTML='';
+    items.forEach(it=>{
+      if(!it.asset)return;
+      const li=document.createElement('li');
+      const a=document.createElement('a');
+      a.href=it.asset.browser_download_url;
+      if(it.spec.key===currentKey)a.classList.add('sel');
+      a.innerHTML='<span class="ic">'+it.spec.icon+'</span>'
+        +'<span class="nm">'+it.spec.label+' <small>· '+it.spec.sub+'</small></span>'
+        +'<span class="ext">'+(it.asset.name.split('.').pop())+'</span>';
+      a.addEventListener('click',closeMenu);
+      li.appendChild(a);menu.appendChild(li);
+    });
+    if(menu.children.length){
+      const sep=document.createElement('li');sep.className='sep';menu.appendChild(sep);
+    }
+    const gli=document.createElement('li');
+    const ga=document.createElement('a');
+    ga.href='https://github.com/'+REPO+'/releases/latest';
+    ga.target='_blank';ga.rel='noopener';ga.className='more';
+    ga.innerHTML='<span class="ic">'+IC.gh+'</span><span class="nm">All releases on GitHub</span>';
+    gli.appendChild(ga);menu.appendChild(gli);
+  }
+  function openMenu(){menu.hidden=false;caret.setAttribute('aria-expanded','true');}
+  function closeMenu(){menu.hidden=true;caret.setAttribute('aria-expanded','false');}
+  function toggleMenu(e){e.preventDefault();e.stopPropagation();menu.hidden?openMenu():closeMenu();}
+  caret.addEventListener('click',toggleMenu);
+  document.addEventListener('click',e=>{if(!dlEl.contains(e.target))closeMenu();});
+  document.addEventListener('keydown',e=>{if(e.key==='Escape')closeMenu();});
+  window.addEventListener('blur',closeMenu);
+
+  function render(data){
+    const version=(data.tag_name||'').replace(/^v/,'');
+    const assets=data.assets||[];
+    const items=SPEC.map(spec=>({spec,asset:assetFor(spec,assets)}));
+    const det=detect();
+    let primary=items.find(it=>it.asset&&it.spec.det===det)
+      ||items.find(it=>it.asset)
+      ||null;
+    if(primary){
+      applyMain(primary.spec,primary.asset,version);
+      buildMenu(items,version,primary.spec.key);
+    }else{
+      applyMain(null,null,version);
+      caret.style.display='none';
+    }
+  }
+
+  // try cache first, then live API
+  try{
+    const c=JSON.parse(localStorage.getItem(CACHE_KEY)||'null');
+    if(c&&c.ts&&Date.now()-c.ts<CACHE_TTL&&c.data){render(c.data);}
+  }catch(e){}
+  fetch('https://api.github.com/repos/'+REPO+'/releases/latest',{headers:{accept:'application/vnd.github+json'}})
+    .then(r=>r.ok?r.json():Promise.reject(new Error('HTTP '+r.status)))
+    .then(data=>{
+      if(!data||!data.tag_name)throw new Error('no release');
+      render(data);
+      try{localStorage.setItem(CACHE_KEY,JSON.stringify({ts:Date.now(),data}));}catch(e){}
+    })
+    .catch(()=>{});
+})();
 </script>
 </body>
 </html>
