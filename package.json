@@ -1,6 +1,6 @@
 {
   "name": "neoview",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Cross-platform desktop volume viewer",
   "main": "./out/main/index.js",
   "author": "neoview",
