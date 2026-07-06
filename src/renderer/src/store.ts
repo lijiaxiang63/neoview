@@ -1,5 +1,6 @@
 import { create } from 'zustand'
 import type { Volume } from './volume/types'
+import { sortEntries, type FolderEntry } from './files/folderList'
 import { defaultLayerSettings, guessOverlayKind, type OverlayLayer } from './slicing/overlay'
 import { PLANES } from './slicing/extract'
 import {
@@ -109,10 +110,27 @@ interface SegSnapshot {
   params: SegParams
 }
 
+/** An opened folder of volume files, shown in the file panel. */
+export interface FolderState {
+  root: string
+  /** Pre-sorted by the caller (see files/folderList.ts#sortEntries). */
+  files: FolderEntry[]
+  /** True when the scan stopped at its file cap. */
+  truncated: boolean
+}
+
 interface AppState {
   volume: Volume | null
   /** Absolute path of the opened base file (null for unknown origins). */
   sourcePath: string | null
+  /** Opened folder; cleared when a base volume from outside it loads. */
+  folder: FolderState | null
+  /** True while a folder scan is in flight (feedback + re-entry guard). */
+  folderLoading: boolean
+  /** File list visibility; the folder stays open while the panel is hidden. */
+  filePanelOpen: boolean
+  /** Navigation target still being read/loaded (arrow-key scrubbing). */
+  pendingFilePath: string | null
   loadState: 'empty' | 'loading' | 'ready' | 'error'
   errorMessage: string | null
   cross: [number, number, number]
@@ -158,6 +176,13 @@ interface AppState {
 
   startLoading: () => void
   setVolume: (v: Volume, sourcePath?: string | null) => void
+  setFolder: (f: FolderState) => void
+  /** Merge a streamed scan batch into the opened folder (kept sorted). */
+  appendFolderFiles: (root: string, files: FolderEntry[]) => void
+  closeFolder: () => void
+  setFolderLoading: (b: boolean) => void
+  toggleFilePanel: () => void
+  setPendingFilePath: (p: string | null) => void
   addOverlay: (v: Volume) => void
   removeOverlay: (id: number) => void
   updateOverlay: (id: number, patch: Partial<Omit<OverlayLayer, 'id' | 'volume'>>) => void
@@ -411,6 +436,10 @@ export const useStore = create<AppState>()((set, get) => {
   return {
     volume: null,
     sourcePath: null,
+    folder: null,
+    folderLoading: false,
+    filePanelOpen: true,
+    pendingFilePath: null,
     loadState: 'empty',
     errorMessage: null,
     cross: [0, 0, 0],
@@ -445,12 +474,38 @@ export const useStore = create<AppState>()((set, get) => {
 
     startLoading: () => set({ loadState: 'loading', errorMessage: null }),
 
+    setFolder: (f) => set({ folder: f, filePanelOpen: true }),
+
+    appendFolderFiles: (root, files) =>
+      set((s) => {
+        if (!s.folder || s.folder.root !== root) return {}
+        // Batches never overlap, but dedup anyway so a stray repeat is inert.
+        const seen = new Set(s.folder.files.map((f) => f.path))
+        const fresh = files.filter((f) => !seen.has(f.path))
+        if (fresh.length === 0) return {}
+        return { folder: { ...s.folder, files: sortEntries([...s.folder.files, ...fresh]) } }
+      }),
+
+    closeFolder: () => set({ folder: null }),
+
+    setFolderLoading: (b) => set({ folderLoading: b }),
+
+    toggleFilePanel: () => set((s) => ({ filePanelOpen: !s.filePanelOpen })),
+
+    setPendingFilePath: (p) => set({ pendingFilePath: p }),
+
     setVolume: (v, sourcePath = null) => {
       cancelScheduledPreview()
       const preset = pickInitialPreset(v)
-      set({
+      set((s) => ({
         volume: v,
         sourcePath,
+        // A base volume from outside the opened folder replaces it entirely:
+        // the file list only makes sense while browsing within that folder.
+        folder:
+          s.folder && sourcePath !== null && s.folder.files.some((f) => f.path === sourcePath)
+            ? s.folder
+            : null,
         loadState: 'ready',
         errorMessage: null,
         cross: [Math.floor(v.dims[0] / 2), Math.floor(v.dims[1] / 2), Math.floor(v.dims[2] / 2)],
@@ -478,7 +533,7 @@ export const useStore = create<AppState>()((set, get) => {
         segDirty: false,
         undoDelete: null,
         toast: null
-      })
+      }))
     },
 
     addOverlay: (v) => {

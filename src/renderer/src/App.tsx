@@ -3,12 +3,14 @@ import { hasUnsavedRegions, useStore } from './store'
 import { MAX_BYTES } from './volume/gunzip'
 import { loadVolume } from './volume/loadVolume'
 import { composeVoxelMap } from './volume/affine'
+import { adjacentIndex, sortEntries, type FolderEntry } from './files/folderList'
 import { SliceView } from './components/SliceView'
 import { VolumeView } from './components/VolumeView'
 import { SidePanel } from './components/SidePanel'
 import { Toolbar } from './components/Toolbar'
 import { StatusBar } from './components/StatusBar'
 import { EmptyState } from './components/EmptyState'
+import { FilePanel } from './components/FilePanel'
 import { Toast } from './components/Toast'
 
 /** 'auto' routes to an overlay layer when a base volume is already loaded. */
@@ -16,6 +18,22 @@ type LoadTarget = 'base' | 'overlay' | 'auto'
 
 const UNSAVED_WARNING =
   'There are region edits that have not been exported. They will be lost. Continue?'
+const UNCOMMITTED_WARNING =
+  'There is a drawn region that has not been committed. It will be lost. Continue?'
+
+/** Replacing the base drops region work; committed edits and a still-drawn
+ * box both deserve a veto. */
+function confirmDiscardRegionWork(): boolean {
+  if (hasUnsavedRegions()) return window.confirm(UNSAVED_WARNING)
+  if (useStore.getState().segBox) return window.confirm(UNCOMMITTED_WARNING)
+  return true
+}
+
+/** Invoke rejections arrive wrapped in Electron's remote-method prefix. */
+function ipcErrorMessage(err: unknown): string {
+  const raw = err instanceof Error ? err.message : 'Could not open file.'
+  return raw.replace(/^Error invoking remote method '[^']+': (Error: )?/, '')
+}
 
 async function loadFromBuffer(
   name: string,
@@ -25,7 +43,7 @@ async function loadFromBuffer(
 ): Promise<void> {
   const store = useStore.getState()
   const asOverlay = target === 'overlay' || (target === 'auto' && store.volume !== null)
-  if (!asOverlay && hasUnsavedRegions() && !window.confirm(UNSAVED_WARNING)) return
+  if (!asOverlay && !confirmDiscardRegionWork()) return
   store.startLoading()
   try {
     if (asOverlay) {
@@ -47,6 +65,185 @@ async function loadFromBuffer(
   }
 }
 
+// ---- Folder navigation --------------------------------------------------
+// Arrow keys repeat much faster than a volume loads, so navigation is a
+// queue of one: key presses only move the target (shown as the pending row
+// in the list); the pump below loads whatever the target is once the
+// current load settles, discarding reads that went stale along the way.
+// Holding a key therefore scrubs to a destination instead of grinding
+// through every file in between.
+let queuedPath: string | null = null
+let entryPumpActive = false
+
+// One-slot byte cache for the file the next key press most likely wants
+// (the neighbor in the last direction travelled). Consuming a hit skips the
+// disk read — the slowest step on external drives.
+let prefetched: { path: string; bytes: ArrayBuffer } | null = null
+let prefetchActive = false
+let lastDelta: 1 | -1 = 1
+// Bigger prefetches are dropped: the read still warmed the OS page cache,
+// so the real read stays fast without pinning huge buffers.
+const PREFETCH_KEEP_MAX = 512 * 1024 * 1024
+
+// The folder closing (e.g. an outside file replaced it) releases the cached
+// bytes instead of pinning them until the next navigation.
+useStore.subscribe((s) => {
+  if (s.folder === null) prefetched = null
+})
+
+function requestFolderEntry(entry: FolderEntry): void {
+  queuedPath = entry.path
+  useStore.getState().setPendingFilePath(entry.path)
+  void pumpEntryLoads()
+}
+
+async function pumpEntryLoads(): Promise<void> {
+  if (entryPumpActive) return
+  entryPumpActive = true
+  try {
+    while (queuedPath) {
+      const st = useStore.getState()
+      const path = queuedPath
+      if (path === st.sourcePath) break
+      const entry = st.folder?.files.find((f) => f.path === path)
+      if (!entry) break
+      try {
+        let opened: { name: string; path: string; bytes: ArrayBuffer }
+        if (prefetched && prefetched.path === path) {
+          opened = { name: entry.name, path, bytes: prefetched.bytes }
+          prefetched = null // the load transfers the buffer away
+        } else {
+          opened = await window.neoview.readFile(path)
+          // The target moved on while this file was being read: drop the
+          // bytes unparsed and chase the newer target.
+          if (queuedPath !== path) continue
+        }
+        await loadFromBuffer(opened.name, opened.bytes, 'base', opened.path)
+      } catch (err) {
+        useStore.getState().fail(ipcErrorMessage(err))
+        break
+      }
+      if (queuedPath === path) break
+    }
+  } finally {
+    queuedPath = null
+    entryPumpActive = false
+    useStore.getState().setPendingFilePath(null)
+    schedulePrefetch()
+  }
+}
+
+/** After navigation settles, read the neighbor in the direction of travel so
+ * the next key press starts from parsing instead of the disk. */
+function schedulePrefetch(): void {
+  if (prefetchActive) return
+  const st = useStore.getState()
+  if (!st.folder || st.sourcePath === null) return
+  const idx = adjacentIndex(st.folder.files, st.sourcePath, lastDelta)
+  if (idx === null) return
+  const target = st.folder.files[idx]
+  if (prefetched?.path === target.path) return
+  prefetchActive = true
+  window.neoview
+    .readFile(target.path)
+    .then((opened) => {
+      const cur = useStore.getState()
+      const relevant = cur.folder?.files.some((f) => f.path === opened.path) ?? false
+      if (relevant && opened.bytes.byteLength <= PREFETCH_KEEP_MAX) {
+        prefetched = { path: opened.path, bytes: opened.bytes }
+      }
+    })
+    .catch(() => {
+      // Prefetch is opportunistic; the real read will surface any error.
+    })
+    .finally(() => {
+      prefetchActive = false
+    })
+}
+
+/** Move the navigation target to the previous/next file (no wrap). */
+function navigateFolder(delta: 1 | -1): void {
+  const s = useStore.getState()
+  if (!s.folder) return
+  lastDelta = delta
+  const idx = adjacentIndex(s.folder.files, queuedPath ?? s.sourcePath, delta)
+  if (idx !== null) requestFolderEntry(s.folder.files[idx])
+}
+
+// The root whose scan is in flight; progress batches for any other root are
+// stale and get ignored.
+let scanningRoot: string | null = null
+// Armed when a scan starts; the first non-empty view of the folder consumes
+// it, so the folder's first file loads exactly once (batches keep streaming
+// afterwards without re-prompting anyone who declined the region confirm).
+let folderAutoLoad = false
+
+function maybeAutoLoad(): void {
+  if (!folderAutoLoad) return
+  const st = useStore.getState()
+  if (!st.folder || st.folder.files.length === 0) return
+  folderAutoLoad = false
+  if (!st.folder.files.some((f) => f.path === st.sourcePath)) {
+    requestFolderEntry(st.folder.files[0])
+  }
+}
+
+/** A streamed scan batch arrived: create or grow the folder it belongs to. */
+function onScanBatch(root: string, files: FolderEntry[]): void {
+  const st = useStore.getState()
+  if (st.folder && st.folder.root === root) {
+    st.appendFolderFiles(root, files)
+  } else if (scanningRoot === root) {
+    st.setFolder({ root, files: sortEntries(files), truncated: false })
+  } else {
+    return
+  }
+  maybeAutoLoad()
+}
+
+/** Scan a path into folder mode; false when it is not a directory. The list
+ * fills from streamed batches while the scan runs; the resolved scan is the
+ * authoritative final state. */
+async function scanIntoFolder(path: string): Promise<boolean> {
+  scanningRoot = path
+  folderAutoLoad = true
+  useStore.getState().setFolderLoading(true)
+  try {
+    const scan = await window.neoview.scanFolder(path)
+    if (!scan) return false
+    useStore.getState().setFolder({
+      root: scan.root,
+      files: sortEntries(scan.files),
+      truncated: scan.truncated
+    })
+    maybeAutoLoad()
+    return true
+  } finally {
+    scanningRoot = null
+    folderAutoLoad = false
+    useStore.getState().setFolderLoading(false)
+  }
+}
+
+// Covers the picker as well as the scan, so a double-click on the button (or
+// button + menu) cannot stack two dialogs.
+let folderFlowActive = false
+
+/** Directory picker → scan → folder mode, with loading feedback and a
+ * re-entry guard (big folders take a moment to scan). */
+async function openFolderViaDialog(): Promise<void> {
+  if (folderFlowActive || useStore.getState().folderLoading) return
+  folderFlowActive = true
+  try {
+    const dir = await window.neoview.pickDirectory()
+    if (dir) await scanIntoFolder(dir)
+  } catch (err) {
+    useStore.getState().fail(ipcErrorMessage(err))
+  } finally {
+    folderFlowActive = false
+  }
+}
+
 function acceptsName(name: string): boolean {
   const n = name.toLowerCase()
   return n.endsWith('.nii') || n.endsWith('.nii.gz') || n.endsWith('.gz')
@@ -58,6 +255,9 @@ export default function App(): JSX.Element {
   const dismissError = useStore((s) => s.dismissError)
   const hasVolume = useStore((s) => s.volume !== null)
   const hasMaximized = useStore((s) => s.maximizedView !== null)
+  const folderOpen = useStore((s) => s.folder !== null)
+  const folderLoading = useStore((s) => s.folderLoading)
+  const filePanelOpen = useStore((s) => s.filePanelOpen)
   const [dragging, setDragging] = useState(false)
   const [dropTarget, setDropTarget] = useState<LoadTarget>('auto')
   const [sidebarOpen, setSidebarOpen] = useState(true)
@@ -65,22 +265,31 @@ export default function App(): JSX.Element {
   // Explicit Open always replaces the base volume (the one way to swap it);
   // drops route to an overlay layer whenever a base is already present.
   const openDialog = useCallback(async () => {
+    if (useStore.getState().folderLoading) return
     const opened = await window.neoview.openDialog()
     if (opened) await loadFromBuffer(opened.name, opened.bytes, 'base', opened.path)
   }, [])
 
   const addOverlayViaDialog = useCallback(async () => {
+    if (useStore.getState().folderLoading) return
     const opened = await window.neoview.openDialog()
     if (opened) await loadFromBuffer(opened.name, opened.bytes, 'overlay')
   }, [])
 
+  const openFolder = useCallback(() => void openFolderViaDialog(), [])
+
   useEffect(() => {
     const offOpened = window.neoview.onFileOpened((file) => {
+      if (useStore.getState().folderLoading) return
       void loadFromBuffer(file.name, file.bytes, 'base', file.path)
     })
     const offError = window.neoview.onFileOpenError((message) => {
       useStore.getState().fail(message)
     })
+    const offFolder = window.neoview.onOpenFolderRequest(() => {
+      void openFolderViaDialog()
+    })
+    const offScan = window.neoview.onScanFolderProgress(onScanBatch)
     // The main process holds every close until the renderer confirms, so
     // unexported region edits get a chance to veto it.
     const offClose = window.neoview.onCloseRequested(() => {
@@ -91,6 +300,8 @@ export default function App(): JSX.Element {
     return () => {
       offOpened()
       offError()
+      offFolder()
+      offScan()
       offClose()
     }
   }, [])
@@ -98,6 +309,9 @@ export default function App(): JSX.Element {
   // Segmentation keyboard shortcuts (skip while typing in a field).
   useEffect(() => {
     const onKey = (e: KeyboardEvent): void => {
+      // Controls that already consumed the key (e.g. the range-slider thumbs,
+      // which are divs the tag guard below cannot catch) must win.
+      if (e.defaultPrevented) return
       const tag = (e.target as HTMLElement | null)?.tagName
       if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return
       const st = useStore.getState()
@@ -113,6 +327,8 @@ export default function App(): JSX.Element {
         st.setBrushRadius(st.brushRadius - 1)
       } else if (e.key === ']') {
         st.setBrushRadius(st.brushRadius + 1)
+      } else if ((e.key === 'ArrowDown' || e.key === 'ArrowUp') && st.folder) {
+        navigateFolder(e.key === 'ArrowDown' ? 1 : -1)
       } else {
         return
       }
@@ -153,17 +369,30 @@ export default function App(): JSX.Element {
       setDragging(false)
       const file = e.dataTransfer?.files[0]
       if (!file) return
-      if (!acceptsName(file.name)) {
-        useStore.getState().fail(`"${file.name}" is not a .nii or .nii.gz file.`)
-        return
-      }
-      if (file.size > MAX_BYTES) {
-        useStore.getState().fail('File is larger than 2 GB, which is not supported.')
-        return
-      }
+      if (useStore.getState().folderLoading) return
       const target = zoneAt(e)
       const path = window.neoview.pathForFile(file) || null
-      void file.arrayBuffer().then((buf) => loadFromBuffer(file.name, buf, target, path))
+      void (async () => {
+        // A dropped directory enters folder mode regardless of the drop zone.
+        if (path) {
+          try {
+            if (await scanIntoFolder(path)) return
+          } catch (err) {
+            useStore.getState().fail(ipcErrorMessage(err))
+            return
+          }
+        }
+        if (!acceptsName(file.name)) {
+          useStore.getState().fail(`"${file.name}" is not a .nii or .nii.gz file.`)
+          return
+        }
+        if (file.size > MAX_BYTES) {
+          useStore.getState().fail('File is larger than 2 GB, which is not supported.')
+          return
+        }
+        const buf = await file.arrayBuffer()
+        await loadFromBuffer(file.name, buf, target, path)
+      })()
     }
     window.addEventListener('dragenter', onDragEnter)
     window.addEventListener('dragleave', onDragLeave)
@@ -179,15 +408,17 @@ export default function App(): JSX.Element {
 
   return (
     <div className="app">
-      {loadState === 'loading' && <div className="loading-bar" />}
+      {(loadState === 'loading' || folderLoading) && <div className="loading-bar" />}
       <Toolbar
         onOpen={openDialog}
+        onOpenFolder={openFolder}
         sidebarOpen={sidebarOpen}
         onToggleSidebar={() => setSidebarOpen((v) => !v)}
       />
       <main
-        className={`workspace${sidebarOpen ? '' : ' sidebar-closed'}${hasMaximized ? ' has-max' : ''}`}
+        className={`workspace${folderOpen && filePanelOpen ? ' has-files' : ''}${sidebarOpen ? '' : ' sidebar-closed'}${hasMaximized ? ' has-max' : ''}`}
       >
+        {folderOpen && filePanelOpen && <FilePanel onSelect={requestFolderEntry} />}
         {hasVolume ? (
           <>
             <SliceView view={0} />
@@ -197,7 +428,7 @@ export default function App(): JSX.Element {
             <SidePanel onAddOverlay={addOverlayViaDialog} />
           </>
         ) : (
-          <EmptyState onOpen={openDialog} />
+          <EmptyState onOpen={openDialog} onOpenFolder={openFolder} />
         )}
       </main>
       <StatusBar />

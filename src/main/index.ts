@@ -1,5 +1,5 @@
 import { app, shell, dialog, BrowserWindow, Menu, ipcMain } from 'electron'
-import { join } from 'path'
+import { join, resolve, sep } from 'path'
 import { promises as fs } from 'fs'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
@@ -22,6 +22,108 @@ async function readVolumeFile(path: string): Promise<OpenedFile> {
   const name = path.split(/[\\/]/).pop() ?? path
   return { name, path, bytes }
 }
+
+interface FolderEntry {
+  name: string
+  path: string
+  /** Directory relative to the scanned root, '/'-joined; '' for the root itself. */
+  relDir: string
+}
+
+interface FolderScan {
+  root: string
+  files: FolderEntry[]
+  truncated: boolean
+}
+
+const SCAN_DEPTH_MAX = 8
+const SCAN_FILES_MAX = 2000
+// Directory reads run through a small pool: on slow (external) disks the
+// per-readdir latency dominates, and overlapping reads roughly halves the
+// scan time; beyond ~8 concurrent reads the disk itself is the bottleneck.
+const SCAN_CONCURRENCY = 16
+const SCAN_BATCH_MS = 200
+
+function isVolumeName(name: string): boolean {
+  const n = name.toLowerCase()
+  return n.endsWith('.nii') || n.endsWith('.nii.gz')
+}
+
+/** onBatch streams newly found files every SCAN_BATCH_MS (first find flushes
+ * immediately), so the caller can show results while the scan runs. */
+async function scanFolder(
+  root: string,
+  onBatch?: (files: FolderEntry[]) => void
+): Promise<FolderScan> {
+  const files: FolderEntry[] = []
+  let sent = 0
+  let lastFlush = 0
+  const maybeFlush = (): void => {
+    if (!onBatch || sent >= files.length || Date.now() - lastFlush < SCAN_BATCH_MS) return
+    onBatch(files.slice(sent))
+    sent = files.length
+    lastFlush = Date.now()
+  }
+  let truncated = false
+  const pending: Array<{ dir: string; relDir: string; depth: number }> = [
+    { dir: root, relDir: '', depth: 0 }
+  ]
+
+  const processDir = async (item: {
+    dir: string
+    relDir: string
+    depth: number
+  }): Promise<void> => {
+    // An unreadable subfolder should not kill the whole scan.
+    const entries = await fs.readdir(item.dir, { withFileTypes: true }).catch(() => [])
+    for (const ent of entries) {
+      if (truncated) return
+      if (ent.name.startsWith('.') || ent.isSymbolicLink()) continue
+      if (ent.isDirectory()) {
+        if (item.depth < SCAN_DEPTH_MAX) {
+          pending.push({
+            dir: join(item.dir, ent.name),
+            relDir: item.relDir ? `${item.relDir}/${ent.name}` : ent.name,
+            depth: item.depth + 1
+          })
+        }
+      } else if (ent.isFile() && isVolumeName(ent.name)) {
+        if (files.length >= SCAN_FILES_MAX) {
+          truncated = true
+          return
+        }
+        files.push({ name: ent.name, path: join(item.dir, ent.name), relDir: item.relDir })
+        maybeFlush()
+      }
+    }
+  }
+
+  await new Promise<void>((resolveDone) => {
+    let active = 0
+    const pump = (): void => {
+      if (truncated) pending.length = 0
+      // Resolve only once in-flight reads drain, so the result stops mutating.
+      if (pending.length === 0 && active === 0) {
+        resolveDone()
+        return
+      }
+      while (active < SCAN_CONCURRENCY && pending.length > 0) {
+        const item = pending.shift()
+        if (!item) break
+        active++
+        void processDir(item).finally(() => {
+          active--
+          pump()
+        })
+      }
+    }
+    pump()
+  })
+  return { root, files, truncated }
+}
+
+/** Roots the user has opened; 'read-file' only serves paths under one of them. */
+const scannedRoots = new Set<string>()
 
 interface ExportRequest {
   /** Target directory; must already exist. */
@@ -110,6 +212,13 @@ function buildMenu(getWindow: () => BrowserWindow | null): void {
               win.webContents.send('file-open-error', (err as Error).message)
             }
           }
+        },
+        {
+          label: 'Open Folder…',
+          accelerator: 'CmdOrCtrl+Shift+O',
+          // The renderer owns the whole flow (picker, scan, loading feedback),
+          // so the menu only asks it to start.
+          click: () => getWindow()?.webContents.send('open-folder-request')
         },
         { type: 'separator' },
         isMac ? { role: 'close' } : { role: 'quit' }
@@ -213,6 +322,38 @@ if (!gotLock) {
       const win = BrowserWindow.fromWebContents(event.sender)
       if (!win) return null
       return pickAndReadFile(win)
+    })
+
+    // Path from the directory picker or a drag&drop; null when it is not a
+    // directory (the caller falls back to single-file handling).
+    ipcMain.handle('scan-folder', async (event, path: string) => {
+      if (typeof path !== 'string' || !path) return null
+      const stat = await fs.stat(path).catch(() => null)
+      if (!stat?.isDirectory()) return null
+      // Registered before the scan: the renderer starts loading streamed
+      // files while the scan is still running.
+      scannedRoots.add(resolve(path))
+      return scanFolder(path, (batch) => {
+        if (!event.sender.isDestroyed()) {
+          event.sender.send('scan-folder-progress', { root: path, files: batch })
+        }
+      })
+    })
+
+    ipcMain.handle('read-file', async (_event, path: string) => {
+      if (typeof path !== 'string' || !isVolumeName(path)) {
+        throw new Error('Not a .nii or .nii.gz file.')
+      }
+      const full = resolve(path)
+      let inRoot = false
+      for (const root of scannedRoots) {
+        if (full === root || full.startsWith(root + sep)) {
+          inRoot = true
+          break
+        }
+      }
+      if (!inRoot) throw new Error('File is outside the opened folder.')
+      return readVolumeFile(full)
     })
 
     ipcMain.handle('export-file', async (_event, req: ExportRequest) => writeExport(req))

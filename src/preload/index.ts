@@ -6,6 +6,19 @@ export interface OpenedFile {
   bytes: ArrayBuffer
 }
 
+export interface FolderEntry {
+  name: string
+  path: string
+  /** Directory relative to the scanned root, '/'-joined; '' for the root itself. */
+  relDir: string
+}
+
+export interface FolderScan {
+  root: string
+  files: FolderEntry[]
+  truncated: boolean
+}
+
 export interface ExportRequest {
   dir: string
   fileName: string
@@ -30,6 +43,25 @@ const api = {
     ipcRenderer.on('file-open-error', listener)
     return () => ipcRenderer.removeListener('file-open-error', listener)
   },
+  /** Scan a directory for volume files; null when the path is not a directory. */
+  scanFolder: (path: string): Promise<FolderScan | null> => ipcRenderer.invoke('scan-folder', path),
+  /** Batches of files found while a scan-folder call is still running. */
+  onScanFolderProgress: (cb: (root: string, files: FolderEntry[]) => void): (() => void) => {
+    const listener = (
+      _e: Electron.IpcRendererEvent,
+      msg: { root: string; files: FolderEntry[] }
+    ): void => cb(msg.root, msg.files)
+    ipcRenderer.on('scan-folder-progress', listener)
+    return () => ipcRenderer.removeListener('scan-folder-progress', listener)
+  },
+  /** File > Open Folder… was chosen; the renderer runs the picker + scan flow. */
+  onOpenFolderRequest: (cb: () => void): (() => void) => {
+    const listener = (): void => cb()
+    ipcRenderer.on('open-folder-request', listener)
+    return () => ipcRenderer.removeListener('open-folder-request', listener)
+  },
+  /** Read one file from inside a previously opened folder. */
+  readFile: (path: string): Promise<OpenedFile> => ipcRenderer.invoke('read-file', path),
   /** Absolute path of a dropped File ('' when unavailable). */
   pathForFile: (file: File): string => {
     try {
