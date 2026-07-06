@@ -47,7 +47,11 @@ async function loadFromBuffer(
   name: string,
   buf: ArrayBuffer,
   target: LoadTarget,
-  path: string | null = null
+  path: string | null = null,
+  // Extra commit-time veto for callers whose intent can go stale while the
+  // parse runs (folder navigation: the queued target may have moved on —
+  // that does not start another base load, so the generation alone misses it).
+  isStale?: () => boolean
 ): Promise<void> {
   const store = useStore.getState()
   const asOverlay = target === 'overlay' || (target === 'auto' && store.volume !== null)
@@ -68,6 +72,7 @@ async function loadFromBuffer(
     } else {
       const volume = await loadVolume(name, buf)
       if (gen !== baseLoadGen) return // a newer base load owns the view
+      if (isStale?.()) return // the caller's intent moved on mid-parse
       useStore.getState().setVolume(volume, path)
     }
   } catch (err) {
@@ -140,7 +145,12 @@ async function pumpEntryLoads(): Promise<void> {
             break
           }
         }
-        await loadFromBuffer(opened.name, opened.bytes, 'base', opened.path)
+        // The veto keeps a slow parse from flashing an intermediate file
+        // when the queued target moved on (prefetched bytes skip the read,
+        // so the pre-parse checks alone cannot catch that).
+        await loadFromBuffer(opened.name, opened.bytes, 'base', opened.path, () => {
+          return queuedPath !== path
+        })
       } catch (err) {
         useStore.getState().fail(ipcErrorMessage(err))
         break
