@@ -110,6 +110,59 @@ describe('brightness', () => {
   })
 })
 
+describe('opened folder', () => {
+  const folder = {
+    root: '/data/set',
+    files: [{ name: 'a.nii', path: '/data/set/a.nii', relDir: '' }],
+    truncated: false
+  }
+
+  it('setFolder stores it, shows the panel, and closeFolder clears it', () => {
+    useStore.getState().toggleFilePanel()
+    expect(useStore.getState().filePanelOpen).toBe(false)
+    useStore.getState().setFolder(folder)
+    expect(useStore.getState().folder).toEqual(folder)
+    expect(useStore.getState().filePanelOpen).toBe(true)
+    useStore.getState().closeFolder()
+    expect(useStore.getState().folder).toBeNull()
+  })
+
+  it('appendFolderFiles merges sorted, dedups, and ignores other roots', () => {
+    useStore.getState().setFolder(folder)
+    useStore.getState().appendFolderFiles('/data/set', [
+      { name: 'b10.nii', path: '/data/set/g/b10.nii', relDir: 'g' },
+      { name: 'b2.nii', path: '/data/set/g/b2.nii', relDir: 'g' },
+      { name: 'a.nii', path: '/data/set/a.nii', relDir: '' }
+    ])
+    expect(useStore.getState().folder?.files.map((f) => f.name)).toEqual([
+      'a.nii',
+      'b2.nii',
+      'b10.nii'
+    ])
+    const before = useStore.getState().folder
+    useStore
+      .getState()
+      .appendFolderFiles('/other/root', [{ name: 'c.nii', path: '/other/root/c.nii', relDir: '' }])
+    expect(useStore.getState().folder).toBe(before)
+    useStore.getState().closeFolder()
+  })
+
+  it('survives loading a file that belongs to it', () => {
+    useStore.getState().setFolder(folder)
+    useStore.getState().setVolume(baseVolume(), '/data/set/a.nii')
+    expect(useStore.getState().folder).toEqual(folder)
+  })
+
+  it('clears when a base volume from outside it loads', () => {
+    useStore.getState().setFolder(folder)
+    useStore.getState().setVolume(baseVolume(), '/elsewhere/b.nii')
+    expect(useStore.getState().folder).toBeNull()
+    useStore.getState().setFolder(folder)
+    useStore.getState().setVolume(baseVolume())
+    expect(useStore.getState().folder).toBeNull()
+  })
+})
+
 describe('overlay layers', () => {
   it('addOverlay appends with guessed kind, defaults, and unique ids', () => {
     useStore.getState().setVolume(baseVolume())

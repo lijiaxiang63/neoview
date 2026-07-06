@@ -3,14 +3,23 @@ import { useStore } from '../store'
 
 interface Props {
   onOpen: () => void
+  onOpenFolder: () => void
   sidebarOpen: boolean
   onToggleSidebar: () => void
 }
 
 const isMac = navigator.platform.toLowerCase().includes('mac')
 
-export function Toolbar({ onOpen, sidebarOpen, onToggleSidebar }: Props): JSX.Element {
+export function Toolbar({
+  onOpen,
+  onOpenFolder,
+  sidebarOpen,
+  onToggleSidebar
+}: Props): JSX.Element {
   const volume = useStore((s) => s.volume)
+  const folderOpen = useStore((s) => s.folder !== null)
+  const filePanelOpen = useStore((s) => s.filePanelOpen)
+  const toggleFilePanel = useStore((s) => s.toggleFilePanel)
 
   return (
     <header className={`toolbar${isMac ? ' mac-inset' : ''}`}>
@@ -35,6 +44,23 @@ export function Toolbar({ onOpen, sidebarOpen, onToggleSidebar }: Props): JSX.El
         <button className="btn" onClick={onOpen}>
           Open…
         </button>
+        <button
+          className="btn"
+          onClick={onOpenFolder}
+          title={isMac ? 'Open folder (⌘⇧O)' : 'Open folder (Ctrl+Shift+O)'}
+        >
+          Folder…
+        </button>
+        {folderOpen && (
+          <button
+            className={`btn${filePanelOpen ? ' toggled' : ''}`}
+            aria-pressed={filePanelOpen}
+            title={filePanelOpen ? 'Hide file list' : 'Show file list'}
+            onClick={toggleFilePanel}
+          >
+            Files
+          </button>
+        )}
         <button
           className={`btn${sidebarOpen ? ' toggled' : ''}`}
           aria-pressed={sidebarOpen}

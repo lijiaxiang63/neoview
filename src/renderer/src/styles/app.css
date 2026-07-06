@@ -54,6 +54,23 @@ body {
   display: none;
 }
 
+/* An opened folder adds the file panel as a leading column. */
+.workspace.has-files {
+  grid-template-columns: 220px 1fr 1fr 280px;
+}
+
+.workspace.has-files.sidebar-closed {
+  grid-template-columns: 220px 1fr 1fr;
+}
+
+.workspace.has-files.has-max > .view-max {
+  grid-column: 2 / 4;
+}
+
+.workspace.has-files .empty-state {
+  grid-column: 2 / -1;
+}
+
 /* One slice view maximized (double-click in navigate mode). The other views
    are hidden but stay mounted, so their canvases and the 3D camera survive. */
 .workspace.has-max > .slice-view:not(.view-max),
@@ -173,7 +190,7 @@ body {
 }
 
 .slice-view .overlay-canvas {
-  cursor: crosshair;
+  cursor: default;
 }
 
 .slice-view .chip {
@@ -258,7 +275,8 @@ body {
 /* ---------- Side panel ---------- */
 
 .side-panel {
-  grid-column: 3;
+  /* End-relative: the last track of both the 3- and 4-column workspace. */
+  grid-column: -2;
   grid-row: 1 / -1;
   background: var(--bg-1);
   overflow-y: auto;
@@ -275,6 +293,166 @@ body {
   letter-spacing: 0.08em;
   color: var(--text-2);
   margin-bottom: 10px;
+}
+
+/* ---------- File panel (opened folder) ---------- */
+
+.file-panel {
+  grid-column: 1;
+  grid-row: 1 / -1;
+  background: var(--bg-1);
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+.file-panel-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 12px 6px;
+}
+
+.file-panel-head h3 {
+  flex: 1;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-2);
+}
+
+.file-panel-head .count {
+  color: var(--text-2);
+  font-size: 10px;
+}
+
+.file-panel-close {
+  appearance: none;
+  border: none;
+  background: none;
+  color: var(--text-2);
+  font-size: 12px;
+  cursor: pointer;
+  padding: 2px 4px;
+  border-radius: var(--radius-sm);
+}
+
+.file-panel-close:hover {
+  color: var(--text-0);
+  background: var(--bg-2);
+}
+
+.file-panel-root {
+  padding: 0 12px 8px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-2);
+  font-size: 10px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  /* Ellipsize on the left so the innermost folders stay readable. */
+  direction: rtl;
+  text-align: left;
+}
+
+.file-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 6px;
+}
+
+.file-group + .file-group {
+  margin-top: 8px;
+}
+
+.file-group-head {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--bg-1);
+  padding: 4px 6px;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.file-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  appearance: none;
+  border: none;
+  background: none;
+  padding: 4px 8px;
+  border-radius: 6px;
+  color: var(--text-1);
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+  transition:
+    background 0.12s ease,
+    color 0.12s ease;
+}
+
+.file-row:hover {
+  background: var(--bg-2);
+  color: var(--text-0);
+}
+
+.file-row.active {
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+}
+
+/* Navigation target whose load is still in flight (arrow-key scrubbing). */
+.file-row.pending {
+  box-shadow: inset 0 0 0 1px var(--accent);
+  color: var(--text-0);
+}
+
+.file-row svg {
+  flex: none;
+  opacity: 0.6;
+}
+
+.file-row .file-name {
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.file-row .ext-badge {
+  flex: none;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--bg-2);
+  color: var(--text-2);
+  font-size: 9px;
+  line-height: 14px;
+}
+
+.file-row.active .ext-badge {
+  background: rgba(79, 163, 255, 0.2);
+  color: var(--accent-strong);
+}
+
+.file-empty {
+  padding: 14px 8px;
+  color: var(--text-2);
+  font-size: 11px;
+  text-align: center;
 }
 
 .preset-row {
@@ -507,7 +685,7 @@ body {
 /* ---------- Region segmentation ---------- */
 
 .slice-view.box-tool .overlay-canvas {
-  cursor: cell;
+  cursor: crosshair;
 }
 
 .slice-view.brush-tool .overlay-canvas {
@@ -795,7 +973,7 @@ body {
 
 .toast {
   position: absolute;
-  bottom: calc(var(--statusbar-h) + 14px);
+  top: calc(var(--toolbar-h) + 14px);
   left: 50%;
   transform: translateX(-50%);
   z-index: 80;

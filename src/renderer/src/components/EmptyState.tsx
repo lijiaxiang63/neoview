@@ -2,11 +2,12 @@ import { type JSX } from 'react'
 
 interface Props {
   onOpen: () => void
+  onOpenFolder: () => void
 }
 
 const isMac = navigator.platform.toLowerCase().includes('mac')
 
-export function EmptyState({ onOpen }: Props): JSX.Element {
+export function EmptyState({ onOpen, onOpenFolder }: Props): JSX.Element {
   return (
     <div className="empty-state">
       <div className="drop-zone">
@@ -34,9 +35,15 @@ export function EmptyState({ onOpen }: Props): JSX.Element {
           />
         </svg>
         <h2>Drop a .nii or .nii.gz file</h2>
-        <span className="hint">or press {isMac ? '⌘O' : 'Ctrl+O'} to browse</span>
+        <span className="hint">
+          or press {isMac ? '⌘O' : 'Ctrl+O'} to browse, {isMac ? '⌘⇧O' : 'Ctrl+Shift+O'} for a
+          folder
+        </span>
         <button className="btn primary" onClick={onOpen}>
           Open file…
+        </button>
+        <button className="btn" onClick={onOpenFolder}>
+          Open folder…
         </button>
       </div>
     </div>

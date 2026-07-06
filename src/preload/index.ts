@@ -6,6 +6,19 @@ export interface OpenedFile {
   bytes: ArrayBuffer
 }
 
+export interface FolderEntry {
+  name: string
+  path: string
+  /** Directory relative to the scanned root, '/'-joined; '' for the root itself. */
+  relDir: string
+}
+
+export interface FolderScan {
+  root: string
+  files: FolderEntry[]
+  truncated: boolean
+}
+
 export interface ExportRequest {
   dir: string
   fileName: string
@@ -30,6 +43,52 @@ const api = {
     ipcRenderer.on('file-open-error', listener)
     return () => ipcRenderer.removeListener('file-open-error', listener)
   },
+  /** Directory picker + recursive scan, both owned by the main process. The
+   * token is echoed in every progress batch so the caller can drop batches
+   * from superseded scans. */
+  openFolderScan: (token: number): Promise<FolderScan | null> =>
+    ipcRenderer.invoke('open-folder-scan', token),
+  /** Whether a path names a directory (read-only probe, registers nothing). */
+  isDirectory: (path: string): Promise<boolean> => ipcRenderer.invoke('is-directory', path),
+  /**
+   * Scan a dropped directory for volume files; null when the drop is not a
+   * directory. The path is derived here from the File object itself — page
+   * script cannot mint a File with an on-disk path, so only genuine drops
+   * (or picks) can register a scan root.
+   */
+  scanDroppedFolder: (file: File, token: number): Promise<FolderScan | null> => {
+    let path = ''
+    try {
+      path = webUtils.getPathForFile(file)
+    } catch {
+      return Promise.resolve(null)
+    }
+    if (!path) return Promise.resolve(null)
+    return ipcRenderer.invoke('scan-folder', path, token)
+  },
+  /** Batches of files found while a scan-folder call is still running. */
+  onScanFolderProgress: (
+    cb: (token: number, root: string, files: FolderEntry[]) => void
+  ): (() => void) => {
+    const listener = (
+      _e: Electron.IpcRendererEvent,
+      msg: { token: number; root: string; files: FolderEntry[] }
+    ): void => cb(msg.token, msg.root, msg.files)
+    ipcRenderer.on('scan-folder-progress', listener)
+    return () => ipcRenderer.removeListener('scan-folder-progress', listener)
+  },
+  /** File > Open Folder… was chosen; the renderer runs the picker + scan flow. */
+  onOpenFolderRequest: (cb: () => void): (() => void) => {
+    const listener = (): void => cb()
+    ipcRenderer.on('open-folder-request', listener)
+    return () => ipcRenderer.removeListener('open-folder-request', listener)
+  },
+  /** Read one file from inside a previously opened folder. */
+  readFile: (path: string): Promise<OpenedFile> => ipcRenderer.invoke('read-file', path),
+  /** Read a folder file only when its size is within maxBytes; null otherwise
+   * (the size gate runs main-side, before any bytes cross the boundary). */
+  readFileWithin: (path: string, maxBytes: number): Promise<OpenedFile | null> =>
+    ipcRenderer.invoke('read-file-limited', path, maxBytes),
   /** Absolute path of a dropped File ('' when unavailable). */
   pathForFile: (file: File): string => {
     try {
