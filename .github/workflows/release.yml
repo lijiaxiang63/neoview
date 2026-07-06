@@ -1,0 +1,137 @@
+name: Release
+
+# Build installers for macOS, Windows and Linux and publish a GitHub Release
+# whenever a version tag (e.g. v1.2.3) is pushed.
+on:
+  push:
+    tags:
+      - 'v*'
+
+# Least-privilege by default; the release job opts into write below.
+permissions:
+  contents: read
+
+jobs:
+  verify-version:
+    name: Verify tag matches package.json
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Compare tag to package.json version
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          pkg="$(node -p "require('./package.json').version")"
+          echo "Tag version:         $tag"
+          echo "package.json version: $pkg"
+          if [ "$tag" != "$pkg" ]; then
+            echo "::error::Tag v$tag does not match package.json version $pkg. Bump package.json (and re-tag) so they agree before releasing."
+            exit 1
+          fi
+          echo "Versions match."
+
+  build:
+    name: Build (${{ matrix.name }})
+    needs: verify-version
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            name: macOS
+            script: build:mac
+          - os: windows-latest
+            name: Windows
+            script: build:win
+          - os: ubuntu-latest
+            name: Linux
+            script: build:linux
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run tests
+        run: npm test
+
+      - name: Build installer
+        # --publish never: electron-builder only produces artifacts here;
+        # the dedicated release job below uploads them.
+        run: npm run ${{ matrix.script }} -- --publish never
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload installers
+        uses: actions/upload-artifact@v4
+        with:
+          name: installers-${{ matrix.name }}
+          if-no-files-found: error
+          retention-days: 7
+          path: |
+            dist/*.dmg
+            dist/*.zip
+            dist/*.exe
+            dist/*.AppImage
+            dist/*.deb
+
+  release:
+    name: Publish Release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download all installers
+        uses: actions/download-artifact@v4
+        with:
+          pattern: installers-*
+          merge-multiple: true
+          path: dist
+
+      - name: List artifacts
+        run: ls -lh dist
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          # Auto-generate notes from merged PRs / commits since the last tag,
+          # then prepend an install guide for each platform.
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          body: |
+            ## Installers
+
+            | Platform | File |
+            | --- | --- |
+            | macOS | `.dmg` |
+            | Windows | `.exe` (installer) |
+            | Linux | `.AppImage` / `.deb` |
+
+            ### Install notes
+
+            - **macOS** — the app is ad-hoc signed (not notarized). On first launch,
+              right-click the app and choose **Open**, or run
+              `xattr -dr com.apple.quarantine /Applications/neoview.app` to clear the
+              Gatekeeper quarantine flag.
+            - **Windows** — run the `-setup.exe` installer. SmartScreen may warn
+              because the binary is unsigned; choose **More info → Run anyway**.
+            - **Linux** — `chmod +x neoview-*.AppImage` then run it, or install the
+              `.deb` with `sudo apt install ./neoview_*.deb`.
+
+            ---
+          files: |
+            dist/*.dmg
+            dist/*.zip
+            dist/*.exe
+            dist/*.AppImage
+            dist/*.deb

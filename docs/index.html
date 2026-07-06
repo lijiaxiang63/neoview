@@ -1,0 +1,638 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>neoview — a desktop viewer for volumetric data</title>
+<meta name="description" content="A cross-platform desktop viewer for .nii / .nii.gz volumes — tri-planar slicing, GPU 3D raycast rendering, and interactive region segmentation. Built from scratch with Electron, React, and TypeScript." />
+
+<meta property="og:title" content="neoview" />
+<meta property="og:description" content="See inside volumetric data. Tri-planar slicing, GPU raycasting, and interactive segmentation — in one desktop app." />
+<meta property="og:type" content="website" />
+
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,300;9..144,400;9..144,500;9..144,600&family=Inter:wght@400;500;600&display=swap" rel="stylesheet" />
+
+<style>
+:root{
+  --paper:#fbfaf8;
+  --paper-2:#f4f2ec;
+  --ink:#15171c;
+  --ink-2:#4b515b;
+  --ink-3:#878d97;
+  --line:#e7e3db;
+  --line-2:#d8d3c8;
+  --accent:#2765d9;
+  --accent-ink:#1a4fb0;
+  --accent-green:#12946a; /* README "zero deps" badge, tuned for light paper */
+
+  /* app palette — used only inside the dark UI mockups */
+  --app-bg0:#0b0d10;
+  --app-bg1:#12151a;
+  --app-bg2:#1a1e25;
+  --app-bg3:#232935;
+  --app-canvas:#05060a;
+  --app-border:#262b33;
+  --app-text0:#e8ebf0;
+  --app-text1:#9aa3b0;
+  --app-text2:#5c6570;
+  --app-accent:#4fa3ff;
+  --app-ok:#3ddc97;
+
+  --serif:'Fraunces',Georgia,'Times New Roman',serif;
+  --sans:'Inter',system-ui,-apple-system,'Segoe UI',Arial,sans-serif;
+  --mono:ui-monospace,'SF Mono','Cascadia Code',Consolas,monospace;
+
+  --maxw:1140px;
+}
+
+*{box-sizing:border-box}
+html{-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;scroll-behavior:smooth}
+body{
+  margin:0;
+  background:var(--paper);
+  color:var(--ink);
+  font-family:var(--sans);
+  font-size:17px;
+  line-height:1.6;
+}
+a{color:inherit;text-decoration:none}
+img{max-width:100%;display:block}
+::selection{background:rgba(39,101,217,.16)}
+
+.wrap{max-width:var(--maxw);margin:0 auto;padding:0 32px}
+
+/* ---------- nav ---------- */
+.nav{
+  position:sticky;top:0;z-index:50;
+  backdrop-filter:saturate(140%) blur(10px);
+  background:rgba(251,250,248,.78);
+  border-bottom:1px solid transparent;
+  transition:border-color .3s;
+}
+.nav.scrolled{border-bottom-color:var(--line)}
+.nav-in{display:flex;align-items:center;justify-content:space-between;height:64px;max-width:var(--maxw);margin:0 auto;padding:0 32px}
+.brand{display:flex;align-items:center;gap:10px;font-weight:600;letter-spacing:-.01em}
+.brand .dot{width:10px;height:10px;border-radius:50%;background:var(--accent);box-shadow:0 0 0 4px rgba(39,101,217,.14)}
+.brand b{font-family:var(--serif);font-weight:500;font-size:19px}
+.nav-links{display:flex;align-items:center;gap:30px;font-size:14.5px;color:var(--ink-2)}
+.nav-links a{transition:color .18s}
+.nav-links a:hover{color:var(--ink)}
+.nav-cta{
+  border:1px solid var(--line-2);border-radius:8px;padding:7px 15px;
+  font-weight:500;color:var(--ink);transition:border-color .18s,background .18s;
+}
+.nav-cta:hover{border-color:var(--ink-3);background:#fff}
+@media(max-width:720px){
+  .nav-links a.hide-sm{display:none}
+  .spec{flex-direction:column;gap:9px}
+  .spec .sep{display:none}
+}
+
+/* ---------- hero ---------- */
+.hero{padding:88px 0 40px;text-align:center;position:relative;overflow:hidden}
+.eyebrow{
+  display:inline-flex;align-items:center;gap:8px;
+  font-family:var(--mono);font-size:12.5px;letter-spacing:.06em;text-transform:uppercase;
+  color:var(--ink-2);border:1px solid var(--line-2);border-radius:100px;padding:6px 14px;
+  background:#fff;
+}
+.eyebrow .live{width:6px;height:6px;border-radius:50%;background:var(--app-ok);box-shadow:0 0 0 3px rgba(61,220,151,.2)}
+h1{
+  font-family:var(--serif);font-weight:400;
+  font-size:clamp(44px,7vw,84px);line-height:1.02;letter-spacing:-.02em;
+  margin:26px auto 0;max-width:16ch;text-wrap:balance;
+}
+h1 em{font-style:italic;color:var(--accent-ink);padding-right:.1em}
+.lede{
+  font-size:clamp(17px,2.1vw,21px);color:var(--ink-2);line-height:1.55;
+  max-width:56ch;margin:24px auto 0;font-weight:400;text-wrap:balance;
+}
+.cta-row{display:flex;gap:14px;justify-content:center;flex-wrap:wrap;margin-top:34px}
+.btn{
+  display:inline-flex;align-items:center;gap:9px;
+  border-radius:10px;padding:13px 22px;font-weight:500;font-size:15.5px;
+  transition:transform .12s,box-shadow .2s,background .2s;
+}
+.btn-primary{background:var(--ink);color:#fff}
+.btn-primary:hover{transform:translateY(-1px);box-shadow:0 10px 26px -12px rgba(21,23,28,.55)}
+.btn-ghost{border:1px solid var(--line-2);background:#fff;color:var(--ink)}
+.btn-ghost:hover{border-color:var(--ink-3);transform:translateY(-1px)}
+.btn svg{width:17px;height:17px}
+
+/* spec strip */
+.spec{
+  margin:44px auto 0;display:flex;gap:8px 26px;justify-content:center;flex-wrap:wrap;
+  font-family:var(--mono);font-size:12.5px;color:var(--ink-3);letter-spacing:.02em;
+}
+.spec b{color:var(--ink-2);font-weight:500}
+.spec .zero{color:var(--accent-green);font-weight:600}
+.spec .sep{color:var(--line-2)}
+
+/* ---------- hero shot ---------- */
+.stage{margin:60px auto 0;max-width:var(--maxw);padding:0 32px}
+.frame{
+  position:relative;border-radius:16px;overflow:hidden;
+  border:1px solid var(--line-2);
+  background:var(--app-bg0);
+  box-shadow:0 1px 0 rgba(255,255,255,.6) inset, 0 40px 80px -40px rgba(21,23,28,.5), 0 12px 30px -18px rgba(21,23,28,.3);
+}
+.frame.hero-shot{aspect-ratio:16/10}
+/* window chrome bar */
+.chrome{
+  height:38px;display:flex;align-items:center;gap:8px;padding:0 14px;
+  background:linear-gradient(var(--app-bg2),var(--app-bg1));
+  border-bottom:1px solid var(--app-border);
+}
+.chrome .lights{display:flex;gap:7px}
+.chrome .lights i{width:11px;height:11px;border-radius:50%;display:block}
+.chrome .lights i:nth-child(1){background:#ff5f57}
+.chrome .lights i:nth-child(2){background:#febc2e}
+.chrome .lights i:nth-child(3){background:#28c840}
+.chrome .title{margin:0 auto;font-family:var(--mono);font-size:11.5px;color:var(--app-text2);transform:translateX(-24px)}
+
+/* the actual UI mock lives here; drop a real screenshot <img> over it to replace */
+.shot{position:absolute;inset:38px 0 0 0}
+.shot img{width:100%;height:100%;object-fit:cover;object-position:top}
+
+/* replace-hint ribbon (only visible on mock) */
+.mockflag{
+  position:absolute;right:12px;bottom:12px;z-index:3;
+  font-family:var(--mono);font-size:10.5px;letter-spacing:.04em;
+  color:var(--app-text1);background:rgba(11,13,16,.7);border:1px solid var(--app-border);
+  border-radius:6px;padding:4px 9px;
+}
+
+/* ===== quad-view mock (CSS stand-in for the real app) ===== */
+.quad{position:absolute;inset:38px 0 0 0;display:grid;grid-template-columns:1fr 1fr;grid-template-rows:1fr 1fr;gap:2px;background:var(--app-border);padding:2px}
+.pane{position:relative;background:var(--app-canvas);overflow:hidden}
+.pane .lbl{position:absolute;top:8px;left:9px;font-family:var(--mono);font-size:10px;color:var(--app-text1);letter-spacing:.08em;z-index:2}
+.pane .idx{position:absolute;top:8px;right:9px;font-family:var(--mono);font-size:10px;color:var(--app-text2);z-index:2}
+.slice{position:absolute;inset:0;display:grid;place-items:center}
+/* crosshair */
+.cross{position:absolute;inset:0;z-index:1}
+.cross::before,.cross::after{content:"";position:absolute;background:rgba(79,163,255,.5)}
+.cross::before{left:0;right:0;height:1px}
+.cross::after{top:0;bottom:0;width:1px}
+.q-xy .cross::before{top:54%}.q-xy .cross::after{left:47%}
+.q-xz .cross::before{top:44%}.q-xz .cross::after{left:52%}
+.q-yz .cross::before{top:60%}.q-yz .cross::after{left:44%}
+/* pseudo-anatomy blobs, purely abstract */
+.blob{position:absolute;border-radius:50%;filter:blur(.5px)}
+.q-xy .blob{width:58%;height:52%;left:20%;top:26%;background:
+  radial-gradient(closest-side,#d7dde6 0%,#8f98a6 42%,#3b4250 70%,transparent 100%)}
+.q-xz .blob{width:64%;height:44%;left:18%;top:30%;background:
+  radial-gradient(closest-side,#c9cfd9 0%,#828b99 45%,#333a45 72%,transparent 100%)}
+.q-yz .blob{width:50%;height:58%;left:26%;top:22%;background:
+  radial-gradient(closest-side,#cfd5df 0%,#868f9d 44%,#2f3540 74%,transparent 100%)}
+/* 3D pane */
+.q-3d{background:radial-gradient(120% 120% at 50% 40%,#0d1622 0%,#070a10 60%,#05060a 100%)}
+.q-3d .render{position:absolute;inset:0;display:grid;place-items:center}
+.q-3d .vol{
+  width:56%;aspect-ratio:1;border-radius:50%;
+  background:
+    radial-gradient(closest-side at 44% 40%,rgba(255,255,255,.95) 0%,rgba(120,184,255,.7) 22%,rgba(79,163,255,.35) 44%,rgba(30,60,110,.25) 66%,transparent 100%);
+  box-shadow:0 0 60px 10px rgba(79,163,255,.18);
+  filter:saturate(115%);
+}
+.q-3d .badge{position:absolute;top:8px;right:9px;font-family:var(--mono);font-size:10px;color:var(--app-accent);z-index:2}
+/* status bar strip across the bottom of the hero mock */
+.statusbar{
+  position:absolute;left:0;right:0;bottom:0;height:22px;z-index:4;
+  display:flex;align-items:center;gap:18px;padding:0 12px;
+  background:var(--app-bg1);border-top:1px solid var(--app-border);
+  font-family:var(--mono);font-size:10.5px;color:var(--app-text1);
+}
+.statusbar b{color:var(--app-text0);font-weight:500}
+.statusbar .sp{color:var(--app-text2)}
+@media(max-width:640px){.statusbar{display:none}}
+
+/* ---------- section scaffolding ---------- */
+section{padding:96px 0}
+/* keep anchor jumps clear of the sticky 64px nav */
+section[id],#top{scroll-margin-top:84px}
+.kicker{font-family:var(--mono);font-size:12.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--accent-ink);margin:0 0 16px}
+h2{font-family:var(--serif);font-weight:400;font-size:clamp(30px,4.4vw,46px);line-height:1.08;letter-spacing:-.015em;margin:0;text-wrap:balance}
+.section-lede{color:var(--ink-2);font-size:19px;max-width:60ch;margin:18px 0 0}
+
+/* alternating feature rows */
+.feat{display:grid;grid-template-columns:1fr 1fr;gap:60px;align-items:center}
+.feat + .feat{margin-top:104px}
+.feat.flip .feat-media{order:2}
+.feat-copy h3{font-family:var(--serif);font-weight:500;font-size:29px;letter-spacing:-.01em;margin:14px 0 0}
+.feat-copy p{color:var(--ink-2);margin:16px 0 0}
+.feat-list{list-style:none;padding:0;margin:22px 0 0;display:flex;flex-direction:column;gap:11px}
+.feat-list li{position:relative;padding-left:26px;color:var(--ink-2);font-size:15.5px}
+.feat-list li::before{content:"";position:absolute;left:0;top:9px;width:12px;height:2px;background:var(--accent);border-radius:2px}
+.feat-list b{color:var(--ink);font-weight:500}
+@media(max-width:860px){
+  .feat{grid-template-columns:1fr;gap:34px}
+  .feat.flip .feat-media{order:0}
+  .feat + .feat{margin-top:80px}
+}
+
+/* smaller mock frames reused across features */
+.mini{
+  position:relative;border-radius:14px;overflow:hidden;border:1px solid var(--line-2);
+  background:var(--app-bg0);aspect-ratio:16/11;
+  box-shadow:0 30px 60px -34px rgba(21,23,28,.45),0 8px 20px -14px rgba(21,23,28,.3);
+}
+.mini .shot{inset:0}
+
+/* single-pane mock content */
+.pane-full{position:absolute;inset:0;background:var(--app-canvas);overflow:hidden}
+.pane-full .lbl{position:absolute;top:10px;left:11px;font-family:var(--mono);font-size:10.5px;color:var(--app-text1);letter-spacing:.08em;z-index:3}
+
+/* overlay mock */
+.ov-base{position:absolute;width:66%;height:58%;left:17%;top:20%;border-radius:50%;
+  background:radial-gradient(closest-side,#c9cfd9,#79828f 55%,#2c323c 78%,transparent)}
+.ov-heat{position:absolute;width:30%;height:30%;left:36%;top:30%;border-radius:50%;mix-blend-mode:screen;
+  background:radial-gradient(closest-side,rgba(255,196,84,.95),rgba(255,110,60,.7) 55%,transparent);filter:blur(1px)}
+.ov-mask{position:absolute;width:20%;height:18%;left:24%;top:52%;border-radius:46% 54% 60% 40%;
+  background:rgba(79,163,255,.5);border:1px solid rgba(79,163,255,.8)}
+.ov-legend{position:absolute;right:11px;top:11px;z-index:3;display:flex;flex-direction:column;gap:6px}
+.ov-legend .row{display:flex;align-items:center;gap:7px;font-family:var(--mono);font-size:9.5px;color:var(--app-text1)}
+.ov-legend .sw{width:22px;height:9px;border-radius:2px}
+
+/* segmentation mock */
+.seg-region{position:absolute;left:30%;top:26%;width:34%;height:40%;border-radius:52% 48% 44% 56%;
+  background:rgba(61,220,151,.28);border:1.5px solid rgba(61,220,151,.9)}
+.seg-box{position:absolute;left:24%;top:20%;width:46%;height:52%;border:1px dashed rgba(255,255,255,.4)}
+.seg-hist{position:absolute;left:11px;bottom:11px;right:11px;height:34px;z-index:3;display:flex;align-items:flex-end;gap:2px;opacity:.9}
+.seg-hist i{flex:1;background:var(--app-text2);border-radius:1px}
+.seg-hist .mk{position:absolute;top:-4px;bottom:0;width:1.5px;background:var(--app-accent);left:58%}
+
+/* affine / readout mock */
+.mono-panel{position:absolute;inset:0;padding:16px 18px;font-family:var(--mono);font-size:11px;color:var(--app-text1);line-height:1.9;overflow:hidden}
+.mono-panel .h{color:var(--app-text0);font-size:11px;letter-spacing:.08em;text-transform:uppercase;margin-bottom:10px}
+.mono-panel .grid4{display:grid;grid-template-columns:repeat(4,1fr);gap:6px 10px;color:var(--app-text0)}
+.mono-panel .grid4 span{text-align:right}
+.mono-panel .dim{color:var(--app-text2)}
+.mono-panel .acc{color:var(--app-accent)}
+
+/* ---------- tech band ---------- */
+.band{background:var(--ink);color:#e9ebef;border-radius:0}
+.band .wrap{padding-top:96px;padding-bottom:96px}
+.band .kicker{color:#7fb0ff}
+.band h2{color:#fff}
+.band .section-lede{color:#aab2bf}
+.tech-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:1px;background:#282c33;border:1px solid #282c33;border-radius:14px;overflow:hidden;margin-top:44px}
+.tech-cell{background:var(--ink);padding:30px 28px}
+.tech-cell .n{font-family:var(--mono);font-size:12px;color:#7fb0ff;letter-spacing:.06em}
+.tech-cell h4{font-family:var(--serif);font-weight:500;font-size:20px;margin:14px 0 8px;color:#fff}
+.tech-cell p{margin:0;color:#9aa3b0;font-size:14.5px;line-height:1.6}
+@media(max-width:860px){.tech-grid{grid-template-columns:1fr}}
+
+/* ---------- feature matrix ---------- */
+.matrix{display:grid;grid-template-columns:repeat(3,1fr);gap:26px;margin-top:52px}
+.card{border:1px solid var(--line);border-radius:14px;padding:26px;background:#fff;transition:border-color .2s,transform .2s,box-shadow .2s}
+.card:hover{border-color:var(--line-2);transform:translateY(-2px);box-shadow:0 20px 40px -28px rgba(21,23,28,.35)}
+.card .ic{width:34px;height:34px;border-radius:9px;display:grid;place-items:center;background:var(--paper-2);border:1px solid var(--line);color:var(--accent-ink)}
+.card .ic svg{width:18px;height:18px}
+.card h4{font-family:var(--serif);font-weight:500;font-size:19px;margin:16px 0 7px}
+.card p{margin:0;color:var(--ink-2);font-size:14.5px;line-height:1.58}
+@media(max-width:860px){.matrix{grid-template-columns:1fr 1fr}}
+@media(max-width:560px){.matrix{grid-template-columns:1fr}}
+
+/* ---------- closing ---------- */
+.closing{text-align:center;padding:120px 0}
+.closing h2{max-width:20ch;margin:0 auto}
+.closing p{color:var(--ink-2);max-width:52ch;margin:20px auto 0;font-size:18px}
+.code-open{
+  margin:34px auto 0;display:inline-flex;align-items:center;gap:12px;
+  font-family:var(--mono);font-size:14px;color:var(--ink-2);
+  background:var(--paper-2);border:1px solid var(--line);border-radius:10px;padding:12px 18px;
+}
+.code-open .p{color:var(--accent-ink)}
+
+/* ---------- footer ---------- */
+footer{border-top:1px solid var(--line);padding:44px 0}
+.foot{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:16px;color:var(--ink-3);font-size:14px}
+.foot .brand b{font-size:17px}
+.foot a:hover{color:var(--ink)}
+.foot .meta{font-family:var(--mono);font-size:12.5px}
+
+/* reveal on scroll */
+.reveal{opacity:0;transform:translateY(18px);transition:opacity .7s cubic-bezier(.2,.6,.2,1),transform .7s cubic-bezier(.2,.6,.2,1)}
+.reveal.in{opacity:1;transform:none}
+@media(prefers-reduced-motion:reduce){.reveal{opacity:1;transform:none;transition:none}html{scroll-behavior:auto}}
+</style>
+</head>
+<body>
+
+<nav class="nav" id="nav">
+  <div class="nav-in">
+    <a class="brand" href="#top"><span class="dot"></span><b>neoview</b></a>
+    <div class="nav-links">
+      <a class="hide-sm" href="#slicing">Slicing</a>
+      <a class="hide-sm" href="#render">3D</a>
+      <a class="hide-sm" href="#overlays">Overlays</a>
+      <a class="hide-sm" href="#segmentation">Segmentation</a>
+      <a class="hide-sm" href="#engine">Engine</a>
+      <a class="nav-cta" href="https://github.com/lijiaxiang63/neoview" target="_blank" rel="noopener">GitHub ↗</a>
+    </div>
+  </div>
+</nav>
+
+<a id="top"></a>
+<header class="hero">
+  <div class="wrap">
+    <span class="eyebrow"><span class="live"></span>cross-platform desktop app</span>
+    <h1>See <em>inside</em> volumetric data.</h1>
+    <p class="lede">
+      A desktop viewer for <code style="font-family:var(--mono);font-size:.9em">.nii</code> /
+      <code style="font-family:var(--mono);font-size:.9em">.nii.gz</code> volumes — tri-planar slicing,
+      GPU raycast rendering, and interactive region segmentation, in one quiet, fast window.
+    </p>
+    <div class="cta-row">
+      <a class="btn btn-primary" href="https://github.com/lijiaxiang63/neoview" target="_blank" rel="noopener">
+        <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.48 2 2 6.58 2 12.26c0 4.5 2.87 8.32 6.84 9.67.5.1.68-.22.68-.49l-.01-1.7c-2.78.62-3.37-1.36-3.37-1.36-.46-1.18-1.11-1.5-1.11-1.5-.9-.63.07-.62.07-.62 1 .07 1.53 1.06 1.53 1.06.89 1.56 2.34 1.11 2.91.85.09-.66.35-1.11.63-1.37-2.22-.26-4.55-1.14-4.55-5.06 0-1.12.39-2.03 1.03-2.75-.1-.26-.45-1.3.1-2.71 0 0 .84-.28 2.75 1.05a9.4 9.4 0 0 1 5 0c1.9-1.33 2.74-1.05 2.74-1.05.55 1.41.2 2.45.1 2.71.64.72 1.03 1.63 1.03 2.75 0 3.93-2.34 4.79-4.57 5.05.36.32.68.94.68 1.9l-.01 2.82c0 .27.18.6.69.49A10.02 10.02 0 0 0 22 12.26C22 6.58 17.52 2 12 2Z"/></svg>
+        View source
+      </a>
+      <a class="btn btn-ghost" href="#slicing">Explore features</a>
+    </div>
+
+    <div class="spec">
+      <span><b>.nii / .nii.gz</b></span><span class="sep">·</span>
+      <span>from-scratch parser</span><span class="sep">·</span>
+      <span><b class="zero">zero</b> runtime deps</span><span class="sep">·</span>
+      <span>WebGL2 raycaster</span><span class="sep">·</span>
+      <span>Electron + React 19</span>
+    </div>
+  </div>
+
+  <!-- HERO SHOT ----------------------------------------------------------
+       To use a real screenshot instead of the CSS mock:
+       replace the whole .quad + .statusbar block below with:
+         <img class="shot" src="assets/hero.png" alt="neoview main window" />
+       (16:10 aspect; dark UI edge-to-edge looks best)
+  -->
+  <div class="stage reveal">
+    <div class="frame hero-shot">
+      <div class="chrome">
+        <span class="lights"><i></i><i></i><i></i></span>
+        <span class="title">neoview — volume.nii.gz</span>
+      </div>
+
+      <div class="quad">
+        <div class="pane q-xy"><span class="lbl">PLANE XY</span><span class="idx">z 62/128</span><div class="slice"><div class="blob"></div></div><div class="cross"></div></div>
+        <div class="pane q-xz"><span class="lbl">PLANE XZ</span><span class="idx">y 88/160</span><div class="slice"><div class="blob"></div></div><div class="cross"></div></div>
+        <div class="pane q-yz"><span class="lbl">PLANE YZ</span><span class="idx">x 74/128</span><div class="slice"><div class="blob"></div></div><div class="cross"></div></div>
+        <div class="pane q-3d"><span class="badge">3D · MIP</span><div class="render"><div class="vol"></div></div></div>
+      </div>
+
+      <div class="statusbar">
+        <span>voxel <b>[74, 88, 62]</b></span>
+        <span class="sp">·</span>
+        <span>world <b>−3.2, 11.8, 6.0 mm</b></span>
+        <span class="sp">·</span>
+        <span>intensity <b>418</b> <span class="sp">(raw 209)</span></span>
+        <span class="sp">·</span>
+        <span>range <b>18 – 962</b></span>
+      </div>
+
+      <span class="mockflag">illustrative mock — swap for assets/hero.png</span>
+    </div>
+  </div>
+</header>
+
+<!-- ============ SLICING ============ -->
+<section id="slicing">
+  <div class="wrap">
+    <div class="feat">
+      <div class="feat-media reveal">
+        <div class="mini">
+          <div class="pane-full">
+            <span class="lbl">PLANE XY · z 62</span>
+            <div class="slice"><div class="blob" style="width:60%;height:56%;left:20%;top:22%;background:radial-gradient(closest-side,#d7dde6,#8f98a6 44%,#3b4250 72%,transparent)"></div></div>
+            <div class="cross" style="--x:48%"><style>#slicing .cross::before{top:52%}#slicing .cross::after{left:48%}</style></div>
+          </div>
+          <span class="mockflag">swap for assets/slicing.png</span>
+        </div>
+      </div>
+      <div class="feat-copy reveal">
+        <p class="kicker">Tri-planar navigation</p>
+        <h3>Three planes, one crosshair.</h3>
+        <p>Planes XY, XZ, and YZ stay locked to a shared crosshair. Click or drag in any view to move it — the other two follow live, so you always know exactly where you are in the volume.</p>
+        <ul class="feat-list">
+          <li><b>Wheel to scrub</b> — scroll over any view to step slice-by-slice along its axis</li>
+          <li><b>Spacing-correct aspect</b> — each plane letterboxes to true physical proportions</li>
+          <li><b>Cursor readout</b> — voxel indices, world coordinates via the affine, and raw / scaled intensity in the status bar</li>
+          <li><b>Double-click to maximize</b> any pane; the others stay warm behind it</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ 3D RENDER ============ -->
+<section id="render" style="padding-top:0">
+  <div class="wrap">
+    <div class="feat flip">
+      <div class="feat-media reveal">
+        <div class="mini">
+          <div class="pane-full q-3d">
+            <span class="lbl" style="color:var(--app-accent)">3D · COMPOSITE</span>
+            <div class="render" style="position:absolute;inset:0;display:grid;place-items:center">
+              <div class="vol" style="width:60%;aspect-ratio:1;border-radius:50%;background:radial-gradient(closest-side at 42% 38%,rgba(255,255,255,.95),rgba(120,184,255,.72) 24%,rgba(79,163,255,.36) 48%,rgba(40,72,130,.28) 68%,transparent);box-shadow:0 0 70px 12px rgba(79,163,255,.2)"></div>
+            </div>
+          </div>
+          <span class="mockflag">swap for assets/render3d.png</span>
+        </div>
+      </div>
+      <div class="feat-copy reveal">
+        <p class="kicker">GPU volume rendering</p>
+        <h3>Raycast the whole volume.</h3>
+        <p>The fourth cell is a WebGL2 raycaster — a fullscreen shader that marches rays through a 3D texture. No mesh, no external library, just the volume and the GPU.</p>
+        <ul class="feat-list">
+          <li><b>MIP &amp; composite</b> modes with adjustable density and brightness</li>
+          <li><b>Orbit / dolly camera</b> — drag to rotate, wheel to zoom, double-click to reset</li>
+          <li><b>Interactive fidelity</b> — renders at reduced steps while you move, then settles to full quality</li>
+          <li><b>Big-volume aware</b> — oversized volumes stride-downsample to a texture budget while slice views stay full resolution</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ OVERLAYS ============ -->
+<section id="overlays" style="padding-top:0">
+  <div class="wrap">
+    <div class="feat">
+      <div class="feat-media reveal">
+        <div class="mini">
+          <div class="pane-full">
+            <span class="lbl">PLANE XY · overlays ×2</span>
+            <div class="ov-base"></div>
+            <div class="ov-heat"></div>
+            <div class="ov-mask"></div>
+            <div class="ov-legend">
+              <div class="row"><span class="sw" style="background:linear-gradient(90deg,#1e3c6e,#4fa3ff,#ffc454)"></span>value map</div>
+              <div class="row"><span class="sw" style="background:rgba(79,163,255,.6)"></span>mask</div>
+              <div class="row"><span class="sw" style="background:linear-gradient(90deg,#3ddc97,#ff6e6e,#c78bff)"></span>labels</div>
+            </div>
+          </div>
+          <span class="mockflag">swap for assets/overlays.png</span>
+        </div>
+      </div>
+      <div class="feat-copy reveal">
+        <p class="kicker">Overlay layers</p>
+        <h3>Stack what you need to compare.</h3>
+        <p>Drop additional volumes onto a loaded base to build an ordered stack of layers. Each aligns through its own affine with nearest-neighbor sampling, so differing grids just work.</p>
+        <ul class="feat-list">
+          <li><b>Value maps</b> — warm / cool / diverging colormaps with a threshold window</li>
+          <li><b>Binary masks</b> — a single flat color at your chosen opacity</li>
+          <li><b>Label volumes</b> — a distinct color per id, from a golden-angle palette</li>
+          <li>Per-layer <b>visibility, opacity, and kind</b> — reorder freely; slice views only</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ SEGMENTATION ============ -->
+<section id="segmentation" style="padding-top:0">
+  <div class="wrap">
+    <div class="feat flip">
+      <div class="feat-media reveal">
+        <div class="mini">
+          <div class="pane-full">
+            <span class="lbl">PLANE XY · region 3</span>
+            <div class="blob" style="width:62%;height:58%;left:19%;top:20%;background:radial-gradient(closest-side,#c9cfd9,#79828f 52%,#2c323c 78%,transparent)"></div>
+            <div class="seg-box"></div>
+            <div class="seg-region"></div>
+            <div class="seg-hist">
+              <div class="mk"></div>
+              <i style="height:20%"></i><i style="height:35%"></i><i style="height:55%"></i><i style="height:80%"></i><i style="height:95%"></i><i style="height:70%"></i><i style="height:45%"></i><i style="height:60%"></i><i style="height:85%"></i><i style="height:50%"></i><i style="height:30%"></i><i style="height:18%"></i><i style="height:24%"></i><i style="height:12%"></i>
+            </div>
+          </div>
+          <span class="mockflag">swap for assets/segmentation.png</span>
+        </div>
+      </div>
+      <div class="feat-copy reveal">
+        <p class="kicker">Region segmentation</p>
+        <h3>Draw a box. Grow a region.</h3>
+        <p>Draw a box on any slice and let one hysteresis + 3D connected-component engine do the work — the same core drives both threshold and grow methods, previewing live as you tune.</p>
+        <ul class="feat-list">
+          <li><b>Threshold or grow</b> — auto-threshold via a plateau-aware Otsu, or seed from inside and flood to a boundary</li>
+          <li><b>6- or 26-connectivity</b>, minimum-size pruning, and a safety cap on whole-volume floods</li>
+          <li><b>Live histogram</b> of the box, with a marker at each threshold</li>
+          <li><b>Editable &amp; re-editable</b> regions — right-click to reopen; export remaps to a clean label volume</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ ENGINE / TECH BAND ============ -->
+<section id="engine" class="band" style="padding:0">
+  <div class="wrap">
+    <p class="kicker reveal">Under the hood</p>
+    <h2 class="reveal">Written from scratch, on purpose.</h2>
+    <p class="section-lede reveal">No parsing, math, or rendering libraries. The whole pipeline — decompress, parse, normalize, render — is hand-written and unit-tested, and every byte of heavy work happens off the main thread.</p>
+    <div class="tech-grid reveal">
+      <div class="tech-cell">
+        <div class="n">01 — parse</div>
+        <h4>Both endiannesses, every datatype</h4>
+        <p>A hand-rolled header reader handles all common voxel datatypes, value scaling, quaternion &amp; matrix affines, and a zero-copy typed-array view when the layout allows.</p>
+      </div>
+      <div class="tech-cell">
+        <div class="n">02 — decompress</div>
+        <h4>Streaming gzip, preallocated</h4>
+        <p>Compressed files decompress through a streaming path that preallocates from the gzip size trailer, falling back to chunk accumulation when the trailer lies.</p>
+      </div>
+      <div class="tech-cell">
+        <div class="n">03 — threads</div>
+        <h4>A worker per file</h4>
+        <p>Decompress, parse, stats, and texture packing run in a worker and transfer back as Transferables. The main thread pays only the GPU upload.</p>
+      </div>
+      <div class="tech-cell">
+        <div class="n">04 — stats</div>
+        <h4>Exact percentiles, one pass</h4>
+        <p>Small integer types get an exact 65,536-bin counting pass; floats use a min/max pass plus a histogram. Auto display range picks 2–98 percentile.</p>
+      </div>
+      <div class="tech-cell">
+        <div class="n">05 — texture</div>
+        <h4>Half-float, fused</h4>
+        <p>Sampling, scaling, [0,1] normalization, and half-float packing fuse into one loop, so slider drags stay pure uniform changes — texture memory is never touched.</p>
+      </div>
+      <div class="tech-cell">
+        <div class="n">06 — resilience</div>
+        <h4>Survives context loss</h4>
+        <p>Rendering is dirty-flag rAF — never a continuous loop — and the raycaster rebuilds itself from cached data if the GL context is lost and restored.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ FEATURE MATRIX ============ -->
+<section id="more">
+  <div class="wrap">
+    <p class="kicker reveal">And the details</p>
+    <h2 class="reveal">Everything else you'd reach for.</h2>
+    <div class="matrix">
+      <div class="card reveal">
+        <div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M12 3v18M3 12h18" stroke-linecap="round"/></svg></div>
+        <h4>Drag &amp; drop</h4>
+        <p>Drop a <code style="font-family:var(--mono);font-size:.85em">.nii</code> / <code style="font-family:var(--mono);font-size:.85em">.nii.gz</code> anywhere on the window, or open with Cmd/Ctrl+O.</p>
+      </div>
+      <div class="card reveal">
+        <div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="3" y="6" width="18" height="12" rx="2"/><path d="M7 12h10" stroke-linecap="round"/></svg></div>
+        <h4>Display range</h4>
+        <p>Dual-thumb slider with Auto (2–98 pct), Full range, and fixed presets — an apt one is chosen on load.</p>
+      </div>
+      <div class="card reveal">
+        <div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M4 7h16M4 12h16M4 17h10" stroke-linecap="round"/></svg></div>
+        <h4>4D volumes</h4>
+        <p>A frame slider appears automatically for volumes carrying a fourth dimension.</p>
+      </div>
+      <div class="card reveal">
+        <div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M4 9h16M9 4v16" stroke-linecap="round"/></svg></div>
+        <h4>Affine panel</h4>
+        <p>The full 4×4 voxel-to-world matrix, dimensions, spacing, datatype, and which transform source the file provided.</p>
+      </div>
+      <div class="card reveal">
+        <div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M12 3a9 9 0 1 0 9 9" stroke-linecap="round"/><path d="M12 8v4l3 2" stroke-linecap="round"/></svg></div>
+        <h4>Export regions</h4>
+        <p>Segmented regions serialize back out to a clean label volume — collision-suffixed, with reveal-in-file-manager.</p>
+      </div>
+      <div class="card reveal">
+        <div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="3" y="4" width="18" height="14" rx="2"/><path d="M8 21h8M12 18v3" stroke-linecap="round"/></svg></div>
+        <h4>Cross-platform</h4>
+        <p>Packages to macOS (dmg), Windows (nsis), and Linux (AppImage + deb) from one codebase.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ CLOSING ============ -->
+<section class="closing">
+  <div class="wrap">
+    <h2 class="reveal">Clone it, run it, read every line.</h2>
+    <p class="reveal">A minimal dependency tree, a hand-written core, and a test suite that verifies the parser, affine math, and extraction against closed-form synthetic volumes.</p>
+    <div class="code-open reveal"><span class="p">$</span> git clone https://github.com/lijiaxiang63/neoview &amp;&amp; npm i &amp;&amp; npm run dev</div>
+    <div class="cta-row reveal" style="margin-top:30px">
+      <a class="btn btn-primary" href="https://github.com/lijiaxiang63/neoview" target="_blank" rel="noopener">Open on GitHub ↗</a>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap foot">
+    <a class="brand" href="#top"><span class="dot"></span><b>neoview</b></a>
+    <div class="meta">Electron · React 19 · TypeScript · zustand · WebGL2</div>
+    <a href="https://github.com/lijiaxiang63/neoview" target="_blank" rel="noopener">github.com/lijiaxiang63/neoview</a>
+  </div>
+</footer>
+
+<script>
+// nav border on scroll
+const nav=document.getElementById('nav');
+addEventListener('scroll',()=>nav.classList.toggle('scrolled',scrollY>8),{passive:true});
+// reveal on scroll
+const io=new IntersectionObserver((es)=>{es.forEach(e=>{if(e.isIntersecting){e.target.classList.add('in');io.unobserve(e.target)}})},{threshold:.12});
+document.querySelectorAll('.reveal').forEach(el=>io.observe(el));
+</script>
+</body>
+</html>
