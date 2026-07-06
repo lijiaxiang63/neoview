@@ -5,6 +5,7 @@ Drop real screenshots here to replace the CSS mockups on the page. Each slot on
 
 | File | What to capture | Best aspect |
 |------|-----------------|-------------|
+| `icon.svg` / `icon.png` | App icon used by the README, favicon, and social preview metadata | 1:1 |
 | `hero.png` | The full window: three slice views + the 3D cell (a loaded volume) | 16:10, wide |
 | `slicing.png` | One slice view with the crosshair, corner label, status readout | 16:11 |
 | `render3d.png` | The 3D cell alone — MIP or composite, a clear render | 16:11 |

@@ -6,3 +6,4 @@ out
 *.log*
 testdata/
 Claude.pdf
+.claude/

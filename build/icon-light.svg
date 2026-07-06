@@ -1,0 +1,34 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1024" y2="1024" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="0.55" stop-color="#eef3f9"/>
+      <stop offset="1" stop-color="#dde6f1"/>
+    </linearGradient>
+    <linearGradient id="frontStroke" x1="228" y1="375" x2="606" y2="753" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#6fb4ff"/>
+      <stop offset="0.5" stop-color="#4fa3ff"/>
+      <stop offset="1" stop-color="#2f83e6"/>
+    </linearGradient>
+    <filter id="frameShadow" x="-25%" y="-25%" width="150%" height="150%">
+      <feDropShadow dx="0" dy="10" stdDeviation="18" flood-color="#3f5a7a" flood-opacity="0.20"/>
+    </filter>
+  </defs>
+
+  <!-- macOS icon grid: rounded body is 824x824 centred in 1024 (100px margin) -->
+  <g transform="translate(100,100) scale(0.8046875)">
+    <!-- light chrome background -->
+    <rect x="0" y="0" width="1024" height="1024" rx="228" fill="url(#bg)"/>
+    <rect x="4" y="4" width="1016" height="1016" rx="226" fill="none" stroke="#c9d5e3" stroke-opacity="0.9" stroke-width="3"/>
+    <rect x="10" y="10" width="1004" height="1004" rx="220" fill="none" stroke="#ffffff" stroke-opacity="0.7" stroke-width="2"/>
+
+    <g filter="url(#frameShadow)">
+      <!-- back frame (gray, upper-right) -->
+      <rect x="417.5" y="270.5" width="378" height="378" rx="63"
+            fill="none" stroke="#9aa3b0" stroke-opacity="0.85" stroke-width="40"/>
+      <!-- front frame (accent blue, lower-left) -->
+      <rect x="228.5" y="375.5" width="378" height="378" rx="63"
+            fill="none" stroke="url(#frontStroke)" stroke-width="52"/>
+    </g>
+  </g>
+</svg>

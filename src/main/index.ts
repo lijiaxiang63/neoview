@@ -1,9 +1,10 @@
-import { app, shell, dialog, BrowserWindow, Menu, ipcMain } from 'electron'
+import { app, shell, dialog, BrowserWindow, Menu, ipcMain, nativeTheme } from 'electron'
 import { join, resolve, sep } from 'path'
 import { promises as fs } from 'fs'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import { autoCheckEnabled, checkForUpdates, initUpdater, setAutoCheck } from './update'
 import icon from '../../resources/icon.png?asset'
+import iconLight from '../../resources/icon-light.png?asset'
 
 const MAX_FILE_BYTES = 2 * 1024 ** 3
 
@@ -266,6 +267,14 @@ function buildMenu(getWindow: () => BrowserWindow | null): void {
   Menu.setApplicationMenu(Menu.buildFromTemplate(template))
 }
 
+// macOS can't switch the installed (Finder/Launchpad) icon by appearance, but
+// the running app's Dock icon can follow the system theme: the light artwork in
+// Light Mode, the dark artwork (same as the shipped .icns) in Dark Mode.
+function syncDockIcon(): void {
+  if (process.platform !== 'darwin' || !app.dock) return
+  app.dock.setIcon(nativeTheme.shouldUseDarkColors ? icon : iconLight)
+}
+
 function createWindow(): BrowserWindow {
   const mainWindow = new BrowserWindow({
     width: 1280,
@@ -470,6 +479,9 @@ if (!gotLock) {
     createWindow()
     initUpdater(() => BrowserWindow.getAllWindows()[0] ?? null)
     buildMenu(() => BrowserWindow.getAllWindows()[0] ?? null)
+
+    syncDockIcon()
+    nativeTheme.on('updated', syncDockIcon)
 
     app.on('activate', function () {
       if (BrowserWindow.getAllWindows().length === 0) createWindow()

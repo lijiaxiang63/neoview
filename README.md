@@ -1,5 +1,7 @@
 <div align="center">
 
+<img src="docs/assets/icon.svg" alt="neoview app icon" width="96" height="96" />
+
 # neoview
 
 **See inside volumetric data.**
