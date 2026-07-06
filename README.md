@@ -31,6 +31,8 @@ GPU raycast rendering, and interactive region segmentation, in one quiet, fast w
 - **Wheel scrubbing** — scroll over a view to step through slices along its axis
 - **Cursor readout** — voxel indices, world coordinates (via the affine), and raw / scaled intensity in the status bar
 - **Maximize a view** — double-click any pane to fill the window; the others stay warm behind it
+- **Folder browsing** — open a whole folder (`Cmd/Ctrl+Shift+O`, or drop one on the window) and every volume inside appears in a file panel, grouped by subfolder; large folders stream in while you work
+- **`↑` / `↓` file switching** — step through the list from the keyboard; holding a key scrubs straight to the file you want, and the likely next file is prefetched so switching stays instant
 
 ### 🧊 Render in 3D
 - **GPU volume rendering** — a WebGL2 raycaster in the fourth cell, with MIP and composite modes
@@ -49,7 +51,7 @@ GPU raycast rendering, and interactive region segmentation, in one quiet, fast w
 
 ### 📐 Inspect
 - **Affine panel** — the full 4×4 voxel-to-world matrix, dimensions, spacing, datatype, and which transform source the file provided (matrix rows / quaternion / spacing fallback)
-- **Drag & drop** — drop a `.nii` / `.nii.gz` file anywhere on the window, or open with `Cmd/Ctrl+O`
+- **Drag & drop** — drop a `.nii` / `.nii.gz` file (or a whole folder) anywhere on the window, or open with `Cmd/Ctrl+O`
 
 ## Under the hood
 
