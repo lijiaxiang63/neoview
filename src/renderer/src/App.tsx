@@ -178,6 +178,9 @@ export default function App(): JSX.Element {
     const offOpened = window.neoview.onFileOpened((file) => {
       void coordinator.openBase(file.name, file.bytes, file.path)
     })
+    const offOverlay = window.neoview.onOverlayOpened((file) => {
+      void coordinator.openOverlay(file.name, file.bytes)
+    })
     const offError = window.neoview.onFileOpenError((message) => {
       useStore.getState().fail(message)
     })
@@ -199,6 +202,7 @@ export default function App(): JSX.Element {
     })
     return () => {
       offOpened()
+      offOverlay()
       offError()
       offFolder()
       offScan()

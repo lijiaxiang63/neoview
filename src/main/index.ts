@@ -14,6 +14,10 @@ import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import { autoCheckEnabled, checkForUpdates, initUpdater, setAutoCheck } from './update'
 import icon from '../../resources/icon.png?asset'
 import iconLight from '../../resources/icon-light.png?asset'
+// Sample data shipped with the app so a fresh install has something to show
+// without hunting for a file: one base volume and one labels overlay.
+import builtinVolume from '../../resources/builtin-volume.nii.gz?asset'
+import builtinOverlay from '../../resources/builtin-overlay.nii.gz?asset'
 
 // The app UI is dark-only; forcing the native theme makes all window chrome
 // (title bar, menu bar, popup menus, dialogs) render dark to match, instead
@@ -199,6 +203,30 @@ async function writeExport(req: ExportRequest): Promise<ExportResult> {
 const HOMEPAGE_URL = 'https://lijiaxiang63.github.io/neoview/'
 const REPO_URL = 'https://github.com/lijiaxiang63/neoview'
 
+/** Read a bundled sample file, labelling it with a fixed display name rather
+ * than the asset's (possibly hashed) on-disk name. */
+async function readBuiltinFile(assetPath: string, name: string): Promise<OpenedFile> {
+  const buf = await fs.readFile(assetPath)
+  const bytes = buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength)
+  return { name, path: assetPath, bytes }
+}
+
+/** Load a bundled sample into the window over `channel` ('file-opened' for the
+ * base volume, 'overlay-opened' for a layer), reporting failures the same way
+ * a picked file would. */
+async function sendBuiltinFile(
+  win: BrowserWindow,
+  assetPath: string,
+  name: string,
+  channel: 'file-opened' | 'overlay-opened'
+): Promise<void> {
+  try {
+    win.webContents.send(channel, await readBuiltinFile(assetPath, name))
+  } catch (err) {
+    win.webContents.send('file-open-error', (err as Error).message)
+  }
+}
+
 async function pickAndReadFile(win: BrowserWindow): Promise<OpenedFile | null> {
   const result = await dialog.showOpenDialog(win, {
     properties: ['openFile'],
@@ -285,6 +313,25 @@ function buildMenu(getWindow: () => BrowserWindow | null): void {
           // The renderer owns the whole flow (picker, scan, loading feedback),
           // so the menu only asks it to start.
           click: () => getWindow()?.webContents.send('open-folder-request')
+        },
+        { type: 'separator' },
+        {
+          label: 'Open Built-in Volume',
+          click: () => {
+            const win = getWindow()
+            if (win)
+              void sendBuiltinFile(win, builtinVolume, 'builtin-volume.nii.gz', 'file-opened')
+          }
+        },
+        {
+          // Routes to an overlay layer; the renderer shows a hint if no base
+          // volume is loaded yet.
+          label: 'Open Built-in Overlay',
+          click: () => {
+            const win = getWindow()
+            if (win)
+              void sendBuiltinFile(win, builtinOverlay, 'builtin-overlay.nii.gz', 'overlay-opened')
+          }
         },
         { type: 'separator' },
         isMac ? { role: 'close' } : { role: 'quit' }

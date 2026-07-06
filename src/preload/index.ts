@@ -39,6 +39,12 @@ const api = {
     ipcRenderer.on('file-opened', listener)
     return () => ipcRenderer.removeListener('file-opened', listener)
   },
+  /** A bundled sample overlay was chosen from the menu; route it to a layer. */
+  onOverlayOpened: (cb: (file: OpenedFile) => void): (() => void) => {
+    const listener = (_e: Electron.IpcRendererEvent, file: OpenedFile): void => cb(file)
+    ipcRenderer.on('overlay-opened', listener)
+    return () => ipcRenderer.removeListener('overlay-opened', listener)
+  },
   onFileOpenError: (cb: (message: string) => void): (() => void) => {
     const listener = (_e: Electron.IpcRendererEvent, message: string): void => cb(message)
     ipcRenderer.on('file-open-error', listener)
