@@ -10,6 +10,7 @@ import { Toolbar } from './components/Toolbar'
 import { StatusBar } from './components/StatusBar'
 import { EmptyState } from './components/EmptyState'
 import { Toast } from './components/Toast'
+import { UpdateBanner } from './components/UpdateBanner'
 
 /** 'auto' routes to an overlay layer when a base volume is already loaded. */
 type LoadTarget = 'base' | 'overlay' | 'auto'
@@ -202,6 +203,7 @@ export default function App(): JSX.Element {
       </main>
       <StatusBar />
       <Toast />
+      <UpdateBanner />
       {dragging &&
         (hasVolume ? (
           <div className="drag-overlay split">

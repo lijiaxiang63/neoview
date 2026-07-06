@@ -1,4 +1,5 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron'
+import type { UpdateProgress, UpdateStatus } from './updates'
 
 export interface OpenedFile {
   name: string
@@ -47,7 +48,24 @@ const api = {
     ipcRenderer.on('close-requested', listener)
     return () => ipcRenderer.removeListener('close-requested', listener)
   },
-  confirmClose: (): void => ipcRenderer.send('close-confirmed')
+  confirmClose: (): void => ipcRenderer.send('close-confirmed'),
+  platform: process.platform,
+  onUpdateStatus: (cb: (status: UpdateStatus) => void): (() => void) => {
+    const listener = (_e: Electron.IpcRendererEvent, status: UpdateStatus): void => cb(status)
+    ipcRenderer.on('update-status', listener)
+    return () => ipcRenderer.removeListener('update-status', listener)
+  },
+  onUpdateProgress: (cb: (progress: UpdateProgress) => void): (() => void) => {
+    const listener = (_e: Electron.IpcRendererEvent, progress: UpdateProgress): void => cb(progress)
+    ipcRenderer.on('update-progress', listener)
+    return () => ipcRenderer.removeListener('update-progress', listener)
+  },
+  /** Resolves with the downloaded installer path, or null when cancelled. */
+  downloadUpdate: (): Promise<string | null> => ipcRenderer.invoke('update-download'),
+  cancelUpdateDownload: (): void => ipcRenderer.send('update-download-cancel'),
+  /** quits=true means the app is quitting to hand off to the installer. */
+  installUpdate: (): Promise<{ quits: boolean }> => ipcRenderer.invoke('update-install'),
+  skipUpdateVersion: (version: string): void => ipcRenderer.send('update-skip', version)
 }
 
 export type NeoviewApi = typeof api
