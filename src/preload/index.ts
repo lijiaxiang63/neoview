@@ -84,6 +84,21 @@ const api = {
     ipcRenderer.on('open-folder-request', listener)
     return () => ipcRenderer.removeListener('open-folder-request', listener)
   },
+  /** View > File List was chosen in the menu. */
+  onToggleFilePanel: (cb: () => void): (() => void) => {
+    const listener = (): void => cb()
+    ipcRenderer.on('toggle-file-panel', listener)
+    return () => ipcRenderer.removeListener('toggle-file-panel', listener)
+  },
+  /** View > Side Panel was chosen in the menu. */
+  onToggleSidePanel: (cb: () => void): (() => void) => {
+    const listener = (): void => cb()
+    ipcRenderer.on('toggle-side-panel', listener)
+    return () => ipcRenderer.removeListener('toggle-side-panel', listener)
+  },
+  /** Mirror panel visibility to the View menu's checkbox items. */
+  sendViewState: (state: { fileList: boolean; sidePanel: boolean; folderOpen: boolean }): void =>
+    ipcRenderer.send('view-state', state),
   /** Read one file from inside a previously opened folder. */
   readFile: (path: string): Promise<OpenedFile> => ipcRenderer.invoke('read-file', path),
   /** Read a folder file only when its size is within maxBytes; null otherwise
