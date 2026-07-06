@@ -418,6 +418,12 @@ export default function App(): JSX.Element {
       if (!file) return
       const target = zoneAt(e)
       const path = window.neoview.pathForFile(file) || null
+      // Resolve 'auto' synchronously at drop time: it must reflect what the
+      // drag overlay showed the user, not the store as it looks after the
+      // awaits below (a folder auto-load committing meanwhile would flip a
+      // base-intent drop into an overlay).
+      const resolvedTarget: LoadTarget =
+        target === 'auto' ? (useStore.getState().volume ? 'overlay' : 'base') : target
       void (async () => {
         // A dropped directory enters folder mode regardless of the drop zone
         // (a fresh scan supersedes any scan already running). The read-only
@@ -442,11 +448,11 @@ export default function App(): JSX.Element {
           return
         }
         // A dropped file that will replace the base wins over a running scan.
-        const st = useStore.getState()
-        const asBase = target === 'base' || (target === 'auto' && st.volume === null)
-        if (asBase && st.folderLoading) abandonActiveScan()
+        if (resolvedTarget === 'base' && useStore.getState().folderLoading) {
+          abandonActiveScan()
+        }
         const buf = await file.arrayBuffer()
-        await loadFromBuffer(file.name, buf, target, path)
+        await loadFromBuffer(file.name, buf, resolvedTarget, path)
       })()
     }
     window.addEventListener('dragenter', onDragEnter)
