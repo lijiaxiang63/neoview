@@ -63,6 +63,7 @@ interface Harness {
   reads: { path: string; d: Deferred<OpenedBytes> }[]
   cappedReads: { path: string; maxBytes: number; d: Deferred<OpenedBytes | null> }[]
   parses: { name: string; d: Deferred<string> }[]
+  setConfirm: (v: boolean) => void
 }
 
 /** Effects backed by a miniature store that mirrors the app's semantics:
@@ -80,6 +81,7 @@ function makeHarness(opts: { confirm?: boolean; prefetchMax?: number } = {}): Ha
   const reads: Harness['reads'] = []
   const cappedReads: Harness['cappedReads'] = []
   const parses: Harness['parses'] = []
+  let confirmResult = opts.confirm ?? true
 
   const fx: CoordinatorEffects<string> = {
     snapshot: () => ({
@@ -114,7 +116,7 @@ function makeHarness(opts: { confirm?: boolean; prefetchMax?: number } = {}): Ha
       }
     },
     parseAndAddOverlay: async () => {},
-    confirmReplaceBase: () => opts.confirm ?? true,
+    confirmReplaceBase: () => confirmResult,
     raiseLoading: () => {
       state.loading = true
     },
@@ -143,7 +145,18 @@ function makeHarness(opts: { confirm?: boolean; prefetchMax?: number } = {}): Ha
     }
   }
   const co = new LoadCoordinator<string>(fx, { prefetchMax: opts.prefetchMax })
-  return { co, state, commits, failures, reads, cappedReads, parses }
+  return {
+    co,
+    state,
+    commits,
+    failures,
+    reads,
+    cappedReads,
+    parses,
+    setConfirm: (v) => {
+      confirmResult = v
+    }
+  }
 }
 
 describe('base load ownership', () => {
@@ -246,6 +259,38 @@ describe('folder navigation', () => {
     await tick()
     expect(h.failures).toHaveLength(1)
     expect(h.state.loading).toBe(false)
+  })
+
+  it('a read that fails after the target moved is suppressed; the pump chases on', async () => {
+    const h = makeHarness()
+    h.state.folder = folder(['/r/a.nii', '/r/b.nii', '/r/c.nii'])
+    h.co.requestEntry('/r/b.nii')
+    await tick()
+    h.co.requestEntry('/r/c.nii') // moved on while b's read is in flight
+    h.reads[0].d.reject(new Error('unreadable'))
+    await tick()
+    expect(h.failures).toEqual([]) // nobody is waiting on b
+    expect(h.reads[1]?.path).toBe('/r/c.nii') // c still loads
+    h.reads[1].d.resolve({ name: 'c.nii', bytes: bytes() })
+    await tick()
+    h.parses[0].d.resolve('vol:c')
+    await tick()
+    expect(h.commits.map((c) => c.path)).toEqual(['/r/c.nii'])
+  })
+
+  it('a read that fails after an explicit open started stands down silently', async () => {
+    const h = makeHarness()
+    h.state.folder = folder(['/r/a.nii', '/r/b.nii'])
+    h.co.requestEntry('/r/b.nii')
+    await tick()
+    void h.co.openBase('x.nii', bytes(), '/x/x.nii') // user acts mid-read
+    await tick()
+    h.reads[0].d.reject(new Error('unreadable'))
+    await tick()
+    expect(h.failures).toEqual([]) // the stale read's error is not the view's problem
+    h.parses[0].d.resolve('vol:x')
+    await tick()
+    expect(h.commits.map((c) => c.path)).toEqual(['/x/x.nii'])
   })
 
   it('an explicit open already parsing wins over navigation, even on a prefetch hit', async () => {
@@ -361,6 +406,28 @@ describe('folder scans', () => {
     await tick()
     expect(h.commits).toEqual([])
     expect(h.state.folder?.root).toBe('/empty') // not cleared by the stale parse
+  })
+
+  it('declining the replace confirm leaves a running scan untouched', async () => {
+    const h = makeHarness()
+    let token = 0
+    const scanDone = deferred<ScanResult | null>()
+    void h.co.scanFolder((t) => {
+      token = t
+      return scanDone.promise
+    })
+    expect(h.state.scanning).toBe(true)
+    h.setConfirm(false)
+    await h.co.openBase('x.nii', bytes(), '/x/x.nii') // user cancels the prompt
+    expect(h.state.scanning).toBe(true) // the scan was NOT abandoned
+    expect(h.parses).toHaveLength(0)
+    h.setConfirm(true)
+    h.co.onScanBatch(token, '/scan', [entry('/scan/a.nii')]) // batches still land
+    expect(h.state.folder?.root).toBe('/scan')
+    scanDone.resolve({ root: '/scan', files: [entry('/scan/a.nii')], truncated: false })
+    await tick()
+    expect(h.state.scanning).toBe(false)
+    expect(h.state.folder?.files.map((f) => f.path)).toEqual(['/scan/a.nii'])
   })
 
   it('an explicit open abandons the running scan; its late batches are ignored', async () => {

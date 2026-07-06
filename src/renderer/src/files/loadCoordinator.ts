@@ -118,7 +118,10 @@ export class LoadCoordinator<V> {
   /** Explicit base open (dialog, menu, drop): supersedes a running scan and
    * any load in flight. */
   async openBase(name: string, bytes: ArrayBuffer, path: string | null): Promise<void> {
-    // The user's completed pick wins over a folder scan still in flight.
+    // Confirm before any side effect: declining must leave the world exactly
+    // as it was — including a scan still streaming its batches.
+    if (!this.fx.confirmReplaceBase()) return
+    // The user's confirmed pick wins over a folder scan still in flight.
     if (this.fx.snapshot().scanning) this.abandonScan()
     await this.runBaseLoad(name, bytes, path)
   }
@@ -219,7 +222,6 @@ export class LoadCoordinator<V> {
     path: string | null,
     isStaleTarget?: () => boolean
   ): Promise<void> {
-    if (!this.fx.confirmReplaceBase()) return
     const gen = ++this.baseGen
     this.loadingOwner = gen
     this.fx.raiseLoading()
@@ -324,8 +326,24 @@ export class LoadCoordinator<V> {
               break
             }
           }
+          // Navigation replaces the base too, so it gets the same veto over
+          // discarding unexported region work as an explicit open.
+          if (!this.fx.confirmReplaceBase()) break
           await this.runBaseLoad(opened.name, opened.bytes, path, () => this.queued !== path)
         } catch (err) {
+          // A stale read's failure mirrors a stale read's success: when the
+          // target moved on, chase it instead of reporting an error for a
+          // file nobody is waiting on; when the world changed under us, an
+          // explicit action owns the view — stand down silently.
+          if (this.queued !== path) continue
+          const now = this.fx.snapshot()
+          if (
+            now.loading ||
+            now.sourcePath !== snap.sourcePath ||
+            !now.folderFiles?.some((f) => f.path === path)
+          ) {
+            break
+          }
           this.fx.failRead(err)
           break
         }
