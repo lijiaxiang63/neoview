@@ -43,8 +43,11 @@ const api = {
     ipcRenderer.on('file-open-error', listener)
     return () => ipcRenderer.removeListener('file-open-error', listener)
   },
-  /** Directory picker + recursive scan, both owned by the main process. */
-  openFolderScan: (): Promise<FolderScan | null> => ipcRenderer.invoke('open-folder-scan'),
+  /** Directory picker + recursive scan, both owned by the main process. The
+   * token is echoed in every progress batch so the caller can drop batches
+   * from superseded scans. */
+  openFolderScan: (token: number): Promise<FolderScan | null> =>
+    ipcRenderer.invoke('open-folder-scan', token),
   /** Whether a path names a directory (read-only probe, registers nothing). */
   isDirectory: (path: string): Promise<boolean> => ipcRenderer.invoke('is-directory', path),
   /**
@@ -53,7 +56,7 @@ const api = {
    * script cannot mint a File with an on-disk path, so only genuine drops
    * (or picks) can register a scan root.
    */
-  scanDroppedFolder: (file: File): Promise<FolderScan | null> => {
+  scanDroppedFolder: (file: File, token: number): Promise<FolderScan | null> => {
     let path = ''
     try {
       path = webUtils.getPathForFile(file)
@@ -61,14 +64,16 @@ const api = {
       return Promise.resolve(null)
     }
     if (!path) return Promise.resolve(null)
-    return ipcRenderer.invoke('scan-folder', path)
+    return ipcRenderer.invoke('scan-folder', path, token)
   },
   /** Batches of files found while a scan-folder call is still running. */
-  onScanFolderProgress: (cb: (root: string, files: FolderEntry[]) => void): (() => void) => {
+  onScanFolderProgress: (
+    cb: (token: number, root: string, files: FolderEntry[]) => void
+  ): (() => void) => {
     const listener = (
       _e: Electron.IpcRendererEvent,
-      msg: { root: string; files: FolderEntry[] }
-    ): void => cb(msg.root, msg.files)
+      msg: { token: number; root: string; files: FolderEntry[] }
+    ): void => cb(msg.token, msg.root, msg.files)
     ipcRenderer.on('scan-folder-progress', listener)
     return () => ipcRenderer.removeListener('scan-folder-progress', listener)
   },

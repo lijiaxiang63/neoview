@@ -117,6 +117,16 @@ async function pumpEntryLoads(): Promise<void> {
           // The target moved on while this file was being read: drop the
           // bytes unparsed and chase the newer target.
           if (queuedPath !== path) continue
+          // An explicit open may have started or landed meanwhile — the
+          // user's choice wins over stale folder navigation.
+          const now = useStore.getState()
+          if (
+            now.loadState === 'loading' ||
+            now.sourcePath !== st.sourcePath ||
+            !now.folder?.files.some((f) => f.path === path)
+          ) {
+            break
+          }
         }
         await loadFromBuffer(opened.name, opened.bytes, 'base', opened.path)
       } catch (err) {
@@ -170,11 +180,9 @@ function navigateFolder(delta: 1 | -1): void {
   if (idx !== null) requestFolderEntry(s.folder.files[idx])
 }
 
-// The root whose scan is in flight ('pending' until the picker flow's first
-// batch reveals it); progress batches for any other root are stale.
-let scanningRoot: string | 'pending' | null = null
-// Bumped whenever a scan starts or is abandoned; a scan whose generation is
-// stale discards its result instead of applying it.
+// Bumped whenever a scan starts or is abandoned. Doubles as the scan token:
+// the main process echoes it in every progress batch, so anything not
+// carrying the current generation is a superseded scan and gets ignored.
 let scanGen = 0
 // Armed when a scan starts; the first non-empty view of the folder consumes
 // it, so the folder's first file loads exactly once (batches keep streaming
@@ -186,7 +194,6 @@ let folderAutoLoad = false
  * the user's choice. The main-process scan just runs out harmlessly. */
 function abandonActiveScan(): void {
   scanGen++
-  scanningRoot = null
   folderAutoLoad = false
   useStore.getState().setFolderLoading(false)
 }
@@ -205,16 +212,16 @@ function maybeAutoLoad(final: boolean): void {
   }
 }
 
-/** A streamed scan batch arrived: create or grow the folder it belongs to. */
-function onScanBatch(root: string, files: FolderEntry[]): void {
+/** A streamed scan batch arrived: create or grow the folder it belongs to.
+ * The token gate is what keeps a superseded scan (still streaming in the
+ * main process) from mutating the list the newer scan now owns. */
+function onScanBatch(token: number, root: string, files: FolderEntry[]): void {
+  if (token !== scanGen) return
   const st = useStore.getState()
   if (st.folder && st.folder.root === root) {
     st.appendFolderFiles(root, files)
-  } else if (scanningRoot === root || scanningRoot === 'pending') {
-    scanningRoot = root
-    st.setFolder({ root, files: sortEntries(files), truncated: false })
   } else {
-    return
+    st.setFolder({ root, files: sortEntries(files), truncated: false })
   }
   maybeAutoLoad(false)
 }
@@ -223,15 +230,17 @@ function onScanBatch(root: string, files: FolderEntry[]): void {
  * The list fills from streamed batches while the scan runs; the resolved
  * scan is the authoritative final state (unless the scan was abandoned). */
 async function scanIntoFolder(
-  scan: () => Promise<{ root: string; files: FolderEntry[]; truncated: boolean } | null>,
-  knownRoot: string | null
+  scan: (token: number) => Promise<{
+    root: string
+    files: FolderEntry[]
+    truncated: boolean
+  } | null>
 ): Promise<boolean> {
   const gen = ++scanGen
-  scanningRoot = knownRoot ?? 'pending'
   folderAutoLoad = true
   useStore.getState().setFolderLoading(true)
   try {
-    const result = await scan()
+    const result = await scan(gen)
     if (gen !== scanGen) return true // superseded by an explicit open
     if (!result) return false
     useStore.getState().setFolder({
@@ -243,7 +252,6 @@ async function scanIntoFolder(
     return true
   } finally {
     if (gen === scanGen) {
-      scanningRoot = null
       folderAutoLoad = false
       useStore.getState().setFolderLoading(false)
     }
@@ -260,7 +268,7 @@ async function openFolderViaDialog(): Promise<void> {
   if (folderFlowActive || useStore.getState().folderLoading) return
   folderFlowActive = true
   try {
-    await scanIntoFolder(() => window.neoview.openFolderScan(), null)
+    await scanIntoFolder((token) => window.neoview.openFolderScan(token))
   } catch (err) {
     useStore.getState().fail(ipcErrorMessage(err))
   } finally {
@@ -405,7 +413,9 @@ export default function App(): JSX.Element {
         // stale, which a plain-file drop must never do.
         if (path && (await window.neoview.isDirectory(path).catch(() => false))) {
           try {
-            if (await scanIntoFolder(() => window.neoview.scanDroppedFolder(file), path)) return
+            if (await scanIntoFolder((token) => window.neoview.scanDroppedFolder(file, token))) {
+              return
+            }
           } catch (err) {
             useStore.getState().fail(ipcErrorMessage(err))
             return

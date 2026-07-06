@@ -329,26 +329,31 @@ if (!gotLock) {
     // The scanned root is registered before scanning starts — 'read-file'
     // serves streamed paths immediately — and stored as a real path so the
     // symlink-resolved containment check below lines up.
+    // The caller's token rides along in every progress batch (opaque here),
+    // so the renderer can discard batches from a scan it has superseded.
     const scanAndStream = async (
       sender: Electron.WebContents,
-      path: string
+      path: string,
+      token: number
     ): Promise<FolderScan> => {
       scannedRoots.add(await fs.realpath(path))
       return scanFolder(path, (batch) => {
         if (!sender.isDestroyed()) {
-          sender.send('scan-folder-progress', { root: path, files: batch })
+          sender.send('scan-folder-progress', { token, root: path, files: batch })
         }
       })
     }
 
+    const asToken = (t: unknown): number => (typeof t === 'number' ? t : 0)
+
     // Directory picker + scan in one main-owned flow: the renderer never
     // supplies the path, so it cannot register arbitrary roots this way.
-    ipcMain.handle('open-folder-scan', async (event) => {
+    ipcMain.handle('open-folder-scan', async (event, token: number) => {
       const win = BrowserWindow.fromWebContents(event.sender)
       if (!win) return null
       const result = await dialog.showOpenDialog(win, { properties: ['openDirectory'] })
       if (result.canceled || result.filePaths.length === 0) return null
-      return scanAndStream(event.sender, result.filePaths[0])
+      return scanAndStream(event.sender, result.filePaths[0], asToken(token))
     })
 
     // Read-only metadata probe (registers nothing): drops ask this before
@@ -362,11 +367,11 @@ if (!gotLock) {
     // Drag&drop path; null when it is not a directory (the caller falls back
     // to single-file handling). The preload derives the path from the dropped
     // File object itself, so page script cannot funnel arbitrary strings here.
-    ipcMain.handle('scan-folder', async (event, path: string) => {
+    ipcMain.handle('scan-folder', async (event, path: string, token: number) => {
       if (typeof path !== 'string' || !path) return null
       const stat = await fs.stat(path).catch(() => null)
       if (!stat?.isDirectory()) return null
-      return scanAndStream(event.sender, path)
+      return scanAndStream(event.sender, path, asToken(token))
     })
 
     /** `p` is `root` or beneath it (roots may already end with the separator,
