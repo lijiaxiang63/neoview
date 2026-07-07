@@ -279,6 +279,20 @@ describe('regions', () => {
     expect(hasUnsavedRegions()).toBe(true)
   })
 
+  it('markExported records the source path for the file panel', () => {
+    seedRegion()
+    useStore.setState({ sourcePath: '/data/a.nii.gz' })
+    useStore.getState().markExported()
+    expect(useStore.getState().exportedPaths.has('/data/a.nii.gz')).toBe(true)
+
+    // A pathless source (e.g. a bundled sample) records nothing.
+    const before = useStore.getState().exportedPaths
+    useStore.setState({ sourcePath: null, segDirty: true })
+    useStore.getState().markExported()
+    expect(useStore.getState().exportedPaths).toBe(before)
+    expect(useStore.getState().segDirty).toBe(false)
+  })
+
   it('floodCap caps only floods whose bounds cover the whole volume', () => {
     const p = (over: Partial<SegParams>): SegParams => ({
       method: 'threshold',

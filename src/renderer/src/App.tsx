@@ -5,6 +5,7 @@ import { loadVolume } from './volume/loadVolume'
 import { composeVoxelMap } from './volume/affine'
 import type { Volume } from './volume/types'
 import { LoadCoordinator } from './files/loadCoordinator'
+import { regionExportView } from './files/folderList'
 import { SliceView } from './components/SliceView'
 import { VolumeView } from './components/VolumeView'
 import { SidePanel } from './components/SidePanel'
@@ -49,7 +50,10 @@ const coordinator = new LoadCoordinator<Volume>({
       loading: s.loadState === 'loading',
       scanning: s.folderLoading,
       folderRoot: s.folder?.root ?? null,
-      folderFiles: s.folder?.files ?? null
+      // The coordinator sees the list as the panel shows it — with region
+      // exports folded away — so navigation, prefetch and the folder's
+      // auto-load all skip hidden product files.
+      folderFiles: s.folder ? regionExportView(s.folder.files).files : null
     }
   },
   read: (path) => window.neoview.readFile(path),

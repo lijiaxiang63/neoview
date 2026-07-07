@@ -4,6 +4,8 @@ import {
   compareNatural,
   groupEntries,
   isUnderRoot,
+  regionExportSource,
+  regionExportView,
   sortEntries,
   splitDisplayName,
   type FolderEntry
@@ -125,5 +127,92 @@ describe('splitDisplayName', () => {
 
   it('leaves other names whole', () => {
     expect(splitDisplayName('notes.txt')).toEqual({ stem: 'notes.txt', ext: '' })
+  })
+})
+
+describe('regionExportSource', () => {
+  it('recognizes both product kinds in both formats', () => {
+    expect(regionExportSource('vol.regions.nii.gz')).toBe('vol')
+    expect(regionExportSource('vol.regions.nii')).toBe('vol')
+    expect(regionExportSource('vol.mask.nii.gz')).toBe('vol')
+    expect(regionExportSource('vol.mask.nii')).toBe('vol')
+  })
+
+  it('recognizes collision suffixes', () => {
+    expect(regionExportSource('vol.regions-1.nii.gz')).toBe('vol')
+    expect(regionExportSource('vol.mask-12.nii')).toBe('vol')
+  })
+
+  it('is case-insensitive', () => {
+    expect(regionExportSource('VOL.REGIONS.NII.GZ')).toBe('VOL')
+  })
+
+  it('returns null for plain volumes and near misses', () => {
+    expect(regionExportSource('vol.nii.gz')).toBeNull()
+    expect(regionExportSource('regions.nii')).toBeNull()
+    expect(regionExportSource('vol.masks.nii')).toBeNull()
+    expect(regionExportSource('vol.mask-x.nii')).toBeNull()
+    expect(regionExportSource('vol.regions.txt')).toBeNull()
+  })
+})
+
+describe('regionExportView', () => {
+  it('hides a product and marks its source as exported', () => {
+    const files = [entry('a.nii.gz'), entry('a.regions.nii.gz'), entry('b.nii.gz')]
+    const view = regionExportView(files)
+    expect(view.files.map((f) => f.name)).toEqual(['a.nii.gz', 'b.nii.gz'])
+    expect(view.exportedFor.has(files[0].path)).toBe(true)
+    expect(view.exportedFor.has(files[2].path)).toBe(false)
+  })
+
+  it('marks the source regardless of product kind, suffix, or format', () => {
+    for (const product of ['a.mask.nii.gz', 'a.regions-2.nii', 'a.mask.nii']) {
+      const files = [entry('a.nii.gz'), entry(product)]
+      const view = regionExportView(files)
+      expect(view.files.map((f) => f.name)).toEqual(['a.nii.gz'])
+      expect(view.exportedFor.has(files[0].path)).toBe(true)
+    }
+  })
+
+  it('keeps a product without its source visible and unmarked', () => {
+    const files = [entry('a.mask.nii.gz'), entry('b.nii.gz')]
+    const view = regionExportView(files)
+    expect(view.files.map((f) => f.name)).toEqual(['a.mask.nii.gz', 'b.nii.gz'])
+    expect(view.exportedFor.size).toBe(0)
+  })
+
+  it('matches only within the same directory', () => {
+    const files = [entry('a.nii.gz', 'g1'), entry('a.regions.nii.gz', 'g2')]
+    const view = regionExportView(files)
+    expect(view.files).toHaveLength(2)
+    expect(view.exportedFor.size).toBe(0)
+  })
+
+  it('matches stems case-insensitively', () => {
+    const files = [entry('Vol.nii.gz'), entry('VOL.regions.nii.gz')]
+    const view = regionExportView(files)
+    expect(view.files.map((f) => f.name)).toEqual(['Vol.nii.gz'])
+    expect(view.exportedFor.has(files[0].path)).toBe(true)
+  })
+
+  it('marks .nii and .nii.gz sources sharing a stem', () => {
+    const files = [entry('a.nii'), entry('a.nii.gz'), entry('a.mask.nii.gz')]
+    const view = regionExportView(files)
+    expect(view.files.map((f) => f.name)).toEqual(['a.nii', 'a.nii.gz'])
+    expect(view.exportedFor.has(files[0].path)).toBe(true)
+    expect(view.exportedFor.has(files[1].path)).toBe(true)
+  })
+
+  it('does not collide stems across the relDir boundary', () => {
+    // relDir 'a' + stem 'b c' vs relDir 'a b' + stem 'c'.
+    const files = [entry('b c.nii', 'a'), entry('c.regions.nii', 'a b')]
+    const view = regionExportView(files)
+    expect(view.files).toHaveLength(2)
+    expect(view.exportedFor.size).toBe(0)
+  })
+
+  it('returns the cached view for the same input array', () => {
+    const files = [entry('a.nii.gz')]
+    expect(regionExportView(files)).toBe(regionExportView(files))
   })
 })

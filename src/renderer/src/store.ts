@@ -173,6 +173,9 @@ interface AppState {
   regionOpacity: number
   /** True while region edits exist that have not been exported. */
   segDirty: boolean
+  /** Source paths whose regions were exported this session. Marks file-panel
+   * rows even when the export file lands outside the opened folder. */
+  exportedPaths: ReadonlySet<string>
   undoDelete: UndoDelete | null
   toast: ToastState | null
 
@@ -473,6 +476,7 @@ export const useStore = create<AppState>()((set, get) => {
     brushRadius: 4,
     regionOpacity: 0.5,
     segDirty: false,
+    exportedPaths: new Set<string>(),
     undoDelete: null,
     toast: null,
 
@@ -922,7 +926,14 @@ export const useStore = create<AppState>()((set, get) => {
       })
     },
 
-    markExported: () => set({ segDirty: false }),
+    markExported: () =>
+      set((s) => ({
+        segDirty: false,
+        exportedPaths:
+          s.sourcePath !== null && !s.exportedPaths.has(s.sourcePath)
+            ? new Set(s.exportedPaths).add(s.sourcePath)
+            : s.exportedPaths
+      })),
 
     setToast: (t) => set({ toast: t })
   }

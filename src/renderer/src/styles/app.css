@@ -402,6 +402,19 @@ body {
   color: var(--accent-strong);
 }
 
+/* Volumes that already have a region export beside them (or were exported
+   this session) get a green check chip at the row's end. */
+.file-row .done-badge {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 14px;
+  height: 14px;
+  border-radius: 999px;
+  background: rgba(61, 220, 151, 0.16);
+  color: var(--ok);
+}
+
 .file-empty {
   padding: 14px 8px;
   color: var(--text-2);
