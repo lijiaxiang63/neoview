@@ -486,10 +486,10 @@ describe('folder scans', () => {
     expect(h.reads[0]?.path).toBe('/root/a.nii') // the final list settles it
   })
 
-  // The two tests below wire the harness the way the app wires the real
+  // The tests below wire the harness the way the app wires the real
   // coordinator: the snapshot folds region exports out of the list and
-  // deferAutoLoad flags product names, so the interleaving where a product
-  // streams in before its source is pinned end to end.
+  // deferAutoLoad flags product names, so the interleavings around products
+  // streaming in before their sources are pinned end to end.
   const foldOpts = {
     foldFiles: (files: FolderEntry[]): FolderEntry[] => regionExportView(files).files,
     deferAutoLoad: (f: FolderEntry): boolean => regionExportSource(f.name) !== null
@@ -531,6 +531,73 @@ describe('folder scans', () => {
     await tick()
     // With the whole folder known it is a plain entry after all — load it.
     expect(h.reads[0]?.path).toBe('/r/b.mask.nii.gz')
+  })
+
+  it('an ambiguous head entry is never skipped for a later plain entry', async () => {
+    const h = makeHarness(foldOpts)
+    let token = 0
+    const scanDone = deferred<ScanResult | null>()
+    void h.co.scanFolder((t) => {
+      token = t
+      return scanDone.promise
+    })
+    h.co.onScanBatch(token, '/r', [entry('/r/a.mask.nii.gz')])
+    h.co.onScanBatch(token, '/r', [entry('/r/b.nii.gz')])
+    // The head may still fold away (its source may stream in) or survive as
+    // the folder's true first file — neither justifies loading b early.
+    expect(h.reads).toHaveLength(0)
+    scanDone.resolve({
+      root: '/r',
+      files: [entry('/r/a.mask.nii.gz'), entry('/r/b.nii.gz')],
+      truncated: false
+    })
+    await tick()
+    // No source ever arrived: the product IS the folder's first file.
+    expect(h.reads.map((r) => r.path)).toEqual(['/r/a.mask.nii.gz'])
+  })
+
+  it('a pick made while the auto-load waits disarms it instead of being overridden', async () => {
+    const h = makeHarness(foldOpts)
+    let token = 0
+    const scanDone = deferred<ScanResult | null>()
+    void h.co.scanFolder((t) => {
+      token = t
+      return scanDone.promise
+    })
+    // Ambiguous head (sorts first) keeps the auto-load armed and waiting...
+    h.co.onScanBatch(token, '/r', [
+      entry('/r/a.mask.nii.gz'),
+      entry('/r/m.nii.gz'),
+      entry('/r/n.nii.gz')
+    ])
+    expect(h.reads).toHaveLength(0)
+    // ...and the user picks a file while it waits.
+    h.co.requestEntry('/r/n.nii.gz')
+    expect(h.reads.map((r) => r.path)).toEqual(['/r/n.nii.gz'])
+    // The head's source streams in: the head folds away and a plain entry
+    // now tops the list — but the user's pick already claimed the view, so
+    // the auto-load must not fire over it.
+    h.co.onScanBatch(token, '/r', [entry('/r/a.nii.gz')])
+    expect(h.reads).toHaveLength(1)
+    h.reads[0].d.resolve({ name: 'n.nii.gz', bytes: bytes() })
+    await tick()
+    h.parses[0].d.resolve('vol:n')
+    await tick()
+    expect(h.commits.map((c) => c.path)).toEqual(['/r/n.nii.gz'])
+    scanDone.resolve({
+      root: '/r',
+      files: [
+        entry('/r/a.mask.nii.gz'),
+        entry('/r/a.nii.gz'),
+        entry('/r/m.nii.gz'),
+        entry('/r/n.nii.gz')
+      ],
+      truncated: false
+    })
+    await tick()
+    // The final result respects the pick too (the loaded file is in the list).
+    expect(h.commits.map((c) => c.path)).toEqual(['/r/n.nii.gz'])
+    expect(h.reads).toHaveLength(1)
   })
 
   it('re-scanning the same root starts a fresh list instead of merging stale entries', async () => {

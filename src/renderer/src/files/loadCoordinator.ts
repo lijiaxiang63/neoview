@@ -116,9 +116,10 @@ export class LoadCoordinator<V> {
     opts?: {
       prefetchMax?: number
       /** Entries the snapshot may still drop as more of the scan streams in
-       * (e.g. a region export whose source volume has not arrived yet). The
-       * auto-load never picks one from a partial batch — only the final scan
-       * knows whether such an entry really stays in the list. */
+       * (e.g. a region export whose source volume has not arrived yet). While
+       * one of these heads the list, a partial batch cannot know the folder's
+       * true first file — it may fold away or turn out to BE the first file —
+       * so the auto-load waits for the final scan instead of picking anything. */
       deferAutoLoad?: (entry: FolderEntry) => boolean
     }
   ) {
@@ -152,6 +153,11 @@ export class LoadCoordinator<V> {
 
   /** Move the navigation target to this folder entry. */
   requestEntry(path: string): void {
+    // A pick claims the view. The scan's auto-load may still be armed here
+    // (it stays armed while the list's head entry is ambiguous), and a later
+    // batch firing it would override this choice — disarm it instead. The
+    // auto-load's own picks route through here too, after they disarm.
+    this.autoLoadArmed = false
     this.queued = path
     this.fx.setPending(path)
     void this.pump()
@@ -299,16 +305,15 @@ export class LoadCoordinator<V> {
       this.autoLoadArmed = false
       return
     }
-    // Batches are partial views of the folder: an entry that may yet drop out
-    // of the list (deferAutoLoad) is not picked from one. When only such
-    // entries have streamed in so far, stay armed and let a later batch — or
-    // the final result, which loads whatever genuinely tops the list — decide.
-    const target = final
-      ? snap.folderFiles[0]
-      : snap.folderFiles.find((f) => !this.deferAutoLoad(f))
-    if (!target) return
-    this.autoLoadArmed = false
-    this.requestEntry(target.path)
+    // The auto-load's contract is "the folder's first file". While the list's
+    // head is an entry that may yet drop out (deferAutoLoad), a partial batch
+    // cannot tell what the first file IS — the head may fold away, or survive
+    // and be exactly the file to load. Either way the whole decision is
+    // deferred (stay armed); skipping to a later entry would bake the wrong
+    // pick in before the final result settles the head's fate.
+    const first = snap.folderFiles[0]
+    if (!final && this.deferAutoLoad(first)) return
+    this.requestEntry(first.path)
   }
 
   private async pump(): Promise<void> {
