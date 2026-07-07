@@ -232,7 +232,11 @@ interface AppState {
   updateRegion: (id: number, patch: Partial<Pick<Region, 'name' | 'color' | 'visible'>>) => void
   deleteRegion: (id: number) => void
   undoDeleteRegion: () => void
-  markExported: () => void
+  /** An export finished writing. Both arguments are captured when the export
+   * STARTS: the write is async, and reading current state here instead would
+   * attribute the export to whatever file the user navigated to meanwhile.
+   * Clears the dirty flag only while `volume` is still the loaded one. */
+  markExported: (volume: Volume, sourcePath: string | null) => void
   setToast: (t: ToastState | null) => void
 }
 
@@ -926,12 +930,14 @@ export const useStore = create<AppState>()((set, get) => {
       })
     },
 
-    markExported: () =>
+    markExported: (vol, path) =>
       set((s) => ({
-        segDirty: false,
+        // A volume swapped in mid-write keeps its own dirty state: this
+        // export saved the OLD volume's regions, not the new one's.
+        segDirty: s.volume === vol ? false : s.segDirty,
         exportedPaths:
-          s.sourcePath !== null && !s.exportedPaths.has(s.sourcePath)
-            ? new Set(s.exportedPaths).add(s.sourcePath)
+          path !== null && !s.exportedPaths.has(path)
+            ? new Set(s.exportedPaths).add(path)
             : s.exportedPaths
       })),
 

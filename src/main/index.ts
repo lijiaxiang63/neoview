@@ -91,13 +91,18 @@ async function scanFolder(
     sent = files.length
     lastFlush = Date.now()
   }
+  // `truncated` reports that entries were left out; `stopped` additionally
+  // aborts the walk. They part ways for region-export products (below).
   let truncated = false
+  let stopped = false
   // The cap is budgeted per kind: the renderer folds region-export products
   // into their source rows, so products must not eat the plain files' budget
   // (a folder of 1500 volumes + 1500 exports would otherwise truncate at
   // 2000 raw entries and display only ~500 volumes). Products past their own
-  // budget are dropped instead of stopping the scan — some fold marks may be
-  // missed, but every real volume is still found.
+  // budget are dropped without stopping the scan — every real volume is
+  // still found — but the drop is still REPORTED as truncation: a dropped
+  // product may be a source-less one the renderer would have shown as a
+  // plain row, so the list can be incomplete and the panel must say so.
   let plainCount = 0
   let productCount = 0
   const pending: Array<{ dir: string; relDir: string; depth: number }> = [
@@ -112,7 +117,7 @@ async function scanFolder(
     // An unreadable subfolder should not kill the whole scan.
     const entries = await fs.readdir(item.dir, { withFileTypes: true }).catch(() => [])
     for (const ent of entries) {
-      if (truncated) return
+      if (stopped) return
       if (ent.name.startsWith('.') || ent.isSymbolicLink()) continue
       if (ent.isDirectory()) {
         if (item.depth < SCAN_DEPTH_MAX) {
@@ -124,11 +129,15 @@ async function scanFolder(
         }
       } else if (ent.isFile() && isVolumeName(ent.name)) {
         if (isRegionExportName(ent.name)) {
-          if (productCount >= SCAN_FILES_MAX) continue
+          if (productCount >= SCAN_FILES_MAX) {
+            truncated = true
+            continue
+          }
           productCount++
         } else {
           if (plainCount >= SCAN_FILES_MAX) {
             truncated = true
+            stopped = true
             return
           }
           plainCount++
@@ -142,7 +151,7 @@ async function scanFolder(
   await new Promise<void>((resolveDone) => {
     let active = 0
     const pump = (): void => {
-      if (truncated) pending.length = 0
+      if (stopped) pending.length = 0
       // Resolve only once in-flight reads drain, so the result stops mutating.
       if (pending.length === 0 && active === 0) {
         resolveDone()
