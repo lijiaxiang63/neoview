@@ -5,7 +5,11 @@ import {
   type OpenedBytes,
   type ScanResult
 } from '../src/renderer/src/files/loadCoordinator'
-import type { FolderEntry } from '../src/renderer/src/files/folderList'
+import {
+  regionExportSource,
+  regionExportView,
+  type FolderEntry
+} from '../src/renderer/src/files/folderList'
 
 // The coordinator exists so that load/scan races are pinned by tests instead
 // of being found in review. Each test here simulates one interleaving of
@@ -68,8 +72,17 @@ interface Harness {
 
 /** Effects backed by a miniature store that mirrors the app's semantics:
  * committing a base from outside the open folder closes the folder (which
- * also releases the prefetch slot, as the app's store subscription does). */
-function makeHarness(opts: { confirm?: boolean; prefetchMax?: number } = {}): Harness {
+ * also releases the prefetch slot, as the app's store subscription does).
+ * `foldFiles` mirrors the app-side view the snapshot exposes (the app folds
+ * region exports out of the list); `deferAutoLoad` is passed through. */
+function makeHarness(
+  opts: {
+    confirm?: boolean
+    prefetchMax?: number
+    foldFiles?: (files: FolderEntry[]) => FolderEntry[]
+    deferAutoLoad?: (entry: FolderEntry) => boolean
+  } = {}
+): Harness {
   const state: Harness['state'] = {
     sourcePath: null,
     loading: false,
@@ -89,7 +102,9 @@ function makeHarness(opts: { confirm?: boolean; prefetchMax?: number } = {}): Ha
       loading: state.loading,
       scanning: state.scanning,
       folderRoot: state.folder?.root ?? null,
-      folderFiles: state.folder?.files ?? null
+      folderFiles: state.folder
+        ? (opts.foldFiles ?? ((x): FolderEntry[] => x))(state.folder.files)
+        : null
     }),
     read: (path) => {
       const d = deferred<OpenedBytes>()
@@ -144,7 +159,10 @@ function makeHarness(opts: { confirm?: boolean; prefetchMax?: number } = {}): Ha
       state.scanning = b
     }
   }
-  const co = new LoadCoordinator<string>(fx, { prefetchMax: opts.prefetchMax })
+  const co = new LoadCoordinator<string>(fx, {
+    prefetchMax: opts.prefetchMax,
+    deferAutoLoad: opts.deferAutoLoad
+  })
   return {
     co,
     state,
@@ -466,6 +484,53 @@ describe('folder scans', () => {
     scanDone.resolve({ root: '/root', files: [entry('/root/a.nii')], truncated: false })
     await tick()
     expect(h.reads[0]?.path).toBe('/root/a.nii') // the final list settles it
+  })
+
+  // The two tests below wire the harness the way the app wires the real
+  // coordinator: the snapshot folds region exports out of the list and
+  // deferAutoLoad flags product names, so the interleaving where a product
+  // streams in before its source is pinned end to end.
+  const foldOpts = {
+    foldFiles: (files: FolderEntry[]): FolderEntry[] => regionExportView(files).files,
+    deferAutoLoad: (f: FolderEntry): boolean => regionExportSource(f.name) !== null
+  }
+
+  it('a product streamed before its source is not auto-loaded from a batch', async () => {
+    const h = makeHarness(foldOpts)
+    let token = 0
+    const scanDone = deferred<ScanResult | null>()
+    void h.co.scanFolder((t) => {
+      token = t
+      return scanDone.promise
+    })
+    // The filesystem happens to surface the export before its source volume.
+    h.co.onScanBatch(token, '/r', [entry('/r/a.regions.nii.gz')])
+    expect(h.reads).toHaveLength(0) // stays armed instead of loading the product
+    h.co.onScanBatch(token, '/r', [entry('/r/a.nii.gz')])
+    expect(h.reads[0]?.path).toBe('/r/a.nii.gz') // the source loads; the product folded away
+    scanDone.resolve({
+      root: '/r',
+      files: [entry('/r/a.nii.gz'), entry('/r/a.regions.nii.gz')],
+      truncated: false
+    })
+    await tick()
+    expect(h.reads).toHaveLength(1) // the final result triggers no second load
+  })
+
+  it('a product with no source in the folder loads only from the final result', async () => {
+    const h = makeHarness(foldOpts)
+    let token = 0
+    const scanDone = deferred<ScanResult | null>()
+    void h.co.scanFolder((t) => {
+      token = t
+      return scanDone.promise
+    })
+    h.co.onScanBatch(token, '/r', [entry('/r/b.mask.nii.gz')])
+    expect(h.reads).toHaveLength(0) // its source may still stream in
+    scanDone.resolve({ root: '/r', files: [entry('/r/b.mask.nii.gz')], truncated: false })
+    await tick()
+    // With the whole folder known it is a plain entry after all — load it.
+    expect(h.reads[0]?.path).toBe('/r/b.mask.nii.gz')
   })
 
   it('re-scanning the same root starts a fresh list instead of merging stale entries', async () => {

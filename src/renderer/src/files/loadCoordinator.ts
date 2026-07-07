@@ -76,6 +76,7 @@ export const PREFETCH_KEEP_MAX = 512 * 1024 * 1024
 export class LoadCoordinator<V> {
   private readonly fx: CoordinatorEffects<V>
   private readonly prefetchMax: number
+  private readonly deferAutoLoad: (entry: FolderEntry) => boolean
 
   // Ownership generation: every base load takes one; a confirmed scan bumps
   // it without a load. Only the newest generation may publish.
@@ -110,9 +111,20 @@ export class LoadCoordinator<V> {
   // consumes it, so the folder's first file loads exactly once.
   private autoLoadArmed = false
 
-  constructor(fx: CoordinatorEffects<V>, opts?: { prefetchMax?: number }) {
+  constructor(
+    fx: CoordinatorEffects<V>,
+    opts?: {
+      prefetchMax?: number
+      /** Entries the snapshot may still drop as more of the scan streams in
+       * (e.g. a region export whose source volume has not arrived yet). The
+       * auto-load never picks one from a partial batch — only the final scan
+       * knows whether such an entry really stays in the list. */
+      deferAutoLoad?: (entry: FolderEntry) => boolean
+    }
+  ) {
     this.fx = fx
     this.prefetchMax = opts?.prefetchMax ?? PREFETCH_KEEP_MAX
+    this.deferAutoLoad = opts?.deferAutoLoad ?? (() => false)
   }
 
   /** Explicit base open (dialog, menu, drop): supersedes a running scan and
@@ -283,10 +295,20 @@ export class LoadCoordinator<V> {
     // A loaded file that sits under the root may simply not have streamed in
     // yet — deciding to replace it belongs to the final scan, not a batch.
     if (!final && src !== null && isUnderRoot(snap.folderRoot, src)) return
-    this.autoLoadArmed = false
-    if (!snap.folderFiles.some((f) => f.path === src)) {
-      this.requestEntry(snap.folderFiles[0].path)
+    if (snap.folderFiles.some((f) => f.path === src)) {
+      this.autoLoadArmed = false
+      return
     }
+    // Batches are partial views of the folder: an entry that may yet drop out
+    // of the list (deferAutoLoad) is not picked from one. When only such
+    // entries have streamed in so far, stay armed and let a later batch — or
+    // the final result, which loads whatever genuinely tops the list — decide.
+    const target = final
+      ? snap.folderFiles[0]
+      : snap.folderFiles.find((f) => !this.deferAutoLoad(f))
+    if (!target) return
+    this.autoLoadArmed = false
+    this.requestEntry(target.path)
   }
 
   private async pump(): Promise<void> {
