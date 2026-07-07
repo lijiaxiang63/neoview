@@ -69,6 +69,13 @@ function isVolumeName(name: string): boolean {
   return n.endsWith('.nii') || n.endsWith('.nii.gz')
 }
 
+/** Name shaped like a region-export product ("<stem>.regions.*" / "<stem>.mask.*",
+ * '-1'… collision suffixes included). Keep in step with the renderer's
+ * folderList.ts#regionExportSource, which folds these into their source rows. */
+function isRegionExportName(name: string): boolean {
+  return /\.(regions|mask)(-\d+)?\.nii(\.gz)?$/i.test(name)
+}
+
 /** onBatch streams newly found files every SCAN_BATCH_MS (first find flushes
  * immediately), so the caller can show results while the scan runs. */
 async function scanFolder(
@@ -85,6 +92,14 @@ async function scanFolder(
     lastFlush = Date.now()
   }
   let truncated = false
+  // The cap is budgeted per kind: the renderer folds region-export products
+  // into their source rows, so products must not eat the plain files' budget
+  // (a folder of 1500 volumes + 1500 exports would otherwise truncate at
+  // 2000 raw entries and display only ~500 volumes). Products past their own
+  // budget are dropped instead of stopping the scan — some fold marks may be
+  // missed, but every real volume is still found.
+  let plainCount = 0
+  let productCount = 0
   const pending: Array<{ dir: string; relDir: string; depth: number }> = [
     { dir: root, relDir: '', depth: 0 }
   ]
@@ -108,9 +123,15 @@ async function scanFolder(
           })
         }
       } else if (ent.isFile() && isVolumeName(ent.name)) {
-        if (files.length >= SCAN_FILES_MAX) {
-          truncated = true
-          return
+        if (isRegionExportName(ent.name)) {
+          if (productCount >= SCAN_FILES_MAX) continue
+          productCount++
+        } else {
+          if (plainCount >= SCAN_FILES_MAX) {
+            truncated = true
+            return
+          }
+          plainCount++
         }
         files.push({ name: ent.name, path: join(item.dir, ent.name), relDir: item.relDir })
         maybeFlush()

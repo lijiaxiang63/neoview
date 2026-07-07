@@ -123,7 +123,7 @@ export function FilePanel({ onSelect }: Props): JSX.Element | null {
         )}
         {folderLoading && <div className="file-empty">Scanning…</div>}
         {folder.truncated && (
-          <div className="file-empty">Showing the first {folder.files.length} files</div>
+          <div className="file-empty">Showing the first {view.files.length} files</div>
         )}
       </div>
     </aside>
