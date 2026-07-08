@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, type JSX } from 'react'
 import { useStore } from '../store'
 import {
+  filterEntries,
   groupEntries,
   regionExportView,
   splitDisplayName,
@@ -48,12 +49,19 @@ export function FilePanel({ onSelect }: Props): JSX.Element | null {
   const pendingPath = useStore((s) => s.pendingFilePath)
   const toggleFilePanel = useStore((s) => s.toggleFilePanel)
   const exportedPaths = useStore((s) => s.exportedPaths)
+  const fileFilter = useStore((s) => s.fileFilter)
+  const setFileFilter = useStore((s) => s.setFileFilter)
   const activeRef = useRef<HTMLButtonElement | null>(null)
 
   // Referentially stable per files array (regionExportView caches), so the
-  // useMemo below keys off it directly.
+  // useMemo below keys off it directly. The filter applies on top of the
+  // folded view — the same list the coordinator navigates with ↑/↓.
   const view = folder ? regionExportView(folder.files) : null
-  const groups = useMemo(() => (view ? groupEntries(view.files) : []), [view])
+  const shown = useMemo(
+    () => (view ? filterEntries(view.files, fileFilter) : null),
+    [view, fileFilter]
+  )
+  const groups = useMemo(() => (shown ? groupEntries(shown) : []), [shown])
 
   // While scrubbing with the arrow keys the pending target leads; once the
   // load settles the loaded row takes over.
@@ -63,13 +71,17 @@ export function FilePanel({ onSelect }: Props): JSX.Element | null {
     activeRef.current?.scrollIntoView({ block: 'nearest' })
   }, [focusPath])
 
-  if (!folder || !view) return null
+  if (!folder || !view || !shown) return null
+
+  const filtered = fileFilter.trim() !== ''
 
   return (
     <aside className="file-panel">
       <header className="file-panel-head">
         <h3>Files</h3>
-        <span className="count mono">{view.files.length}</span>
+        <span className="count mono">
+          {filtered ? `${shown.length}/${view.files.length}` : view.files.length}
+        </span>
         <button
           className="file-panel-close"
           title="Hide file list (folder stays open)"
@@ -80,6 +92,23 @@ export function FilePanel({ onSelect }: Props): JSX.Element | null {
       </header>
       <div className="file-panel-root mono" title={folder.root}>
         {folder.root}
+      </div>
+      <div className="file-filter-row">
+        <input
+          className="label-filter"
+          type="text"
+          placeholder="Filter files…"
+          aria-label="Filter files"
+          value={fileFilter}
+          onChange={(e) => setFileFilter(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Escape') {
+              e.stopPropagation()
+              if (fileFilter !== '') setFileFilter('')
+              else (e.target as HTMLInputElement).blur()
+            }
+          }}
+        />
       </div>
       <div className="file-list" role="listbox" aria-label="Volume files">
         {groups.map((g) => (
@@ -120,6 +149,9 @@ export function FilePanel({ onSelect }: Props): JSX.Element | null {
         ))}
         {folder.files.length === 0 && !folderLoading && (
           <div className="file-empty">No .nii or .nii.gz files found</div>
+        )}
+        {folder.files.length > 0 && shown.length === 0 && (
+          <div className="file-empty">No files match the filter</div>
         )}
         {folderLoading && <div className="file-empty">Scanning…</div>}
         {folder.truncated && (

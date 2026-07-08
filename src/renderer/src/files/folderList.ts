@@ -57,6 +57,17 @@ export function adjacentIndex(
   return next >= 0 && next < files.length ? next : null
 }
 
+/**
+ * Case-insensitive substring filter over "<relDir>/<name>". An empty (or
+ * all-whitespace) query keeps the input list identity, so callers keyed on
+ * the array (regionExportView's cache, React deps) see no change.
+ */
+export function filterEntries(files: FolderEntry[], query: string): FolderEntry[] {
+  const q = query.trim().toLowerCase()
+  if (q === '') return files
+  return files.filter((f) => `${f.relDir}/${f.name}`.toLowerCase().includes(q))
+}
+
 /** Whether `p` is `root` or sits beneath it. Safe for filesystem roots
  * ('/', drive roots), where naively appending a separator doubles it. */
 export function isUnderRoot(root: string, p: string): boolean {

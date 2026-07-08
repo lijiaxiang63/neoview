@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type JSX } from 'react'
 import { useStore } from '../store'
 import { AXIS_NAMES, extractSliceToImageData, PLANES, strides } from '../slicing/extract'
-import { extractOverlayRGBA } from '../slicing/overlay'
+import { buildMapLUT, extractOverlayRGBA } from '../slicing/overlay'
 import {
   defaultRegionColor,
   extractPreviewRGBA,
@@ -46,6 +46,7 @@ export function SliceView({ view }: Props): JSX.Element {
   const cross = useStore((s) => s.cross)
   const frame = useStore((s) => s.frame)
   const range = useStore((s) => s.range)
+  const baseColormap = useStore((s) => s.baseColormap)
   const overlays = useStore((s) => s.overlays)
   const setCross = useStore((s) => s.setCross)
   const setHover = useStore((s) => s.setHover)
@@ -194,7 +195,8 @@ export function SliceView({ view }: Props): JSX.Element {
     if (!imageDataRef.current) imageDataRef.current = new ImageData(w, h)
     const img = imageDataRef.current
 
-    extractSliceToImageData(volume, plane, sliceIdx, frame, range.lo, range.hi, img)
+    const baseLut = baseColormap === 'gray' ? null : buildMapLUT(baseColormap).pos
+    extractSliceToImageData(volume, plane, sliceIdx, frame, range.lo, range.hi, img, baseLut)
     const offCtx = off.getContext('2d') as CanvasRenderingContext2D
     offCtx.putImageData(img, 0, 0)
 
@@ -287,6 +289,7 @@ export function SliceView({ view }: Props): JSX.Element {
     sliceIdx,
     frame,
     range,
+    baseColormap,
     overlays,
     fit,
     size,

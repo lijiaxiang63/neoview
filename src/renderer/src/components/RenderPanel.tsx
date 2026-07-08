@@ -1,5 +1,6 @@
 import { type JSX } from 'react'
 import { BRIGHTNESS_MAX, BRIGHTNESS_MIN, DENSITY_MAX, DENSITY_MIN, useStore } from '../store'
+import { NumberField } from './NumberField'
 
 export function RenderPanel(): JSX.Element | null {
   const volume = useStore((s) => s.volume)
@@ -29,7 +30,8 @@ export function RenderPanel(): JSX.Element | null {
           Composite
         </button>
       </div>
-      <div className="frame-slider" style={{ marginTop: 10 }}>
+      <div className="seg-field">
+        <label>Brightness</label>
         <input
           type="range"
           min={BRIGHTNESS_MIN}
@@ -38,10 +40,18 @@ export function RenderPanel(): JSX.Element | null {
           value={brightness}
           onChange={(e) => setBrightness(Number(e.target.value))}
         />
-        <span className="frame-label mono">bright {brightness.toFixed(2)}</span>
+        <NumberField
+          aria-label="Brightness"
+          value={brightness}
+          min={BRIGHTNESS_MIN}
+          max={BRIGHTNESS_MAX}
+          format={(v) => v.toFixed(2)}
+          onCommit={setBrightness}
+        />
       </div>
       {renderMode === 'composite' && (
-        <div className="frame-slider" style={{ marginTop: 10 }}>
+        <div className="seg-field">
+          <label>Density</label>
           <input
             type="range"
             min={DENSITY_MIN}
@@ -50,7 +60,14 @@ export function RenderPanel(): JSX.Element | null {
             value={density}
             onChange={(e) => setDensity(Number(e.target.value))}
           />
-          <span className="frame-label mono">density {density.toFixed(2)}</span>
+          <NumberField
+            aria-label="Density"
+            value={density}
+            min={DENSITY_MIN}
+            max={DENSITY_MAX}
+            format={(v) => v.toFixed(2)}
+            onCommit={setDensity}
+          />
         </div>
       )}
     </div>

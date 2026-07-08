@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 import type { Volume } from './volume/types'
 import { sortEntries, type FolderEntry } from './files/folderList'
+import { loadViewPref, saveViewPref } from './files/viewPrefs'
 import { defaultLayerSettings, guessOverlayKind, type OverlayLayer } from './slicing/overlay'
 import { PLANES } from './slicing/extract'
 import {
@@ -27,6 +28,7 @@ import {
   type SegBox,
   type VoxelPredicate
 } from './segmentation/segment'
+import { PreviewClient } from './segmentation/previewClient'
 import {
   applyMaskAsRegion,
   computeRegionStats,
@@ -34,13 +36,22 @@ import {
   eraseRegion,
   paintStroke,
   regionBoundingBox,
-  restoreRegion,
   type Region
 } from './segmentation/regions'
+import {
+  applyPatchValues,
+  ChangeCollector,
+  patchFromErase,
+  pushEntry,
+  type HistoryEntry
+} from './segmentation/history'
 
 export type Preset = 'auto' | 'full' | 'fixed-0-80' | 'suggested' | 'custom'
 
 export type RenderMode = 'mip' | 'composite'
+
+/** Slice-view colormap for the base volume ('gray' = the fused fast path). */
+export type BaseColormap = 'gray' | 'warm' | 'cool'
 
 export interface HoverInfo {
   view: 0 | 1 | 2
@@ -92,14 +103,14 @@ export interface SegPreview {
 
 export interface ToastState {
   text: string
-  action?: { label: string; kind: 'undo-delete' } | { label: string; kind: 'reveal'; path: string }
+  /** Colors the card's severity edge; defaults to 'info'. */
+  variant?: 'info' | 'success' | 'error'
+  action?: { label: string; kind: 'undo' } | { label: string; kind: 'reveal'; path: string }
 }
 
-interface UndoDelete {
-  region: Region
-  /** Position in the regions list, so undo restores the original order. */
-  index: number
-  indices: Uint32Array
+/** A queued toast with a stable id for keying and targeted dismissal. */
+export interface ToastItem extends ToastState {
+  id: number
 }
 
 /** What a commit was made from, so re-editing restores the drawn box and the
@@ -143,6 +154,10 @@ interface AppState {
   renderMode: RenderMode
   density: number
   brightness: number
+  /** Base-volume slice colormap (a viewing pref — survives file changes). */
+  baseColormap: BaseColormap
+  /** Case-insensitive substring filter over the file panel's list. */
+  fileFilter: string
   /** Overlay layers in draw order: index 0 is the bottom-most. */
   overlays: OverlayLayer[]
 
@@ -176,8 +191,12 @@ interface AppState {
   /** Source paths whose regions were exported this session. Marks file-panel
    * rows even when the export file lands outside the opened folder. */
   exportedPaths: ReadonlySet<string>
-  undoDelete: UndoDelete | null
-  toast: ToastState | null
+  /** Region-edit history (paint strokes, commits, deletes) as value patches;
+   * any edit clears the redo stack. Reset with the label map on base change. */
+  undoStack: HistoryEntry[]
+  redoStack: HistoryEntry[]
+  /** Transient notifications shown as a bottom-right stack (oldest first). */
+  toasts: ToastItem[]
 
   startLoading: () => void
   setVolume: (v: Volume, sourcePath?: string | null) => void
@@ -202,6 +221,8 @@ interface AppState {
   setRenderMode: (m: RenderMode) => void
   setDensity: (d: number) => void
   setBrightness: (b: number) => void
+  setBaseColormap: (c: BaseColormap) => void
+  setFileFilter: (q: string) => void
 
   setSegTool: (t: SegTool) => void
   setSegBox: (box: SegBox | null) => void
@@ -231,13 +252,17 @@ interface AppState {
   toggleMaximized: (view: 0 | 1 | 2) => void
   updateRegion: (id: number, patch: Partial<Pick<Region, 'name' | 'color' | 'visible'>>) => void
   deleteRegion: (id: number) => void
-  undoDeleteRegion: () => void
+  /** Undo/redo the most recent region edit (no-ops on empty stacks). */
+  undo: () => void
+  redo: () => void
   /** An export finished writing. Both arguments are captured when the export
    * STARTS: the write is async, and reading current state here instead would
    * attribute the export to whatever file the user navigated to meanwhile.
    * Clears the dirty flag only while `volume` is still the loaded one. */
   markExported: (volume: Volume, sourcePath: string | null) => void
-  setToast: (t: ToastState | null) => void
+  /** Append a toast to the stack; returns its id so callers can dismiss it. */
+  pushToast: (t: ToastState) => number
+  dismissToast: (id: number) => void
 }
 
 export const DENSITY_MIN = 0.02
@@ -336,12 +361,32 @@ export function hasUnsavedRegions(): boolean {
 // Never reset: layer ids must stay unique across base changes for React keys.
 let nextOverlayId = 1
 
+// localStorage is absent in the unit-test environment; prefs just no-op there.
+const prefStorage: Pick<Storage, 'getItem' | 'setItem'> | null =
+  typeof localStorage === 'undefined' ? null : localStorage
+let prefSaveTimer: ReturnType<typeof setTimeout> | undefined
+
+// The brush gesture in flight: paintAt fills it, endStroke folds it into one
+// undo entry. Module-level because a stroke spans many store actions.
+let strokeCollector: ChangeCollector | null = null
+
+// Monotonic toast id; the notification stack keys and dismisses by it.
+let nextToastId = 0
+
 // Preview recomputes are debounced so box drags and slider scrubs stay fluid;
 // the box-sized compute happens at most once per delay window.
 let previewTimer: ReturnType<typeof setTimeout> | undefined
 // True while an input change has not been reflected in `preview` yet, so a
 // commit can recompute synchronously instead of applying a stale mask.
 let previewPending = false
+// Monotonic ticket: only the newest preview computation (sync or worker) may
+// publish; every newer computation and every cancellation bumps it.
+let previewToken = 0
+// Large floods run in a persistent worker so threshold scrubbing over big
+// bounds cannot jank the UI; small bounds stay synchronous (lower latency,
+// no buffer mirroring).
+const previewClient = new PreviewClient()
+const WORKER_MIN_BOUNDS_VOXELS = 4 * 1024 * 1024
 
 function frameOffsetOf(vol: Volume, frame: number): number {
   const n = vol.dims[0] * vol.dims[1] * vol.dims[2]
@@ -365,8 +410,67 @@ export const useStore = create<AppState>()((set, get) => {
     return null
   }
 
+  /** Where the flood may expand: the box itself for thresholding; for grow,
+   * the whole volume when a constraint bounds it (or the reach is
+   * unlimited), else the box dilated by the margin. */
+  function floodBounds(vol: Volume, box: SegBox, p: SegParams, constrained: boolean): SegBox {
+    if (p.method !== 'grow') return box
+    return constrained || p.growMargin === null
+      ? wholeVolumeBox(vol.dims)
+      : clampBox(dilatedBox(box, p.growMargin), vol.dims)
+  }
+
+  /** The engine parameters exactly as the panel shows them (normalizeSegParams
+   * keeps high >= low, so no silent swap here). */
+  function engineParams(
+    vol: Volume,
+    p: SegParams,
+    bounds: SegBox
+  ): {
+    low: number
+    high: number
+    connectivity: Connectivity
+    minVoxels: number
+    maxVoxels: number
+  } {
+    return {
+      low: p.low,
+      high: p.method === 'threshold' ? p.low : p.high,
+      connectivity: p.connectivity,
+      minVoxels: p.minVoxels,
+      maxVoxels: floodCap(p, boxVoxelCount(bounds), vol.dims[0] * vol.dims[1] * vol.dims[2])
+    }
+  }
+
+  function publishPreview(
+    result: {
+      mask: Uint8Array
+      bounds: SegBox
+      voxels: number
+      components: number
+      truncated: boolean
+    },
+    domain: { min: number; max: number; mean: number },
+    histogram: HistogramResult
+  ): void {
+    set({
+      preview: {
+        mask: result.mask,
+        bounds: result.bounds,
+        voxels: result.voxels,
+        components: result.components,
+        truncated: result.truncated,
+        domain,
+        histogram
+      }
+    })
+  }
+
+  /** Synchronous compute — the canonical path (commits fold pending edits in
+   * through it). Bumping the token invalidates any worker compute in flight. */
   function computePreviewNow(): void {
     previewPending = false
+    previewToken++
     const s = get()
     const vol = s.volume
     if (!vol || !s.segBox) {
@@ -378,58 +482,154 @@ export const useStore = create<AppState>()((set, get) => {
     const frameOffset = frameOffsetOf(vol, s.frame)
     const constraint = constraintPredicate()
     const domain = boxStats(vol, box, frameOffset, constraint)
-
-    // Where the flood may expand: the box itself for thresholding; for grow,
-    // the whole volume when a constraint bounds it (or the reach is
-    // unlimited), else the box dilated by the margin.
-    let bounds: SegBox
-    if (p.method === 'grow') {
-      bounds =
-        constraint || p.growMargin === null
-          ? wholeVolumeBox(vol.dims)
-          : clampBox(dilatedBox(box, p.growMargin), vol.dims)
-    } else {
-      bounds = box
-    }
-
+    const bounds = floodBounds(vol, box, p, constraint !== null)
     const result = segmentRegion(
       vol,
       box,
       bounds,
-      {
-        // normalizeSegParams keeps high >= low, so no silent swap here —
-        // the panel's values are exactly what the engine receives.
-        low: p.low,
-        high: p.method === 'threshold' ? p.low : p.high,
-        connectivity: p.connectivity,
-        minVoxels: p.minVoxels,
-        maxVoxels: floodCap(p, boxVoxelCount(bounds), vol.dims[0] * vol.dims[1] * vol.dims[2])
-      },
+      engineParams(vol, p, bounds),
       frameOffset,
       constraint
     )
-    set({
-      preview: {
-        mask: result.mask,
-        bounds: result.bounds,
-        voxels: result.voxels,
-        components: result.components,
-        truncated: result.truncated,
-        domain,
-        histogram: boxHistogram(vol, box, HISTOGRAM_BINS, frameOffset, constraint)
+    publishPreview(result, domain, boxHistogram(vol, box, HISTOGRAM_BINS, frameOffset, constraint))
+  }
+
+  /** Debounce target: route big floods to the preview worker, everything
+   * else (and every worker miss/failure) to the synchronous path. */
+  function computePreview(): void {
+    const s = get()
+    const vol = s.volume
+    if (!vol || !s.segBox) {
+      computePreviewNow()
+      return
+    }
+    const box = s.segBox
+    const p = s.segParams
+    const constraint = constraintPredicate()
+    const bounds = floodBounds(vol, box, p, constraint !== null)
+    if (!previewClient.available() || boxVoxelCount(bounds) < WORKER_MIN_BOUNDS_VOXELS) {
+      computePreviewNow()
+      return
+    }
+    // The box-bounded extras (histogram, stats) stay on the main thread —
+    // they are cheap next to the flood the worker is taking over.
+    const frameOffset = frameOffsetOf(vol, s.frame)
+    const domain = boxStats(vol, box, frameOffset, constraint)
+    const histogram = boxHistogram(vol, box, HISTOGRAM_BINS, frameOffset, constraint)
+    const token = ++previewToken
+    const posted = previewClient.request(
+      vol,
+      s.labelMap,
+      s.labelMapRev,
+      s.overlays,
+      {
+        token,
+        box,
+        bounds,
+        params: engineParams(vol, p, bounds),
+        frameOffset,
+        frame: s.frame,
+        constraint: p.constraint
+      },
+      (respToken, result) => {
+        // -1 = the worker itself died; recover synchronously if still wanted.
+        if (respToken === -1) {
+          if (token === previewToken) computePreviewNow()
+          return
+        }
+        if (respToken !== previewToken) return
+        if (!result) {
+          computePreviewNow()
+          return
+        }
+        const now = get()
+        if (now.volume !== vol || !now.segBox) return
+        previewPending = false
+        publishPreview(result, domain, histogram)
       }
-    })
+    )
+    if (!posted) computePreviewNow()
   }
 
   function schedulePreview(): void {
     previewPending = true
+    // A newer input supersedes any worker compute in flight: bump the token so
+    // its late result is dropped instead of overwriting the pending state.
+    previewToken++
     clearTimeout(previewTimer)
-    previewTimer = setTimeout(computePreviewNow, 90)
+    previewTimer = setTimeout(computePreview, 90)
   }
 
   function cancelScheduledPreview(): void {
     previewPending = false
+    previewToken++
     clearTimeout(previewTimer)
+  }
+
+  /**
+   * Undo/redo share one engine: pop an entry, apply its before/after values
+   * to the label map, restore the matching region list (stats recomputed —
+   * an entry may overlap regions it did not create), and move the entry to
+   * the opposite stack. Anything pointing at a region that no longer exists
+   * (active/edit selection, a region constraint) is cleared.
+   */
+  function applyHistory(dir: 'undo' | 'redo'): void {
+    const s = get()
+    const vol = s.volume
+    const stack = dir === 'undo' ? s.undoStack : s.redoStack
+    const entry = stack[stack.length - 1]
+    if (!vol || !entry) return
+    const labelMap = s.labelMap
+    if (entry.patch && labelMap) {
+      applyPatchValues(
+        labelMap,
+        entry.patch.indices,
+        dir === 'undo' ? entry.patch.before : entry.patch.after
+      )
+    }
+    const list = entry.regions ? entry.regions[dir === 'undo' ? 'before' : 'after'] : s.regions
+    const regions = labelMap
+      ? computeRegionStats(vol, labelMap, list, frameOffsetOf(vol, s.frame))
+      : list
+    const stillThere = (id: number | null): boolean =>
+      id !== null && regions.some((r) => r.id === id)
+    set({
+      labelMapRev: s.labelMapRev + 1,
+      regions,
+      nextRegionId: entry.nextId
+        ? entry.nextId[dir === 'undo' ? 'before' : 'after']
+        : s.nextRegionId,
+      undoStack: dir === 'undo' ? s.undoStack.slice(0, -1) : [...s.undoStack, entry],
+      redoStack: dir === 'undo' ? [...s.redoStack, entry] : s.redoStack.slice(0, -1),
+      activeRegionId: stillThere(s.activeRegionId) ? s.activeRegionId : null,
+      editRegionId: stillThere(s.editRegionId) ? s.editRegionId : null,
+      segDirty: true,
+      // Drop the lingering "Deleted …" toast the undo just reversed.
+      toasts: []
+    })
+    const c = get().segParams.constraint
+    if (c.type === 'region' && !regions.some((r) => r.id === c.regionId)) {
+      // setSegParams reschedules the preview itself.
+      get().setSegParams({ constraint: { type: 'none' } })
+    } else if (get().segBox) {
+      schedulePreview()
+    }
+  }
+
+  /** Debounced write of the current display range/preset to the per-file
+   * prefs (drag gestures fire setRange every frame). */
+  function schedulePrefSave(): void {
+    if (!prefStorage) return
+    clearTimeout(prefSaveTimer)
+    prefSaveTimer = setTimeout(() => {
+      const s = get()
+      if (!s.volume || !s.sourcePath) return
+      saveViewPref(
+        s.sourcePath,
+        { preset: s.activePreset, lo: s.range.lo, hi: s.range.hi },
+        prefStorage as Pick<Storage, 'getItem' | 'setItem'>
+      )
+    }, 300)
   }
 
   /** Grow's seed level: the box mean (the box is, by contract, entirely
@@ -461,6 +661,8 @@ export const useStore = create<AppState>()((set, get) => {
     renderMode: 'mip',
     density: 0.35,
     brightness: BRIGHTNESS_DEFAULT,
+    baseColormap: 'gray',
+    fileFilter: '',
     overlays: [],
 
     labelMap: null,
@@ -481,12 +683,15 @@ export const useStore = create<AppState>()((set, get) => {
     regionOpacity: 0.5,
     segDirty: false,
     exportedPaths: new Set<string>(),
-    undoDelete: null,
-    toast: null,
+    undoStack: [],
+    redoStack: [],
+    toasts: [],
 
     startLoading: () => set({ loadState: 'loading', errorMessage: null }),
 
-    setFolder: (f) => set({ folder: f, filePanelOpen: true }),
+    // A fresh folder starts with an empty filter — a leftover query would
+    // silently hide the new list.
+    setFolder: (f) => set({ folder: f, filePanelOpen: true, fileFilter: '' }),
 
     appendFolderFiles: (root, files) =>
       set((s) => {
@@ -510,7 +715,21 @@ export const useStore = create<AppState>()((set, get) => {
 
     setVolume: (v, sourcePath = null) => {
       cancelScheduledPreview()
-      const preset = pickInitialPreset(v)
+      // A remembered per-file preference wins over the load heuristic; the
+      // custom preset restores its exact range, named presets re-derive from
+      // this file's stats.
+      const saved = sourcePath && prefStorage ? loadViewPref(sourcePath, prefStorage) : null
+      let preset: Preset
+      let range: { lo: number; hi: number }
+      if (saved) {
+        preset = saved.preset
+        range =
+          saved.preset === 'custom' ? { lo: saved.lo, hi: saved.hi } : presetRange(v, saved.preset)
+      } else {
+        const p = pickInitialPreset(v)
+        preset = p
+        range = presetRange(v, p)
+      }
       set((s) => ({
         volume: v,
         sourcePath,
@@ -524,7 +743,7 @@ export const useStore = create<AppState>()((set, get) => {
         errorMessage: null,
         cross: [Math.floor(v.dims[0] / 2), Math.floor(v.dims[1] / 2), Math.floor(v.dims[2] / 2)],
         frame: 0,
-        range: presetRange(v, preset),
+        range,
         activePreset: preset,
         hover: null,
         // A new base means a new grid: keeping layers would silently misalign
@@ -545,8 +764,9 @@ export const useStore = create<AppState>()((set, get) => {
         preview: null,
         segParams: DEFAULT_SEG_PARAMS,
         segDirty: false,
-        undoDelete: null,
-        toast: null
+        undoStack: [],
+        redoStack: [],
+        toasts: []
       }))
     },
 
@@ -616,12 +836,16 @@ export const useStore = create<AppState>()((set, get) => {
       if (s.segBox) schedulePreview()
     },
 
-    setRange: (lo, hi) => set({ range: { lo, hi }, activePreset: 'custom' }),
+    setRange: (lo, hi) => {
+      set({ range: { lo, hi }, activePreset: 'custom' })
+      schedulePrefSave()
+    },
 
     applyPreset: (p) => {
       const vol = get().volume
       if (!vol) return
       set({ range: presetRange(vol, p), activePreset: p })
+      schedulePrefSave()
     },
 
     setHover: (h) => set({ hover: h }),
@@ -632,6 +856,10 @@ export const useStore = create<AppState>()((set, get) => {
 
     setBrightness: (b) =>
       set({ brightness: Math.min(BRIGHTNESS_MAX, Math.max(BRIGHTNESS_MIN, b)) }),
+
+    setBaseColormap: (c) => set({ baseColormap: c }),
+
+    setFileFilter: (q) => set({ fileFilter: q }),
 
     // ---- Region segmentation ------------------------------------------------
 
@@ -744,8 +972,12 @@ export const useStore = create<AppState>()((set, get) => {
       // keeps its identity (name/color/visibility).
       const editing = s.editRegionId !== null && s.regions.some((r) => r.id === s.editRegionId)
       const id = editing ? (s.editRegionId as number) : s.nextRegionId
-      if (editing) eraseRegion(labelMap, id)
-      applyMaskAsRegion(labelMap, vol.dims, s.preview.bounds, s.preview.mask, id)
+      const changes = new ChangeCollector()
+      if (editing) {
+        const erased = eraseRegion(labelMap, id)
+        for (let i = 0; i < erased.length; i++) changes.record(erased[i], id)
+      }
+      applyMaskAsRegion(labelMap, vol.dims, s.preview.bounds, s.preview.mask, id, changes)
       const list = editing
         ? s.regions
         : [
@@ -762,6 +994,11 @@ export const useStore = create<AppState>()((set, get) => {
       // Committing can overwrite voxels of earlier regions, so all stats
       // refresh together.
       const regions = computeRegionStats(vol, labelMap, list, frameOffsetOf(vol, s.frame))
+      const entry: HistoryEntry = {
+        patch: changes.finish(labelMap),
+        regions: { before: s.regions, after: regions },
+        nextId: { before: s.nextRegionId, after: editing ? s.nextRegionId : id + 1 }
+      }
       // Remember what this region was cut from, so re-editing restores the
       // drawn box and tuned parameters.
       const segSnapshots = s.segBox
@@ -784,7 +1021,9 @@ export const useStore = create<AppState>()((set, get) => {
         preview: null,
         editRegionId: null,
         segTool: 'crosshair',
-        segDirty: true
+        segDirty: true,
+        undoStack: pushEntry(s.undoStack, entry),
+        redoStack: []
       })
     },
 
@@ -798,6 +1037,9 @@ export const useStore = create<AppState>()((set, get) => {
       const vol = s.volume
       if (!vol || !s.labelMap || s.activeRegionId === null) return
       const plane = PLANES[view]
+      // One collector per stroke: created on the first stamp, consumed by
+      // endStroke into a single undo entry.
+      if (!strokeCollector) strokeCollector = new ChangeCollector()
       paintStroke(
         s.labelMap,
         vol.dims,
@@ -807,7 +1049,8 @@ export const useStore = create<AppState>()((set, get) => {
         to,
         s.brushRadius,
         s.activeRegionId,
-        erase
+        erase,
+        strokeCollector
       )
       set({ labelMapRev: s.labelMapRev + 1, segDirty: true })
     },
@@ -815,9 +1058,12 @@ export const useStore = create<AppState>()((set, get) => {
     endStroke: () => {
       const s = get()
       const vol = s.volume
+      const patch = s.labelMap && strokeCollector ? strokeCollector.finish(s.labelMap) : null
+      strokeCollector = null
       if (!vol || !s.labelMap || s.regions.length === 0) return
       set({
-        regions: computeRegionStats(vol, s.labelMap, s.regions, frameOffsetOf(vol, s.frame))
+        regions: computeRegionStats(vol, s.labelMap, s.regions, frameOffsetOf(vol, s.frame)),
+        ...(patch ? { undoStack: pushEntry(s.undoStack, { patch }), redoStack: [] } : {})
       })
       // Painting changes region shapes; a region-constrained preview must follow.
       if (s.segBox && s.segParams.constraint.type === 'region') schedulePreview()
@@ -891,17 +1137,27 @@ export const useStore = create<AppState>()((set, get) => {
       if (index === -1) return
       const region = s.regions[index]
       const indices = eraseRegion(s.labelMap, id)
+      const regions = s.regions.filter((r) => r.id !== id)
+      const entry: HistoryEntry = {
+        patch: patchFromErase(indices, id),
+        regions: { before: s.regions, after: regions }
+      }
       set({
-        regions: s.regions.filter((r) => r.id !== id),
+        regions,
         labelMapRev: s.labelMapRev + 1,
         activeRegionId: s.activeRegionId === id ? null : s.activeRegionId,
         editRegionId: s.editRegionId === id ? null : s.editRegionId,
-        undoDelete: { region, index, indices },
+        undoStack: pushEntry(s.undoStack, entry),
+        redoStack: [],
         segDirty: true,
-        toast: {
-          text: `Deleted "${region.name}"`,
-          action: { label: 'Undo', kind: 'undo-delete' }
-        }
+        toasts: [
+          ...s.toasts,
+          {
+            id: nextToastId++,
+            text: `Deleted "${region.name}"`,
+            action: { label: 'Undo', kind: 'undo' }
+          }
+        ]
       })
       // A constraint pointing at the deleted region would bound the preview
       // to voxels that no longer exist (setSegParams reschedules the preview).
@@ -913,22 +1169,9 @@ export const useStore = create<AppState>()((set, get) => {
       }
     },
 
-    undoDeleteRegion: () => {
-      const s = get()
-      const vol = s.volume
-      if (!vol || !s.labelMap || !s.undoDelete) return
-      const { region, index, indices } = s.undoDelete
-      restoreRegion(s.labelMap, indices, region.id)
-      const regions = [...s.regions]
-      regions.splice(Math.min(index, regions.length), 0, region)
-      set({
-        regions: computeRegionStats(vol, s.labelMap, regions, frameOffsetOf(vol, s.frame)),
-        labelMapRev: s.labelMapRev + 1,
-        undoDelete: null,
-        segDirty: true,
-        toast: null
-      })
-    },
+    undo: () => applyHistory('undo'),
+
+    redo: () => applyHistory('redo'),
 
     markExported: (vol, path) =>
       set((s) => ({
@@ -941,6 +1184,12 @@ export const useStore = create<AppState>()((set, get) => {
             : s.exportedPaths
       })),
 
-    setToast: (t) => set({ toast: t })
+    pushToast: (t) => {
+      const id = nextToastId++
+      set((s) => ({ toasts: [...s.toasts, { ...t, id }] }))
+      return id
+    },
+
+    dismissToast: (id) => set((s) => ({ toasts: s.toasts.filter((t) => t.id !== id) }))
   }
 })

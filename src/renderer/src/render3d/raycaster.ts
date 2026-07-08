@@ -21,6 +21,10 @@ interface Uniforms {
   mode: WebGLUniformLocation | null
   steps: WebGLUniformLocation | null
   vol: WebGLUniformLocation | null
+  lab: WebGLUniformLocation | null
+  labLut: WebGLUniformLocation | null
+  hasLab: WebGLUniformLocation | null
+  labAlpha: WebGLUniformLocation | null
 }
 
 /**
@@ -48,6 +52,13 @@ export class Raycaster {
 
   /** Retained copy of the last uploaded frame, for context restoration. */
   private lastData: Uint16Array | null = null
+
+  // Region overlay: palette-index 3D texture + 256-entry color LUT.
+  private labTex: WebGLTexture | null = null
+  private labLutTex: WebGLTexture | null = null
+  private lastLabData: Uint8Array | null = null
+  private lastLabLut: Uint8Array | null = null
+  private labAlpha = 0.5
 
   unsupportedReason: string | null = null
   onContextRestored: (() => void) | null = null
@@ -81,10 +92,17 @@ export class Raycaster {
 
   private handleRestored = (): void => {
     this.contextLost = false
+    // The lost context's texture handles are dead; forget them so the
+    // re-uploads below create fresh ones instead of deleting stale handles.
+    this.tex = null
+    this.labTex = null
+    this.labLutTex = null
     if (!this.setup()) return
     if (this.lastData && this.dims) {
       this.uploadTexture(this.lastData, this.dims)
     }
+    if (this.lastLabData) this.uploadLabelTexture(this.lastLabData)
+    if (this.lastLabLut) this.uploadLabelLut(this.lastLabLut)
     this.onContextRestored?.()
   }
 
@@ -138,9 +156,47 @@ export class Raycaster {
       density: u('uDensity'),
       mode: u('uMode'),
       steps: u('uSteps'),
-      vol: u('uVol')
+      vol: u('uVol'),
+      lab: u('uLab'),
+      labLut: u('uLabLut'),
+      hasLab: u('uHasLab'),
+      labAlpha: u('uLabAlpha')
     }
     return true
+  }
+
+  /** Upload the region palette-index texture (dims must match the volume). */
+  private uploadLabelTexture(data: Uint8Array): void {
+    const gl = this.gl as WebGL2RenderingContext
+    if (!this.dims) return
+    const [nx, ny, nz] = this.dims
+    if (this.labTex) gl.deleteTexture(this.labTex)
+    this.labTex = gl.createTexture()
+    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1)
+    gl.activeTexture(gl.TEXTURE1)
+    gl.bindTexture(gl.TEXTURE_3D, this.labTex)
+    gl.texStorage3D(gl.TEXTURE_3D, 1, gl.R8, nx, ny, nz)
+    gl.texSubImage3D(gl.TEXTURE_3D, 0, 0, 0, 0, nx, ny, nz, gl.RED, gl.UNSIGNED_BYTE, data)
+    // NEAREST: palette indices must never interpolate across regions.
+    gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MIN_FILTER, gl.NEAREST)
+    gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MAG_FILTER, gl.NEAREST)
+    gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE)
+    gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE)
+    gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_WRAP_R, gl.CLAMP_TO_EDGE)
+    gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MAX_LEVEL, 0)
+  }
+
+  private uploadLabelLut(rgba: Uint8Array): void {
+    const gl = this.gl as WebGL2RenderingContext
+    if (!this.labLutTex) this.labLutTex = gl.createTexture()
+    gl.activeTexture(gl.TEXTURE2)
+    gl.bindTexture(gl.TEXTURE_2D, this.labLutTex)
+    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1)
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, 256, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, rgba)
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST)
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST)
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE)
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE)
   }
 
   private uploadTexture(data: Uint16Array, dims: [number, number, number]): boolean {
@@ -181,6 +237,36 @@ export class Raycaster {
     const maxDim = Math.max(dims[0], dims[1], dims[2])
     this.fullSteps = Math.min(512, Math.max(128, Math.ceil(1.5 * maxDim)))
     this.uploadTexture(data, this.dims)
+    // A new volume means a new grid; the old label texture no longer aligns.
+    this.setLabelVolume(null)
+  }
+
+  /**
+   * Region palette-index texture over the SAME grid as the current volume
+   * texture (built with the same plan); null removes the region layer.
+   */
+  setLabelVolume(data: Uint8Array | null): void {
+    if (!this.gl || this.unsupportedReason || this.contextLost) return
+    this.lastLabData = data
+    if (!data) {
+      if (this.labTex) {
+        this.gl.deleteTexture(this.labTex)
+        this.labTex = null
+      }
+      return
+    }
+    this.uploadLabelTexture(data)
+  }
+
+  /** 256-entry RGBA palette (index 0 unused); alpha 0 hides a region. */
+  setLabelLut(rgba: Uint8Array): void {
+    if (!this.gl || this.unsupportedReason || this.contextLost) return
+    this.lastLabLut = rgba
+    this.uploadLabelLut(rgba)
+  }
+
+  setLabelAlpha(a: number): void {
+    this.labAlpha = a
   }
 
   /** Replace texel data for the current dims (4D frame change). */
@@ -252,6 +338,13 @@ export class Raycaster {
     gl.bindVertexArray(this.vao)
     gl.activeTexture(gl.TEXTURE0)
     gl.bindTexture(gl.TEXTURE_3D, this.tex)
+    const hasLab = this.labTex !== null && this.labLutTex !== null
+    if (hasLab) {
+      gl.activeTexture(gl.TEXTURE1)
+      gl.bindTexture(gl.TEXTURE_3D, this.labTex)
+      gl.activeTexture(gl.TEXTURE2)
+      gl.bindTexture(gl.TEXTURE_2D, this.labLutTex)
+    }
 
     const u = this.uni
     const b = this.basis
@@ -272,6 +365,10 @@ export class Raycaster {
     // banding, and the win is what keeps long drags fluid on weaker GPUs.
     gl.uniform1i(u.steps, quality === 'full' ? this.fullSteps : Math.max(64, this.fullSteps >> 2))
     gl.uniform1i(u.vol, 0)
+    gl.uniform1i(u.lab, 1)
+    gl.uniform1i(u.labLut, 2)
+    gl.uniform1i(u.hasLab, hasLab ? 1 : 0)
+    gl.uniform1f(u.labAlpha, this.labAlpha)
 
     gl.drawArrays(gl.TRIANGLES, 0, 3)
   }
@@ -282,9 +379,13 @@ export class Raycaster {
     const gl = this.gl
     if (!gl) return
     if (this.tex) gl.deleteTexture(this.tex)
+    if (this.labTex) gl.deleteTexture(this.labTex)
+    if (this.labLutTex) gl.deleteTexture(this.labLutTex)
     if (this.program) gl.deleteProgram(this.program)
     if (this.vao) gl.deleteVertexArray(this.vao)
     this.gl = null
     this.lastData = null
+    this.lastLabData = null
+    this.lastLabLut = null
   }
 }

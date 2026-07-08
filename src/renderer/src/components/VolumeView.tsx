@@ -1,13 +1,25 @@
-import { useEffect, useRef, useState, type JSX } from 'react'
+import { useEffect, useMemo, useRef, useState, type JSX } from 'react'
 import { useStore } from '../store'
 import { Raycaster, type Quality } from '../render3d/raycaster'
 import { OrbitCamera, FOV_Y_RAD } from '../render3d/camera'
-import { buildTexData, planTexture, scaledToNormalized, type TexPlan } from '../render3d/normalize'
+import {
+  buildLabelTexData,
+  buildTexData,
+  planTexture,
+  scaledToNormalized,
+  type TexPlan
+} from '../render3d/normalize'
+import { colorComponents } from '../segmentation/regions'
 import { initialTexOf } from '../volume/loadVolume'
 
 /** Render at half resolution while interacting; restore on settle. */
 const INTERACTIVE_HALF_RES = true
 const SETTLE_MS = 180
+/** Label-texture rebuilds trail label-map edits by this much (brush strokes
+ * bump the revision on every pointer move). */
+const LABEL_REBUILD_MS = 200
+/** Palette size (index 0 = no region); regions beyond it stay 2D-only. */
+const LABEL_PALETTE_MAX = 255
 
 export function VolumeView(): JSX.Element {
   const volume = useStore((s) => s.volume)
@@ -16,6 +28,10 @@ export function VolumeView(): JSX.Element {
   const renderMode = useStore((s) => s.renderMode)
   const density = useStore((s) => s.density)
   const brightness = useStore((s) => s.brightness)
+  const labelMap = useStore((s) => s.labelMap)
+  const labelMapRev = useStore((s) => s.labelMapRev)
+  const regions = useStore((s) => s.regions)
+  const regionOpacity = useStore((s) => s.regionOpacity)
 
   const containerRef = useRef<HTMLDivElement>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
@@ -137,6 +153,58 @@ export function VolumeView(): JSX.Element {
     schedule('full')
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [volume])
+
+  // Region palette (index = 1 + position in the regions list). Region ids can
+  // exceed the palette; those regions simply stay 2D-only.
+  const regionIdsKey = useMemo(() => regions.map((r) => r.id).join(','), [regions])
+
+  // Palette LUT + opacity: cheap uniform/LUT updates on color/visibility/
+  // opacity changes — no texture rebuild.
+  useEffect(() => {
+    const rc = raycasterRef.current
+    if (!rc || !volume) return
+    const lut = new Uint8Array(256 * 4)
+    regions.forEach((r, i) => {
+      if (i >= LABEL_PALETTE_MAX) return
+      const [red, green, blue] = colorComponents(r.color)
+      const o = (i + 1) * 4
+      lut[o] = red
+      lut[o + 1] = green
+      lut[o + 2] = blue
+      lut[o + 3] = r.visible ? 255 : 0
+    })
+    rc.setLabelLut(lut)
+    rc.setLabelAlpha(regionOpacity)
+    schedule('interactive')
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [regions, regionOpacity, volume])
+
+  // Palette-index texture: rebuilt (debounced) when the label map's voxels or
+  // the region membership change. Uses the same downsampling plan as the base
+  // texture so both grids align exactly.
+  useEffect(() => {
+    const rc = raycasterRef.current
+    const plan = planRef.current
+    if (!rc || !volume || !plan) return
+    if (!labelMap || regions.length === 0) {
+      rc.setLabelVolume(null)
+      schedule('full')
+      return
+    }
+    const timer = window.setTimeout(() => {
+      const s = useStore.getState()
+      if (s.volume !== volume || !s.labelMap) return
+      const maxId = s.regions.reduce((m, r) => Math.max(m, r.id), 0)
+      const indexOf = new Uint8Array(maxId + 1)
+      s.regions.forEach((r, i) => {
+        if (i < LABEL_PALETTE_MAX) indexOf[r.id] = i + 1
+      })
+      rc.setLabelVolume(buildLabelTexData(s.labelMap, volume.dims, plan, indexOf))
+      schedule('full')
+    }, LABEL_REBUILD_MS)
+    return () => window.clearTimeout(timer)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [labelMap, labelMapRev, regionIdsKey, volume])
 
   // Frame change (4D).
   useEffect(() => {

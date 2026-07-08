@@ -1,5 +1,23 @@
-import type { Volume } from '../volume/types'
+import type { VoxelArray } from '../volume/types'
 import { composeVoxelMap } from '../volume/affine'
+
+/**
+ * The slice of a volume the engine reads — structural, so a full Volume
+ * passes as-is and the preview worker can rebuild one from transferred
+ * buffers without carrying stats/labels/names across.
+ */
+export interface GridSource {
+  dims: [number, number, number]
+  raw: VoxelArray
+  slope: number
+  inter: number
+}
+
+/** A grid that can also be affine-aligned (constraint volumes). */
+export interface AlignedGridSource extends GridSource {
+  affine: Float64Array
+  frames: number
+}
 
 /** Axis-aligned voxel box on the base grid; bounds are inclusive. */
 export interface SegBox {
@@ -74,8 +92,8 @@ export function constraintFromLabelMap(
  * volume's affine cannot be inverted.
  */
 export function constraintFromVolume(
-  base: Volume,
-  constraint: Volume,
+  base: { affine: Float64Array },
+  constraint: AlignedGridSource,
   frame = 0
 ): VoxelPredicate | null {
   const m = composeVoxelMap(base.affine, constraint.affine)
@@ -147,7 +165,7 @@ export interface BoxStats {
 
 /** Scaled-intensity min/max/mean over the box ∩ constraint (one pass). */
 export function boxStats(
-  vol: Volume,
+  vol: GridSource,
   box: SegBox,
   frameOffset = 0,
   constraint: VoxelPredicate | null = null
@@ -185,7 +203,7 @@ export interface HistogramResult {
 
 /** Intensity histogram over the box ∩ constraint (for the panel and Otsu). */
 export function boxHistogram(
-  vol: Volume,
+  vol: GridSource,
   box: SegBox,
   bins: number,
   frameOffset = 0,
@@ -225,7 +243,7 @@ export function boxHistogram(
  * fall back to AUTO_THRESHOLD_FALLBACK.
  */
 export function otsuThreshold(
-  vol: Volume,
+  vol: GridSource,
   box: SegBox,
   frameOffset = 0,
   constraint: VoxelPredicate | null = null
@@ -395,7 +413,7 @@ const SPARSE_BOUNDS_FACTOR = 4
  * cap, not the volume.
  */
 function segmentRegionSparse(
-  vol: Volume,
+  vol: GridSource,
   seedBox: SegBox,
   bounds: SegBox,
   params: EngineParams,
@@ -537,7 +555,7 @@ function segmentRegionSparse(
  * the cap instead of the volume).
  */
 export function segmentRegion(
-  vol: Volume,
+  vol: GridSource,
   seedBox: SegBox,
   bounds: SegBox,
   params: EngineParams,

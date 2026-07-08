@@ -76,6 +76,38 @@ export function planTexture(
   }
 }
 
+/**
+ * Downsample the region label map onto the 3D texture grid (the same plan as
+ * the base texture, so both stay aligned): one byte per texel carrying a
+ * palette index, 0 = no region. `indexOf` maps region id → palette index;
+ * ids at/behind its length map to 0.
+ */
+export function buildLabelTexData(
+  labelMap: Uint16Array,
+  dims: [number, number, number],
+  plan: TexPlan,
+  indexOf: Uint8Array,
+  out?: Uint8Array
+): Uint8Array {
+  const [nx, ny] = [dims[0], dims[1]]
+  const [tx, ty, tz] = plan.texDims
+  const [sx, sy, sz] = plan.stride
+  const count = tx * ty * tz
+  const dst = out && out.length === count ? out : new Uint8Array(count)
+  let p = 0
+  for (let k = 0; k < tz; k++) {
+    const kOff = k * sz * nx * ny
+    for (let j = 0; j < ty; j++) {
+      let idx = kOff + j * sy * nx
+      for (let i = 0; i < tx; i++, idx += sx, p++) {
+        const id = labelMap[idx]
+        dst[p] = id < indexOf.length ? indexOf[id] : 0
+      }
+    }
+  }
+  return dst
+}
+
 const f32Scratch = new Float32Array(1)
 const u32Scratch = new Uint32Array(f32Scratch.buffer)
 

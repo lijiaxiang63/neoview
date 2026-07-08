@@ -22,7 +22,8 @@ export function strides(dims: [number, number, number]): [number, number, number
 /**
  * Extract one slice into an ImageData buffer, mapping intensity through the
  * display range [lo, hi]. Rows are written bottom-up so the row axis
- * increases upward on screen.
+ * increases upward on screen. `lut` (256 packed RGBA entries) recolors the
+ * windowed intensity; null keeps the grayscale fast path.
  */
 export function extractSliceToImageData(
   vol: Volume,
@@ -31,7 +32,8 @@ export function extractSliceToImageData(
   frame: number,
   lo: number,
   hi: number,
-  img: ImageData
+  img: ImageData,
+  lut: Uint32Array | null = null
 ): void {
   const { raw, slope, inter, dims } = vol
   const stride = strides(dims)
@@ -44,6 +46,17 @@ export function extractSliceToImageData(
   const scale = 255 / Math.max(hi - lo, 1e-12)
   const px = new Uint32Array(img.data.buffer)
   let p = 0
+  if (lut) {
+    for (let r = h - 1; r >= 0; r--) {
+      let idx = base + r * rs
+      for (let c = 0; c < w; c++, idx += cs, p++) {
+        let v = (raw[idx] * slope + inter - lo) * scale
+        v = v < 0 ? 0 : v > 255 ? 255 : v | 0
+        px[p] = lut[v]
+      }
+    }
+    return
+  }
   for (let r = h - 1; r >= 0; r--) {
     let idx = base + r * rs
     for (let c = 0; c < w; c++, idx += cs, p++) {
