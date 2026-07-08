@@ -550,6 +550,10 @@ function ExportSection(): JSX.Element {
 
   const doExport = async (kind: 'labels' | 'mask'): Promise<void> => {
     if (!labelMap || busy) return
+    // Captured here: the write below is async, and the user may navigate to
+    // another file before it resolves — the mark must go to THIS source.
+    const exportedVolume = volume
+    const exportedPath = sourcePath
     const dir = settings.dir || (sourcePath ? dirOfPath(sourcePath) : '')
     if (!dir) {
       fail('The source folder is unknown — pick an export folder in the export settings.')
@@ -568,7 +572,7 @@ function ExportSection(): JSX.Element {
         bytes: payload.bytes,
         sidecar: payload.sidecar
       })
-      markExported()
+      markExported(exportedVolume, exportedPath)
       setToast({
         text: `Saved ${result.path.split(/[\\/]/).pop()}${result.sidecarPath ? ' + color table' : ''}`,
         action: { label: 'Show in file manager', kind: 'reveal', path: result.path }

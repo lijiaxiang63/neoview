@@ -71,3 +71,55 @@ export function splitDisplayName(name: string): { stem: string; ext: string } {
   if (!m) return { stem: name, ext: '' }
   return { stem: name.slice(0, m.index), ext: m[0].toLowerCase() }
 }
+
+/**
+ * Stem of the volume a region-export product was written from, or null for
+ * any other name. Products are named "<stem>.regions.<fmt>" / "<stem>.mask.<fmt>"
+ * plus '-1', '-2', … collision suffixes (see main's uniquePath).
+ */
+export function regionExportSource(name: string): string | null {
+  const m = /\.(regions|mask)(-\d+)?\.nii(\.gz)?$/i.exec(name)
+  return m ? name.slice(0, m.index) : null
+}
+
+export interface RegionExportView {
+  /** The list with recognized export products hidden. */
+  files: FolderEntry[]
+  /** Paths of entries that have an export product beside them. */
+  exportedFor: ReadonlySet<string>
+}
+
+const viewCache = new WeakMap<FolderEntry[], RegionExportView>()
+
+/**
+ * Fold region-export products into the list they sit in: a product whose
+ * source volume is present in the same directory is hidden and marks that
+ * source as exported; a product without its source stays a plain entry (it
+ * may be pre-existing data, not something this app wrote). Cached per input
+ * array — the store only ever swaps the whole (sorted) list.
+ */
+export function regionExportView(files: FolderEntry[]): RegionExportView {
+  const cached = viewCache.get(files)
+  if (cached) return cached
+  // Same-directory stem lookup; case-insensitive to match the common
+  // case-insensitive filesystems the files sit on.
+  const keyOf = (relDir: string, stem: string): string => `${relDir}\u0000${stem.toLowerCase()}`
+  const byStem = new Map<string, string[]>()
+  for (const f of files) {
+    const key = keyOf(f.relDir, splitDisplayName(f.name).stem)
+    const paths = byStem.get(key)
+    if (paths) paths.push(f.path)
+    else byStem.set(key, [f.path])
+  }
+  const exportedFor = new Set<string>()
+  const visible: FolderEntry[] = []
+  for (const f of files) {
+    const source = regionExportSource(f.name)
+    const sources = source === null ? undefined : byStem.get(keyOf(f.relDir, source))
+    if (sources) for (const p of sources) exportedFor.add(p)
+    else visible.push(f)
+  }
+  const view = { files: visible, exportedFor }
+  viewCache.set(files, view)
+  return view
+}

@@ -76,6 +76,7 @@ export const PREFETCH_KEEP_MAX = 512 * 1024 * 1024
 export class LoadCoordinator<V> {
   private readonly fx: CoordinatorEffects<V>
   private readonly prefetchMax: number
+  private readonly deferAutoLoad: (entry: FolderEntry) => boolean
 
   // Ownership generation: every base load takes one; a confirmed scan bumps
   // it without a load. Only the newest generation may publish.
@@ -110,9 +111,21 @@ export class LoadCoordinator<V> {
   // consumes it, so the folder's first file loads exactly once.
   private autoLoadArmed = false
 
-  constructor(fx: CoordinatorEffects<V>, opts?: { prefetchMax?: number }) {
+  constructor(
+    fx: CoordinatorEffects<V>,
+    opts?: {
+      prefetchMax?: number
+      /** Entries the snapshot may still drop as more of the scan streams in
+       * (e.g. a region export whose source volume has not arrived yet). While
+       * one of these heads the list, a partial batch cannot know the folder's
+       * true first file — it may fold away or turn out to BE the first file —
+       * so the auto-load waits for the final scan instead of picking anything. */
+      deferAutoLoad?: (entry: FolderEntry) => boolean
+    }
+  ) {
     this.fx = fx
     this.prefetchMax = opts?.prefetchMax ?? PREFETCH_KEEP_MAX
+    this.deferAutoLoad = opts?.deferAutoLoad ?? (() => false)
   }
 
   /** Explicit base open (dialog, menu, drop): supersedes a running scan and
@@ -140,6 +153,14 @@ export class LoadCoordinator<V> {
 
   /** Move the navigation target to this folder entry. */
   requestEntry(path: string): void {
+    // A pick from the CURRENT scan's list claims its view: the auto-load may
+    // still be armed (it waits while the list's head entry is ambiguous), and
+    // a later batch firing it would override the choice — disarm it. Confirmed
+    // is the gate: before it, the visible list is still the previous folder's,
+    // and a pick there is doomed to be invalidated by the confirmation anyway —
+    // it must not eat the incoming folder's one auto-load. (The auto-load's own
+    // picks route through here after confirmation, consuming the flag.)
+    if (this.confirmedScanGen === this.scanGen) this.autoLoadArmed = false
     this.queued = path
     this.fx.setPending(path)
     void this.pump()
@@ -283,10 +304,19 @@ export class LoadCoordinator<V> {
     // A loaded file that sits under the root may simply not have streamed in
     // yet — deciding to replace it belongs to the final scan, not a batch.
     if (!final && src !== null && isUnderRoot(snap.folderRoot, src)) return
-    this.autoLoadArmed = false
-    if (!snap.folderFiles.some((f) => f.path === src)) {
-      this.requestEntry(snap.folderFiles[0].path)
+    if (snap.folderFiles.some((f) => f.path === src)) {
+      this.autoLoadArmed = false
+      return
     }
+    // The auto-load's contract is "the folder's first file". While the list's
+    // head is an entry that may yet drop out (deferAutoLoad), a partial batch
+    // cannot tell what the first file IS — the head may fold away, or survive
+    // and be exactly the file to load. Either way the whole decision is
+    // deferred (stay armed); skipping to a later entry would bake the wrong
+    // pick in before the final result settles the head's fate.
+    const first = snap.folderFiles[0]
+    if (!final && this.deferAutoLoad(first)) return
+    this.requestEntry(first.path)
   }
 
   private async pump(): Promise<void> {

@@ -272,11 +272,46 @@ describe('regions', () => {
 
   it('deleting the last region still counts as unsaved', () => {
     seedRegion()
-    useStore.getState().markExported()
+    const s = useStore.getState()
+    s.markExported(s.volume!, s.sourcePath)
     expect(hasUnsavedRegions()).toBe(false)
     useStore.getState().deleteRegion(1)
     expect(useStore.getState().regions).toEqual([])
     expect(hasUnsavedRegions()).toBe(true)
+  })
+
+  it('markExported records the source path for the file panel', () => {
+    seedRegion()
+    useStore.setState({ sourcePath: '/data/a.nii.gz', segDirty: true })
+    const s = useStore.getState()
+    s.markExported(s.volume!, s.sourcePath)
+    expect(useStore.getState().exportedPaths.has('/data/a.nii.gz')).toBe(true)
+    expect(useStore.getState().segDirty).toBe(false)
+
+    // A pathless source (e.g. a bundled sample) records nothing.
+    const before = useStore.getState().exportedPaths
+    useStore.setState({ sourcePath: null, segDirty: true })
+    useStore.getState().markExported(useStore.getState().volume!, null)
+    expect(useStore.getState().exportedPaths).toBe(before)
+    expect(useStore.getState().segDirty).toBe(false)
+  })
+
+  it('an export finishing after a volume swap marks its own source, not the new one', () => {
+    seedRegion()
+    useStore.setState({ sourcePath: '/data/a.nii.gz' })
+    const exportedVolume = useStore.getState().volume!
+    const exportedPath = useStore.getState().sourcePath
+
+    // The user navigates to another file and edits it while the export of
+    // the previous file is still writing.
+    seedRegion()
+    useStore.setState({ sourcePath: '/data/b.nii.gz', segDirty: true })
+
+    useStore.getState().markExported(exportedVolume, exportedPath)
+    const after = useStore.getState()
+    expect(after.exportedPaths.has('/data/a.nii.gz')).toBe(true) // the real export
+    expect(after.exportedPaths.has('/data/b.nii.gz')).toBe(false) // never exported
+    expect(after.segDirty).toBe(true) // the new volume's edits stay unsaved
   })
 
   it('floodCap caps only floods whose bounds cover the whole volume', () => {

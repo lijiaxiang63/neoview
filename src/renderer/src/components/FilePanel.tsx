@@ -1,9 +1,30 @@
 import { useEffect, useMemo, useRef, type JSX } from 'react'
 import { useStore } from '../store'
-import { groupEntries, splitDisplayName, type FolderEntry } from '../files/folderList'
+import {
+  groupEntries,
+  regionExportView,
+  splitDisplayName,
+  type FolderEntry
+} from '../files/folderList'
 
 interface Props {
   onSelect: (entry: FolderEntry) => void
+}
+
+function DoneBadge(): JSX.Element {
+  return (
+    <span className="done-badge" role="img" aria-label="Regions exported" title="Regions exported">
+      <svg width="9" height="9" viewBox="0 0 9 9" fill="none" aria-hidden="true">
+        <path
+          d="M1.5 4.8 3.6 7 7.5 2.2"
+          stroke="currentColor"
+          strokeWidth="1.4"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        />
+      </svg>
+    </span>
+  )
 }
 
 function FileGlyph(): JSX.Element {
@@ -26,9 +47,13 @@ export function FilePanel({ onSelect }: Props): JSX.Element | null {
   const sourcePath = useStore((s) => s.sourcePath)
   const pendingPath = useStore((s) => s.pendingFilePath)
   const toggleFilePanel = useStore((s) => s.toggleFilePanel)
+  const exportedPaths = useStore((s) => s.exportedPaths)
   const activeRef = useRef<HTMLButtonElement | null>(null)
 
-  const groups = useMemo(() => (folder ? groupEntries(folder.files) : []), [folder])
+  // Referentially stable per files array (regionExportView caches), so the
+  // useMemo below keys off it directly.
+  const view = folder ? regionExportView(folder.files) : null
+  const groups = useMemo(() => (view ? groupEntries(view.files) : []), [view])
 
   // While scrubbing with the arrow keys the pending target leads; once the
   // load settles the loaded row takes over.
@@ -38,13 +63,13 @@ export function FilePanel({ onSelect }: Props): JSX.Element | null {
     activeRef.current?.scrollIntoView({ block: 'nearest' })
   }, [focusPath])
 
-  if (!folder) return null
+  if (!folder || !view) return null
 
   return (
     <aside className="file-panel">
       <header className="file-panel-head">
         <h3>Files</h3>
-        <span className="count mono">{folder.files.length}</span>
+        <span className="count mono">{view.files.length}</span>
         <button
           className="file-panel-close"
           title="Hide file list (folder stays open)"
@@ -67,6 +92,7 @@ export function FilePanel({ onSelect }: Props): JSX.Element | null {
             {g.entries.map((f) => {
               const active = f.path === sourcePath
               const pending = pendingPath !== null && f.path === pendingPath && !active
+              const done = view.exportedFor.has(f.path) || exportedPaths.has(f.path)
               const { stem, ext } = splitDisplayName(f.name)
               return (
                 <button
@@ -86,6 +112,7 @@ export function FilePanel({ onSelect }: Props): JSX.Element | null {
                   <FileGlyph />
                   <span className="file-name">{stem}</span>
                   <span className="ext-badge">{ext}</span>
+                  {done && <DoneBadge />}
                 </button>
               )
             })}
@@ -96,7 +123,7 @@ export function FilePanel({ onSelect }: Props): JSX.Element | null {
         )}
         {folderLoading && <div className="file-empty">Scanning…</div>}
         {folder.truncated && (
-          <div className="file-empty">Showing the first {folder.files.length} files</div>
+          <div className="file-empty">Showing the first {view.files.length} files</div>
         )}
       </div>
     </aside>

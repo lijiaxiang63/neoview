@@ -173,6 +173,9 @@ interface AppState {
   regionOpacity: number
   /** True while region edits exist that have not been exported. */
   segDirty: boolean
+  /** Source paths whose regions were exported this session. Marks file-panel
+   * rows even when the export file lands outside the opened folder. */
+  exportedPaths: ReadonlySet<string>
   undoDelete: UndoDelete | null
   toast: ToastState | null
 
@@ -229,7 +232,11 @@ interface AppState {
   updateRegion: (id: number, patch: Partial<Pick<Region, 'name' | 'color' | 'visible'>>) => void
   deleteRegion: (id: number) => void
   undoDeleteRegion: () => void
-  markExported: () => void
+  /** An export finished writing. Both arguments are captured when the export
+   * STARTS: the write is async, and reading current state here instead would
+   * attribute the export to whatever file the user navigated to meanwhile.
+   * Clears the dirty flag only while `volume` is still the loaded one. */
+  markExported: (volume: Volume, sourcePath: string | null) => void
   setToast: (t: ToastState | null) => void
 }
 
@@ -473,6 +480,7 @@ export const useStore = create<AppState>()((set, get) => {
     brushRadius: 4,
     regionOpacity: 0.5,
     segDirty: false,
+    exportedPaths: new Set<string>(),
     undoDelete: null,
     toast: null,
 
@@ -922,7 +930,16 @@ export const useStore = create<AppState>()((set, get) => {
       })
     },
 
-    markExported: () => set({ segDirty: false }),
+    markExported: (vol, path) =>
+      set((s) => ({
+        // A volume swapped in mid-write keeps its own dirty state: this
+        // export saved the OLD volume's regions, not the new one's.
+        segDirty: s.volume === vol ? false : s.segDirty,
+        exportedPaths:
+          path !== null && !s.exportedPaths.has(path)
+            ? new Set(s.exportedPaths).add(path)
+            : s.exportedPaths
+      })),
 
     setToast: (t) => set({ toast: t })
   }

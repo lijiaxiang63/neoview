@@ -5,6 +5,7 @@ import { loadVolume } from './volume/loadVolume'
 import { composeVoxelMap } from './volume/affine'
 import type { Volume } from './volume/types'
 import { LoadCoordinator } from './files/loadCoordinator'
+import { regionExportSource, regionExportView } from './files/folderList'
 import { SliceView } from './components/SliceView'
 import { VolumeView } from './components/VolumeView'
 import { SidePanel } from './components/SidePanel'
@@ -41,43 +42,54 @@ function ipcErrorMessage(err: unknown): string {
 // lives in the coordinator, a pure module whose interleavings are
 // unit-tested (tests/loadCoordinator.test.ts). This file only wires its
 // effects to the store, the preload bridge, and the parser.
-const coordinator = new LoadCoordinator<Volume>({
-  snapshot: () => {
-    const s = useStore.getState()
-    return {
-      sourcePath: s.sourcePath,
-      loading: s.loadState === 'loading',
-      scanning: s.folderLoading,
-      folderRoot: s.folder?.root ?? null,
-      folderFiles: s.folder?.files ?? null
-    }
+const coordinator = new LoadCoordinator<Volume>(
+  {
+    snapshot: () => {
+      const s = useStore.getState()
+      return {
+        sourcePath: s.sourcePath,
+        loading: s.loadState === 'loading',
+        scanning: s.folderLoading,
+        folderRoot: s.folder?.root ?? null,
+        // The coordinator sees the list as the panel shows it — with region
+        // exports folded away — so navigation, prefetch and the folder's
+        // auto-load all skip hidden product files.
+        folderFiles: s.folder ? regionExportView(s.folder.files).files : null
+      }
+    },
+    read: (path) => window.neoview.readFile(path),
+    readWithin: (path, maxBytes) => window.neoview.readFileWithin(path, maxBytes),
+    parseBase: (name, bytes) => loadVolume(name, bytes),
+    commitBase: (volume, path) => useStore.getState().setVolume(volume, path),
+    parseAndAddOverlay: async (name, bytes) => {
+      const volume = await loadVolume(name, bytes, { skipTex: true })
+      const base = useStore.getState().volume
+      if (!base) {
+        useStore.getState().fail('Load the base volume first.')
+      } else if (!composeVoxelMap(base.affine, volume.affine)) {
+        useStore.getState().fail('Overlay could not be aligned: its affine is not invertible.')
+      } else {
+        useStore.getState().addOverlay(volume)
+      }
+    },
+    confirmReplaceBase: confirmDiscardRegionWork,
+    raiseLoading: () => useStore.getState().startLoading(),
+    dismissLoading: () => useStore.getState().dismissError(),
+    failParse: (err) =>
+      useStore.getState().fail(err instanceof Error ? err.message : 'Could not open file.'),
+    failRead: (err) => useStore.getState().fail(ipcErrorMessage(err)),
+    setPending: (p) => useStore.getState().setPendingFilePath(p),
+    setFolder: (f) => useStore.getState().setFolder(f),
+    appendFolder: (root, files) => useStore.getState().appendFolderFiles(root, files),
+    setScanning: (b) => useStore.getState().setFolderLoading(b)
   },
-  read: (path) => window.neoview.readFile(path),
-  readWithin: (path, maxBytes) => window.neoview.readFileWithin(path, maxBytes),
-  parseBase: (name, bytes) => loadVolume(name, bytes),
-  commitBase: (volume, path) => useStore.getState().setVolume(volume, path),
-  parseAndAddOverlay: async (name, bytes) => {
-    const volume = await loadVolume(name, bytes, { skipTex: true })
-    const base = useStore.getState().volume
-    if (!base) {
-      useStore.getState().fail('Load the base volume first.')
-    } else if (!composeVoxelMap(base.affine, volume.affine)) {
-      useStore.getState().fail('Overlay could not be aligned: its affine is not invertible.')
-    } else {
-      useStore.getState().addOverlay(volume)
-    }
-  },
-  confirmReplaceBase: confirmDiscardRegionWork,
-  raiseLoading: () => useStore.getState().startLoading(),
-  dismissLoading: () => useStore.getState().dismissError(),
-  failParse: (err) =>
-    useStore.getState().fail(err instanceof Error ? err.message : 'Could not open file.'),
-  failRead: (err) => useStore.getState().fail(ipcErrorMessage(err)),
-  setPending: (p) => useStore.getState().setPendingFilePath(p),
-  setFolder: (f) => useStore.getState().setFolder(f),
-  appendFolder: (root, files) => useStore.getState().appendFolderFiles(root, files),
-  setScanning: (b) => useStore.getState().setFolderLoading(b)
-})
+  {
+    // An export product stays visible only until its source volume streams in
+    // (regionExportView folds it away), so a partial batch must never
+    // auto-load one — the final scan decides whether it is a real entry.
+    deferAutoLoad: (f) => regionExportSource(f.name) !== null
+  }
+)
 
 // The folder closing (e.g. an outside file replaced it) releases the cached
 // prefetch bytes instead of pinning them until the next navigation.
