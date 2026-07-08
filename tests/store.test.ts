@@ -331,6 +331,38 @@ describe('regions', () => {
     expect(toasts.some((t) => t.action?.kind === 'reveal')).toBe(true)
   })
 
+  it('undo of a delete keeps metadata edits made to other regions afterwards', () => {
+    seedRegion()
+    useStore.getState().labelMap![2] = 2
+    useStore.setState((prev) => ({
+      regions: [
+        ...prev.regions,
+        {
+          id: 2,
+          name: 'Region 2',
+          color: '#00ff00',
+          visible: true,
+          voxelCount: 1,
+          stats: { min: 2, max: 2, mean: 2 }
+        }
+      ],
+      nextRegionId: 3
+    }))
+    useStore.getState().deleteRegion(1)
+    // Rename/recolor after the delete: metadata edits push no history entry,
+    // so the undo's snapshot restore must not revert them.
+    useStore.getState().updateRegion(2, { name: 'renamed', color: '#123456' })
+    useStore.getState().undo()
+    const regions = useStore.getState().regions
+    expect(regions.map((r) => r.id).sort()).toEqual([1, 2])
+    const r2 = regions.find((r) => r.id === 2)!
+    expect(r2.name).toBe('renamed')
+    expect(r2.color).toBe('#123456')
+    // The deleted region itself is fully restored, voxels included.
+    expect(regions.find((r) => r.id === 1)?.name).toBe('Region 1')
+    expect(useStore.getState().labelMap![0]).toBe(1)
+  })
+
   it('an export finishing after a volume swap marks its own source, not the new one', () => {
     seedRegion()
     useStore.setState({ sourcePath: '/data/a.nii.gz' })

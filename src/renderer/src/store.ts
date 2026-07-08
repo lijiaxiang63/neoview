@@ -593,7 +593,12 @@ export const useStore = create<AppState>()((set, get) => {
         dir === 'undo' ? entry.patch.before : entry.patch.after
       )
     }
-    const list = entry.regions ? entry.regions[dir === 'undo' ? 'before' : 'after'] : s.regions
+    // The snapshot decides which regions exist; metadata (name/color/
+    // visibility) is deliberately outside history, so a region that still
+    // exists keeps its CURRENT fields — only resurrected regions come from
+    // the snapshot wholesale. Stats are recomputed below either way.
+    const snapshot = entry.regions ? entry.regions[dir === 'undo' ? 'before' : 'after'] : s.regions
+    const list = snapshot.map((r) => s.regions.find((c) => c.id === r.id) ?? r)
     const regions = labelMap
       ? computeRegionStats(vol, labelMap, list, frameOffsetOf(vol, s.frame))
       : list
@@ -610,8 +615,9 @@ export const useStore = create<AppState>()((set, get) => {
       activeRegionId: stillThere(s.activeRegionId) ? s.activeRegionId : null,
       editRegionId: stillThere(s.editRegionId) ? s.editRegionId : null,
       segDirty: true,
-      // Drop the lingering "Deleted …" toast the undo just reversed.
-      toasts: []
+      // The popped entry is what a lingering undo toast pointed at; other
+      // toasts (export reveals) are unaffected by history moves.
+      toasts: dropUndoToasts(s.toasts)
     })
     const c = get().segParams.constraint
     if (c.type === 'region' && !regions.some((r) => r.id === c.regionId)) {
@@ -623,18 +629,18 @@ export const useStore = create<AppState>()((set, get) => {
   }
 
   /** Debounced write of the current display range/preset to the per-file
-   * prefs (drag gestures fire setRange every frame). */
+   * prefs (drag gestures fire setRange every frame). Path and values are
+   * captured NOW: by the time the timer fires the user may have navigated
+   * to another file, and the write must go to the file that was edited. */
   function schedulePrefSave(): void {
     if (!prefStorage) return
+    const s = get()
+    if (!s.volume || !s.sourcePath) return
+    const path = s.sourcePath
+    const pref = { preset: s.activePreset, lo: s.range.lo, hi: s.range.hi }
     clearTimeout(prefSaveTimer)
     prefSaveTimer = setTimeout(() => {
-      const s = get()
-      if (!s.volume || !s.sourcePath) return
-      saveViewPref(
-        s.sourcePath,
-        { preset: s.activePreset, lo: s.range.lo, hi: s.range.hi },
-        prefStorage as Pick<Storage, 'getItem' | 'setItem'>
-      )
+      saveViewPref(path, pref, prefStorage as Pick<Storage, 'getItem' | 'setItem'>)
     }, 300)
   }
 
