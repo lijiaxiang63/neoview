@@ -153,11 +153,14 @@ export class LoadCoordinator<V> {
 
   /** Move the navigation target to this folder entry. */
   requestEntry(path: string): void {
-    // A pick claims the view. The scan's auto-load may still be armed here
-    // (it stays armed while the list's head entry is ambiguous), and a later
-    // batch firing it would override this choice — disarm it instead. The
-    // auto-load's own picks route through here too, after they disarm.
-    this.autoLoadArmed = false
+    // A pick from the CURRENT scan's list claims its view: the auto-load may
+    // still be armed (it waits while the list's head entry is ambiguous), and
+    // a later batch firing it would override the choice — disarm it. Confirmed
+    // is the gate: before it, the visible list is still the previous folder's,
+    // and a pick there is doomed to be invalidated by the confirmation anyway —
+    // it must not eat the incoming folder's one auto-load. (The auto-load's own
+    // picks route through here after confirmation, consuming the flag.)
+    if (this.confirmedScanGen === this.scanGen) this.autoLoadArmed = false
     this.queued = path
     this.fx.setPending(path)
     void this.pump()

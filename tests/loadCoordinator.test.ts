@@ -556,6 +556,39 @@ describe('folder scans', () => {
     expect(h.reads.map((r) => r.path)).toEqual(['/r/a.mask.nii.gz'])
   })
 
+  it('a pick on the old list before the scan confirms does not eat the new folder auto-load', async () => {
+    const h = makeHarness()
+    h.state.folder = folder(['/old/a.nii', '/old/b.nii'], '/old')
+    h.state.sourcePath = '/old/a.nii'
+    let token = 0
+    const scanDone = deferred<ScanResult | null>()
+    void h.co.scanFolder((t) => {
+      token = t
+      return scanDone.promise
+    })
+    // No batch has arrived yet, so the OLD folder's list is still shown and
+    // interactive — the user clicks a row in it.
+    h.co.requestEntry('/old/b.nii')
+    expect(h.reads[0]?.path).toBe('/old/b.nii')
+    // The new folder's first batch confirms the scan: the old pick is
+    // invalidated, and the auto-load — which that pick must NOT have
+    // disarmed — targets the new folder's first file.
+    h.co.onScanBatch(token, '/new', [entry('/new/x.nii')])
+    expect(h.state.folder?.root).toBe('/new')
+    h.reads[0].d.resolve({ name: 'b.nii', bytes: bytes() })
+    await tick()
+    expect(h.parses).toHaveLength(0) // the stale pick's bytes drop unparsed
+    expect(h.reads[1]?.path).toBe('/new/x.nii')
+    h.reads[1].d.resolve({ name: 'x.nii', bytes: bytes() })
+    await tick()
+    h.parses[0].d.resolve('vol:x')
+    await tick()
+    expect(h.commits.map((c) => c.path)).toEqual(['/new/x.nii'])
+    scanDone.resolve({ root: '/new', files: [entry('/new/x.nii')], truncated: false })
+    await tick()
+    expect(h.commits.map((c) => c.path)).toEqual(['/new/x.nii']) // final adds nothing
+  })
+
   it('a pick made while the auto-load waits disarms it instead of being overridden', async () => {
     const h = makeHarness(foldOpts)
     let token = 0
