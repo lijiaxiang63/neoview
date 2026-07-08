@@ -441,4 +441,38 @@ describe('regions', () => {
     expect(s.regions[0].voxelCount).toBe(5) // values 3..7 of 0..7
     expect(s.segDirty).toBe(true)
   })
+
+  it('undo of a re-segment restores the snapshot the next re-edit opens with', () => {
+    useStore.getState().setVolume(segVolume())
+    const params = useStore.getState().segParams
+    useStore.setState({
+      segParams: { ...params, method: 'threshold', low: 3, high: 3, minVoxels: 1 }
+    })
+    useStore.getState().setSegBox({ min: [0, 0, 0], max: [1, 1, 1] })
+    useStore.getState().commitPreview()
+    expect(useStore.getState().segSnapshots[1].params.low).toBe(3)
+
+    // Re-segment region 1 from a different box with a different threshold.
+    useStore.getState().editRegion(1)
+    useStore.getState().setSegBox({ min: [0, 0, 1], max: [1, 1, 1] })
+    useStore.getState().setSegParams({ low: 5, high: 5 })
+    useStore.getState().commitPreview()
+    expect(useStore.getState().segSnapshots[1].params.low).toBe(5)
+
+    // Undo the re-segment: a re-edit must open with the ORIGINAL box/params,
+    // not the undone ones.
+    useStore.getState().undo()
+    expect(useStore.getState().segSnapshots[1].params.low).toBe(3)
+    expect(useStore.getState().segSnapshots[1].box).toEqual({ min: [0, 0, 0], max: [1, 1, 1] })
+
+    // Redo brings the re-segment's snapshot back with its voxels.
+    useStore.getState().redo()
+    expect(useStore.getState().segSnapshots[1].params.low).toBe(5)
+
+    // Undoing all the way past the region's creation removes its snapshot.
+    useStore.getState().undo()
+    useStore.getState().undo()
+    expect(useStore.getState().regions).toEqual([])
+    expect(useStore.getState().segSnapshots[1]).toBeUndefined()
+  })
 })

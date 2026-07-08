@@ -13,13 +13,18 @@ export interface LabelPatch {
   after: Uint16Array
 }
 
-export interface HistoryEntry {
+export interface HistoryEntry<Snap = unknown> {
   /** Voxel changes; null when the operation only touched the region list. */
   patch: LabelPatch | null
   /** Region-list change (commit/delete); absent for pure voxel edits. */
   regions?: { before: Region[]; after: Region[] }
   /** nextRegionId change (a commit that created a region). */
   nextId?: { before: number; after: number }
+  /** One region's saved commit snapshot changed (a re-segment overwrites
+   * it); undo must put the old one back, or the next re-edit of the region
+   * opens with the undone box/params. `before` undefined = none existed.
+   * The snapshot type lives with the store — history stays store-agnostic. */
+  snapshot?: { id: number; before: Snap | undefined; after: Snap }
 }
 
 export const HISTORY_MAX_ENTRIES = 50
@@ -33,12 +38,12 @@ export function entryBytes(e: HistoryEntry): number {
 }
 
 /** Append an entry, evicting the oldest while over the entry/byte caps. */
-export function pushEntry(
-  stack: readonly HistoryEntry[],
-  entry: HistoryEntry,
+export function pushEntry<Snap>(
+  stack: readonly HistoryEntry<Snap>[],
+  entry: HistoryEntry<Snap>,
   maxEntries = HISTORY_MAX_ENTRIES,
   maxBytes = HISTORY_MAX_BYTES
-): HistoryEntry[] {
+): HistoryEntry<Snap>[] {
   const next = [...stack, entry]
   let bytes = 0
   for (const e of next) bytes += entryBytes(e)

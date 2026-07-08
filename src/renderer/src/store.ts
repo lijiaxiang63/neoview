@@ -1,7 +1,7 @@
 import { create } from 'zustand'
 import type { Volume } from './volume/types'
 import { sortEntries, type FolderEntry } from './files/folderList'
-import { loadViewPref, saveViewPref } from './files/viewPrefs'
+import { loadViewPref, saveViewPref, type ViewPref } from './files/viewPrefs'
 import { defaultLayerSettings, guessOverlayKind, type OverlayLayer } from './slicing/overlay'
 import { PLANES } from './slicing/extract'
 import {
@@ -115,7 +115,7 @@ export interface ToastItem extends ToastState {
 
 /** What a commit was made from, so re-editing restores the drawn box and the
  * tuned parameters instead of starting over. */
-interface SegSnapshot {
+export interface SegSnapshot {
   box: SegBox
   slabAxis: 0 | 1 | 2 | null
   params: SegParams
@@ -193,8 +193,8 @@ interface AppState {
   exportedPaths: ReadonlySet<string>
   /** Region-edit history (paint strokes, commits, deletes) as value patches;
    * any edit clears the redo stack. Reset with the label map on base change. */
-  undoStack: HistoryEntry[]
-  redoStack: HistoryEntry[]
+  undoStack: HistoryEntry<SegSnapshot>[]
+  redoStack: HistoryEntry<SegSnapshot>[]
   /** Transient notifications shown as a bottom-right stack (oldest first). */
   toasts: ToastItem[]
 
@@ -365,6 +365,9 @@ let nextOverlayId = 1
 const prefStorage: Pick<Storage, 'getItem' | 'setItem'> | null =
   typeof localStorage === 'undefined' ? null : localStorage
 let prefSaveTimer: ReturnType<typeof setTimeout> | undefined
+// The capture waiting out the debounce. Prefs are keyed per file, so a
+// file switch must FLUSH this (write it now), never cancel it.
+let pendingPrefSave: { path: string; pref: ViewPref } | null = null
 
 // The brush gesture in flight: paintAt fills it, endStroke folds it into one
 // undo entry. Module-level because a stroke spans many store actions.
@@ -604,9 +607,19 @@ export const useStore = create<AppState>()((set, get) => {
       : list
     const stillThere = (id: number | null): boolean =>
       id !== null && regions.some((r) => r.id === id)
+    // A commit rewrote its region's saved snapshot; put the matching side
+    // back (undefined = none existed, so the key goes away).
+    let segSnapshots = s.segSnapshots
+    if (entry.snapshot) {
+      const snap = dir === 'undo' ? entry.snapshot.before : entry.snapshot.after
+      segSnapshots = { ...s.segSnapshots }
+      if (snap === undefined) delete segSnapshots[entry.snapshot.id]
+      else segSnapshots[entry.snapshot.id] = snap
+    }
     set({
       labelMapRev: s.labelMapRev + 1,
       regions,
+      segSnapshots,
       nextRegionId: entry.nextId
         ? entry.nextId[dir === 'undo' ? 'before' : 'after']
         : s.nextRegionId,
@@ -628,20 +641,30 @@ export const useStore = create<AppState>()((set, get) => {
     }
   }
 
+  /** Write the pending capture immediately (idempotent). Runs on the timer,
+   * and from setVolume so a file switch inside the debounce window can
+   * neither misattribute the save nor drop it. */
+  function flushPrefSave(): void {
+    clearTimeout(prefSaveTimer)
+    if (!pendingPrefSave || !prefStorage) return
+    saveViewPref(pendingPrefSave.path, pendingPrefSave.pref, prefStorage)
+    pendingPrefSave = null
+  }
+
   /** Debounced write of the current display range/preset to the per-file
    * prefs (drag gestures fire setRange every frame). Path and values are
-   * captured NOW: by the time the timer fires the user may have navigated
-   * to another file, and the write must go to the file that was edited. */
+   * captured NOW: the debounce only ever coalesces edits to the same file,
+   * because setVolume flushes before the path can change. */
   function schedulePrefSave(): void {
     if (!prefStorage) return
     const s = get()
     if (!s.volume || !s.sourcePath) return
-    const path = s.sourcePath
-    const pref = { preset: s.activePreset, lo: s.range.lo, hi: s.range.hi }
+    pendingPrefSave = {
+      path: s.sourcePath,
+      pref: { preset: s.activePreset, lo: s.range.lo, hi: s.range.hi }
+    }
     clearTimeout(prefSaveTimer)
-    prefSaveTimer = setTimeout(() => {
-      saveViewPref(path, pref, prefStorage as Pick<Storage, 'getItem' | 'setItem'>)
-    }, 300)
+    prefSaveTimer = setTimeout(flushPrefSave, 300)
   }
 
   /** Grow's seed level: the box mean (the box is, by contract, entirely
@@ -727,6 +750,9 @@ export const useStore = create<AppState>()((set, get) => {
 
     setVolume: (v, sourcePath = null) => {
       cancelScheduledPreview()
+      // The outgoing file's pending pref save must land under ITS path (and
+      // before this file's pref is read back, in case it is the same file).
+      flushPrefSave()
       // A remembered per-file preference wins over the load heuristic; the
       // custom preset restores its exact range, named presets re-derive from
       // this file's stats.
@@ -1006,19 +1032,19 @@ export const useStore = create<AppState>()((set, get) => {
       // Committing can overwrite voxels of earlier regions, so all stats
       // refresh together.
       const regions = computeRegionStats(vol, labelMap, list, frameOffsetOf(vol, s.frame))
-      const entry: HistoryEntry = {
+      // Remember what this region was cut from, so re-editing restores the
+      // drawn box and tuned parameters. The old/new pair rides the history
+      // entry so undo/redo keep the snapshot in step with the voxels.
+      const snap: SegSnapshot | null = s.segBox
+        ? { box: s.segBox, slabAxis: s.segSlabAxis, params: s.segParams }
+        : null
+      const entry: HistoryEntry<SegSnapshot> = {
         patch: changes.finish(labelMap),
         regions: { before: s.regions, after: regions },
-        nextId: { before: s.nextRegionId, after: editing ? s.nextRegionId : id + 1 }
+        nextId: { before: s.nextRegionId, after: editing ? s.nextRegionId : id + 1 },
+        ...(snap ? { snapshot: { id, before: s.segSnapshots[id], after: snap } } : {})
       }
-      // Remember what this region was cut from, so re-editing restores the
-      // drawn box and tuned parameters.
-      const segSnapshots = s.segBox
-        ? {
-            ...s.segSnapshots,
-            [id]: { box: s.segBox, slabAxis: s.segSlabAxis, params: s.segParams }
-          }
-        : s.segSnapshots
+      const segSnapshots = snap ? { ...s.segSnapshots, [id]: snap } : s.segSnapshots
       // The box is consumed by the commit; the tool drops back to navigation.
       cancelScheduledPreview()
       set({
@@ -1157,7 +1183,7 @@ export const useStore = create<AppState>()((set, get) => {
       const region = s.regions[index]
       const indices = eraseRegion(s.labelMap, id)
       const regions = s.regions.filter((r) => r.id !== id)
-      const entry: HistoryEntry = {
+      const entry: HistoryEntry<SegSnapshot> = {
         patch: patchFromErase(indices, id),
         regions: { before: s.regions, after: regions }
       }
