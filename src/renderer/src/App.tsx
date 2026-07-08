@@ -123,7 +123,9 @@ async function openFolderViaDialog(): Promise<void> {
 
 function acceptsName(name: string): boolean {
   const n = name.toLowerCase()
-  return n.endsWith('.nii') || n.endsWith('.nii.gz')
+  // Plain .gz is accepted to match the open dialog's filter — the loader
+  // detects gzip by signature, so the inner payload decides validity.
+  return n.endsWith('.nii') || n.endsWith('.gz')
 }
 
 export default function App(): JSX.Element {

@@ -296,6 +296,41 @@ describe('regions', () => {
     expect(useStore.getState().segDirty).toBe(false)
   })
 
+  it('a newer edit drops a pending delete-undo toast (its button would hit the wrong entry)', () => {
+    seedRegion()
+    useStore.getState().labelMap![2] = 2
+    useStore.setState((prev) => ({
+      regions: [
+        ...prev.regions,
+        {
+          id: 2,
+          name: 'Region 2',
+          color: '#00ff00',
+          visible: true,
+          voxelCount: 1,
+          stats: { min: 2, max: 2, mean: 2 }
+        }
+      ],
+      nextRegionId: 3
+    }))
+    useStore
+      .getState()
+      .pushToast({ text: 'exported', action: { label: 'Show', kind: 'reveal', path: '/x' } })
+
+    useStore.getState().deleteRegion(1)
+    expect(useStore.getState().toasts.some((t) => t.action?.kind === 'undo')).toBe(true)
+
+    // A second delete pushes a new history entry: the first toast's Undo
+    // would now revert THIS delete, so only the newest undo toast survives.
+    useStore.getState().deleteRegion(2)
+    const toasts = useStore.getState().toasts
+    const undoToasts = toasts.filter((t) => t.action?.kind === 'undo')
+    expect(undoToasts).toHaveLength(1)
+    expect(undoToasts[0].text).toContain('Region 2')
+    // Toasts without an undo action are untouched.
+    expect(toasts.some((t) => t.action?.kind === 'reveal')).toBe(true)
+  })
+
   it('an export finishing after a volume swap marks its own source, not the new one', () => {
     seedRegion()
     useStore.setState({ sourcePath: '/data/a.nii.gz' })

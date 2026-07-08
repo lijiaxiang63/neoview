@@ -373,6 +373,12 @@ let strokeCollector: ChangeCollector | null = null
 // Monotonic toast id; the notification stack keys and dismisses by it.
 let nextToastId = 0
 
+// A toast's Undo button fires the global undo, i.e. the top of the undo
+// stack; pushing a new entry retargets that, so every push must drop any
+// still-visible undo toast (its button would revert the newer edit).
+const dropUndoToasts = (toasts: ToastItem[]): ToastItem[] =>
+  toasts.filter((t) => t.action?.kind !== 'undo')
+
 // Preview recomputes are debounced so box drags and slider scrubs stay fluid;
 // the box-sized compute happens at most once per delay window.
 let previewTimer: ReturnType<typeof setTimeout> | undefined
@@ -1023,7 +1029,8 @@ export const useStore = create<AppState>()((set, get) => {
         segTool: 'crosshair',
         segDirty: true,
         undoStack: pushEntry(s.undoStack, entry),
-        redoStack: []
+        redoStack: [],
+        toasts: dropUndoToasts(s.toasts)
       })
     },
 
@@ -1063,7 +1070,13 @@ export const useStore = create<AppState>()((set, get) => {
       if (!vol || !s.labelMap || s.regions.length === 0) return
       set({
         regions: computeRegionStats(vol, s.labelMap, s.regions, frameOffsetOf(vol, s.frame)),
-        ...(patch ? { undoStack: pushEntry(s.undoStack, { patch }), redoStack: [] } : {})
+        ...(patch
+          ? {
+              undoStack: pushEntry(s.undoStack, { patch }),
+              redoStack: [],
+              toasts: dropUndoToasts(s.toasts)
+            }
+          : {})
       })
       // Painting changes region shapes; a region-constrained preview must follow.
       if (s.segBox && s.segParams.constraint.type === 'region') schedulePreview()
@@ -1151,7 +1164,7 @@ export const useStore = create<AppState>()((set, get) => {
         redoStack: [],
         segDirty: true,
         toasts: [
-          ...s.toasts,
+          ...dropUndoToasts(s.toasts),
           {
             id: nextToastId++,
             text: `Deleted "${region.name}"`,

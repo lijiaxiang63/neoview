@@ -72,7 +72,9 @@ const SCAN_BATCH_MS = 200
 
 function isVolumeName(name: string): boolean {
   const n = name.toLowerCase()
-  return n.endsWith('.nii') || n.endsWith('.nii.gz')
+  // Plain .gz is accepted to match the open dialog's filter — the loader
+  // detects gzip by signature, so the inner payload decides validity.
+  return n.endsWith('.nii') || n.endsWith('.gz')
 }
 
 /** Name shaped like a region-export product ("<stem>.regions.*" / "<stem>.mask.*",
