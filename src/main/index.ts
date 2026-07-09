@@ -255,10 +255,18 @@ async function loadRecentFiles(): Promise<void> {
   recentFiles = parseRecentPayload(await fs.readFile(recentFilesPath(), 'utf8').catch(() => ''))
 }
 
+// Saves chain on this tail so a slow earlier write can never finish after
+// (and clobber) a newer one; each link persists the list as of its call.
+let recentSaveTail: Promise<void> = Promise.resolve()
+
 function saveRecentFiles(): void {
-  void fs.writeFile(recentFilesPath(), serializeRecentPayload(recentFiles)).catch(() => {
-    // Losing the recents list is not worth surfacing.
-  })
+  const payload = serializeRecentPayload(recentFiles)
+  recentSaveTail = recentSaveTail
+    .then(() => fs.writeFile(recentFilesPath(), payload))
+    .catch(() => {
+      // Losing the recents list is not worth surfacing (and a failed write
+      // must not break the chain for the ones behind it).
+    })
 }
 
 // The View menu's checkbox state survives menu rebuilds (recents changing)
