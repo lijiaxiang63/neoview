@@ -69,10 +69,11 @@ export function ShortcutsOverlay({ onClose }: Props): JSX.Element {
   useEffect(() => {
     // Capture phase, every key: the dialog is modal, so no keystroke may
     // reach the app-level shortcut handler underneath (Enter would commit a
-    // drawn preview, arrows would switch files). Only propagation stops —
-    // default actions (Tab, button activation, scrolling) still work.
+    // drawn preview, arrows would switch files). Immediate-stop, because
+    // sibling listeners on the same window target ignore a plain stop.
+    // Default actions (Tab, button activation, scrolling) still work.
     const onKey = (e: KeyboardEvent): void => {
-      e.stopPropagation()
+      e.stopImmediatePropagation()
       if (e.key === 'Escape') {
         e.preventDefault()
         onClose()

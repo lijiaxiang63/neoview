@@ -391,7 +391,8 @@ function SegmentControls({ box }: { box: SegBox }): JSX.Element {
   )
 }
 
-/** Right-click menu of one region row. Closes on outside press or Escape. */
+/** Right-click menu of one region row. Closes on outside press, Escape, or
+ * the shortcuts dialog opening above it. */
 function RegionContextMenu({
   menu,
   onClose
@@ -419,9 +420,15 @@ function RegionContextMenu({
     }
     window.addEventListener('pointerdown', onDown, true)
     window.addEventListener('keydown', onKey, true)
+    // The shortcuts dialog is modal: dismiss when it opens above this menu
+    // (it would otherwise contend for the same window-level Escape).
+    const unsubscribe = useStore.subscribe((s) => {
+      if (s.shortcutsOpen) onClose()
+    })
     return () => {
       window.removeEventListener('pointerdown', onDown, true)
       window.removeEventListener('keydown', onKey, true)
+      unsubscribe()
     }
   }, [onClose])
 

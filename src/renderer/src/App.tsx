@@ -139,7 +139,8 @@ export default function App(): JSX.Element {
   const sidebarOpen = useStore((s) => s.sidePanelOpen)
   const [dragging, setDragging] = useState(false)
   const [dropTarget, setDropTarget] = useState<LoadTarget>('auto')
-  const [shortcutsOpen, setShortcutsOpen] = useState(false)
+  const shortcutsOpen = useStore((s) => s.shortcutsOpen)
+  const setShortcutsOpen = useStore((s) => s.setShortcutsOpen)
 
   // Explicit Open always replaces the base volume (the one way to swap it);
   // drops route to an overlay layer whenever a base is already present.
@@ -209,7 +210,9 @@ export default function App(): JSX.Element {
     const offFolder = window.neoview.onOpenFolderRequest(() => {
       void openFolderViaDialog()
     })
-    const offShortcuts = window.neoview.onShowShortcuts(() => setShortcutsOpen(true))
+    const offShortcuts = window.neoview.onShowShortcuts(() =>
+      useStore.getState().setShortcutsOpen(true)
+    )
     // macOS routes Cmd+Z / Shift+Cmd+Z through the Edit menu; a focused text
     // field keeps its own undo, everything else drives region-edit history.
     const isTextTarget = (): boolean => {
@@ -272,7 +275,7 @@ export default function App(): JSX.Element {
       } else if (e.key === ']') {
         st.setBrushRadius(st.brushRadius + 1)
       } else if (e.key === '?') {
-        setShortcutsOpen(true)
+        st.setShortcutsOpen(true)
       } else if ((e.metaKey || e.ctrlKey) && !e.altKey && e.key.toLowerCase() === 'z') {
         // On macOS the Edit menu's accelerators own these keys; this branch
         // serves Windows/Linux (text fields bail out at the tag guard above).

@@ -158,6 +158,9 @@ interface AppState {
   baseColormap: BaseColormap
   /** Case-insensitive substring filter over the file panel's list. */
   fileFilter: string
+  /** The modal shortcuts dialog. In the store so transient popups (region
+   * context menu) can dismiss themselves when it opens above them. */
+  shortcutsOpen: boolean
   /** Overlay layers in draw order: index 0 is the bottom-most. */
   overlays: OverlayLayer[]
 
@@ -223,6 +226,7 @@ interface AppState {
   setBrightness: (b: number) => void
   setBaseColormap: (c: BaseColormap) => void
   setFileFilter: (q: string) => void
+  setShortcutsOpen: (open: boolean) => void
 
   setSegTool: (t: SegTool) => void
   setSegBox: (box: SegBox | null) => void
@@ -698,6 +702,7 @@ export const useStore = create<AppState>()((set, get) => {
     brightness: BRIGHTNESS_DEFAULT,
     baseColormap: 'gray',
     fileFilter: '',
+    shortcutsOpen: false,
     overlays: [],
 
     labelMap: null,
@@ -905,6 +910,8 @@ export const useStore = create<AppState>()((set, get) => {
     setBaseColormap: (c) => set({ baseColormap: c }),
 
     setFileFilter: (q) => set({ fileFilter: q }),
+
+    setShortcutsOpen: (open) => set({ shortcutsOpen: open }),
 
     // ---- Region segmentation ------------------------------------------------
 
