@@ -127,6 +127,17 @@ describe('opened folder', () => {
     expect(useStore.getState().folder).toBeNull()
   })
 
+  it('a filter typed during a streaming scan survives the final list', () => {
+    useStore.getState().setFolder(folder)
+    useStore.getState().setFileFilter('b2')
+    // The scan's final result re-sets the same root: the filter must stay.
+    useStore.getState().setFolder({ ...folder, truncated: true })
+    expect(useStore.getState().fileFilter).toBe('b2')
+    // A different folder resets it.
+    useStore.getState().setFolder({ ...folder, root: '/other' })
+    expect(useStore.getState().fileFilter).toBe('')
+  })
+
   it('appendFolderFiles merges sorted, dedups, and ignores other roots', () => {
     useStore.getState().setFolder(folder)
     useStore.getState().appendFolderFiles('/data/set', [
@@ -252,6 +263,48 @@ describe('regions', () => {
     expect(useStore.getState().segDirty).toBe(true)
   })
 
+  it('metadata edits clear the redo stack (a redo would drop them)', () => {
+    seedRegion()
+    useStore.getState().deleteRegion(1)
+    useStore.getState().undo()
+    expect(useStore.getState().redoStack).toHaveLength(1)
+    useStore.getState().updateRegion(1, { name: 'renamed' })
+    expect(useStore.getState().redoStack).toEqual([])
+    // Redo is now a no-op; the rename survives.
+    useStore.getState().redo()
+    expect(useStore.getState().regions[0].name).toBe('renamed')
+  })
+
+  it('metadata edits survive undo+redo of the region-creating entry', () => {
+    seedRegion()
+    // Simulate the commit's creation entry: undo removes region 1, redo
+    // resurrects it from the entry's `after` snapshot.
+    const labelMap = useStore.getState().labelMap!
+    useStore.setState({
+      undoStack: [
+        {
+          patch: {
+            indices: new Uint32Array([0, 1]),
+            before: new Uint16Array([0, 0]),
+            after: new Uint16Array([1, 1])
+          },
+          regions: { before: [], after: useStore.getState().regions },
+          nextId: { before: 1, after: 2 }
+        }
+      ]
+    })
+    useStore.getState().updateRegion(1, { name: 'renamed', color: '#00ff00' })
+    useStore.getState().undo()
+    expect(useStore.getState().regions).toEqual([])
+    expect(labelMap[0]).toBe(0)
+    useStore.getState().redo()
+    // The resurrected region carries the post-commit edits, not the
+    // metadata frozen into the snapshot at commit time.
+    const region = useStore.getState().regions[0]
+    expect(region.name).toBe('renamed')
+    expect(region.color).toBe('#00ff00')
+  })
+
   it('setFrame recomputes region stats for the new frame', () => {
     seedRegion()
     useStore.getState().setFrame(1)
@@ -294,6 +347,73 @@ describe('regions', () => {
     useStore.getState().markExported(useStore.getState().volume!, null)
     expect(useStore.getState().exportedPaths).toBe(before)
     expect(useStore.getState().segDirty).toBe(false)
+  })
+
+  it('a newer edit drops a pending delete-undo toast (its button would hit the wrong entry)', () => {
+    seedRegion()
+    useStore.getState().labelMap![2] = 2
+    useStore.setState((prev) => ({
+      regions: [
+        ...prev.regions,
+        {
+          id: 2,
+          name: 'Region 2',
+          color: '#00ff00',
+          visible: true,
+          voxelCount: 1,
+          stats: { min: 2, max: 2, mean: 2 }
+        }
+      ],
+      nextRegionId: 3
+    }))
+    useStore
+      .getState()
+      .pushToast({ text: 'exported', action: { label: 'Show', kind: 'reveal', path: '/x' } })
+
+    useStore.getState().deleteRegion(1)
+    expect(useStore.getState().toasts.some((t) => t.action?.kind === 'undo')).toBe(true)
+
+    // A second delete pushes a new history entry: the first toast's Undo
+    // would now revert THIS delete, so only the newest undo toast survives.
+    useStore.getState().deleteRegion(2)
+    const toasts = useStore.getState().toasts
+    const undoToasts = toasts.filter((t) => t.action?.kind === 'undo')
+    expect(undoToasts).toHaveLength(1)
+    expect(undoToasts[0].text).toContain('Region 2')
+    // Toasts without an undo action are untouched.
+    expect(toasts.some((t) => t.action?.kind === 'reveal')).toBe(true)
+  })
+
+  it('undo of a delete keeps metadata edits made to other regions afterwards', () => {
+    seedRegion()
+    useStore.getState().labelMap![2] = 2
+    useStore.setState((prev) => ({
+      regions: [
+        ...prev.regions,
+        {
+          id: 2,
+          name: 'Region 2',
+          color: '#00ff00',
+          visible: true,
+          voxelCount: 1,
+          stats: { min: 2, max: 2, mean: 2 }
+        }
+      ],
+      nextRegionId: 3
+    }))
+    useStore.getState().deleteRegion(1)
+    // Rename/recolor after the delete: metadata edits push no history entry,
+    // so the undo's snapshot restore must not revert them.
+    useStore.getState().updateRegion(2, { name: 'renamed', color: '#123456' })
+    useStore.getState().undo()
+    const regions = useStore.getState().regions
+    expect(regions.map((r) => r.id).sort()).toEqual([1, 2])
+    const r2 = regions.find((r) => r.id === 2)!
+    expect(r2.name).toBe('renamed')
+    expect(r2.color).toBe('#123456')
+    // The deleted region itself is fully restored, voxels included.
+    expect(regions.find((r) => r.id === 1)?.name).toBe('Region 1')
+    expect(useStore.getState().labelMap![0]).toBe(1)
   })
 
   it('an export finishing after a volume swap marks its own source, not the new one', () => {
@@ -373,5 +493,93 @@ describe('regions', () => {
     expect(s.regions.length).toBe(1)
     expect(s.regions[0].voxelCount).toBe(5) // values 3..7 of 0..7
     expect(s.segDirty).toBe(true)
+  })
+
+  it('undo is a no-op while a brush stroke is in flight', () => {
+    seedRegion()
+    useStore.getState().setActiveRegion(1)
+    useStore.getState().setBrushRadius(1)
+    // A complete gesture -> one history entry (cross sits on slice 1).
+    useStore.getState().paintAt(0, [0, 0], [1, 1], false)
+    useStore.getState().endStroke()
+    expect(useStore.getState().undoStack).toHaveLength(1)
+    // Second gesture in flight: history must not move under the collector
+    // (menu accelerators can fire mid-drag).
+    useStore.getState().paintAt(0, [0, 0], [1, 1], true)
+    useStore.getState().undo()
+    expect(useStore.getState().undoStack).toHaveLength(1)
+    expect(useStore.getState().redoStack).toHaveLength(0)
+    useStore.getState().endStroke()
+    expect(useStore.getState().undoStack).toHaveLength(2)
+  })
+
+  it('commit and delete are blocked while a brush stroke is in flight', () => {
+    seedRegion()
+    useStore.getState().setActiveRegion(1)
+    useStore.getState().setBrushRadius(1)
+    useStore.setState({ segParams: { ...useStore.getState().segParams, low: 3, high: 3 } })
+    useStore.getState().setSegBox({ min: [0, 0, 0], max: [1, 1, 1] })
+    useStore.getState().paintAt(0, [0, 0], [1, 1], false)
+    // Enter mid-drag: the commit must not write under the open collector.
+    useStore.getState().commitPreview()
+    expect(useStore.getState().regions).toHaveLength(1)
+    expect(useStore.getState().segBox).not.toBeNull()
+    // A delete from a second pointer is blocked the same way.
+    useStore.getState().deleteRegion(1)
+    expect(useStore.getState().regions).toHaveLength(1)
+    useStore.getState().endStroke()
+    useStore.getState().commitPreview()
+    expect(useStore.getState().regions).toHaveLength(2)
+  })
+
+  it('a stroke whose regions vanished mid-gesture is reverted, not orphaned', () => {
+    seedRegion()
+    useStore.getState().setActiveRegion(1)
+    useStore.getState().setBrushRadius(1)
+    const labelMap = useStore.getState().labelMap!
+    useStore.getState().paintAt(0, [0, 0], [1, 1], false)
+    expect(labelMap.slice(4).some((v) => v === 1)).toBe(true) // stamped slice 1
+    // All regions removed mid-gesture by another input path.
+    useStore.setState({ regions: [], activeRegionId: null })
+    useStore.getState().endStroke()
+    // The stamps are reverted (they would otherwise silently join the next
+    // region to reuse id 1); the untouched seed voxels stay.
+    expect(labelMap.slice(4).every((v) => v === 0)).toBe(true)
+    expect(labelMap[0]).toBe(1)
+    expect(useStore.getState().undoStack).toHaveLength(0)
+  })
+
+  it('undo of a re-segment restores the snapshot the next re-edit opens with', () => {
+    useStore.getState().setVolume(segVolume())
+    const params = useStore.getState().segParams
+    useStore.setState({
+      segParams: { ...params, method: 'threshold', low: 3, high: 3, minVoxels: 1 }
+    })
+    useStore.getState().setSegBox({ min: [0, 0, 0], max: [1, 1, 1] })
+    useStore.getState().commitPreview()
+    expect(useStore.getState().segSnapshots[1].params.low).toBe(3)
+
+    // Re-segment region 1 from a different box with a different threshold.
+    useStore.getState().editRegion(1)
+    useStore.getState().setSegBox({ min: [0, 0, 1], max: [1, 1, 1] })
+    useStore.getState().setSegParams({ low: 5, high: 5 })
+    useStore.getState().commitPreview()
+    expect(useStore.getState().segSnapshots[1].params.low).toBe(5)
+
+    // Undo the re-segment: a re-edit must open with the ORIGINAL box/params,
+    // not the undone ones.
+    useStore.getState().undo()
+    expect(useStore.getState().segSnapshots[1].params.low).toBe(3)
+    expect(useStore.getState().segSnapshots[1].box).toEqual({ min: [0, 0, 0], max: [1, 1, 1] })
+
+    // Redo brings the re-segment's snapshot back with its voxels.
+    useStore.getState().redo()
+    expect(useStore.getState().segSnapshots[1].params.low).toBe(5)
+
+    // Undoing all the way past the region's creation removes its snapshot.
+    useStore.getState().undo()
+    useStore.getState().undo()
+    expect(useStore.getState().regions).toEqual([])
+    expect(useStore.getState().segSnapshots[1]).toBeUndefined()
   })
 })

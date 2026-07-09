@@ -10,6 +10,10 @@ precision highp float;
 precision highp sampler3D;
 
 uniform sampler3D uVol;
+uniform sampler3D uLab;    // region palette indices (R8, NEAREST), 0 = none
+uniform sampler2D uLabLut; // 256x1 RGBA palette; alpha 0 hides a region
+uniform int   uHasLab;
+uniform float uLabAlpha;   // region layer opacity
 uniform vec3  uEye;
 uniform vec3  uRight;
 uniform vec3  uUp;
@@ -43,6 +47,16 @@ float win(float s) {
   return clamp((s - uLo) / span, 0.0, 1.0);
 }
 
+// Front-most region sample along the ray: its palette color source-over the
+// mode's own result. Returns color in rgb, coverage in a.
+vec4 labelAt(vec3 tc) {
+  float li = texture(uLab, tc).r;              // palette index / 255
+  if (li < 0.001) return vec4(0.0);
+  vec4 c = texture(uLabLut, vec2(li * 255.0 / 256.0 + 0.5 / 256.0, 0.5));
+  if (c.a < 0.004) return vec4(0.0);           // hidden region
+  return vec4(c.rgb, uLabAlpha);
+}
+
 void main() {
   vec2 ndc = (gl_FragCoord.xy / uViewport) * 2.0 - 1.0;
   vec3 rd = normalize(uFwd + ndc.x * uAspect * uTanHalfFov * uRight + ndc.y * uTanHalfFov * uUp);
@@ -56,15 +70,24 @@ void main() {
   // Jittered start hides step banding at low step counts.
   t += dt * fract(sin(dot(gl_FragCoord.xy, vec2(12.9898, 78.233))) * 43758.5453);
 
+  vec4 lab = vec4(0.0);
+
   if (uMode == 0) {
     float m = 0.0;
     for (int i = 0; i < uSteps; i++) {
       vec3 tc = (uEye + t * rd) / (2.0 * uHalfExt) + 0.5;
       m = max(m, texture(uVol, tc).r);
+      if (uHasLab == 1 && lab.a == 0.0) lab = labelAt(tc);
       t += dt;
     }
     float g = win(m);
-    outColor = vec4(vec3(g) * g, g);
+    vec3 col = vec3(g) * g;
+    float alpha = g;
+    if (lab.a > 0.0) {
+      col = lab.rgb * lab.a + col * (1.0 - lab.a);
+      alpha = lab.a + alpha * (1.0 - lab.a);
+    }
+    outColor = vec4(col, alpha);
   } else {
     vec3 col = vec3(0.0);
     float alpha = 0.0;
@@ -74,8 +97,13 @@ void main() {
       float a = 1.0 - exp(-g * uDensity * 60.0 * dt);
       col += (1.0 - alpha) * a * vec3(g);
       alpha += (1.0 - alpha) * a;
+      if (uHasLab == 1 && lab.a == 0.0) lab = labelAt(tc);
       t += dt;
       if (alpha > 0.99) break;
+    }
+    if (lab.a > 0.0) {
+      col = lab.rgb * lab.a + col * (1.0 - lab.a);
+      alpha = lab.a + alpha * (1.0 - lab.a);
     }
     outColor = vec4(col, alpha);
   }

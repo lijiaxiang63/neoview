@@ -7,6 +7,7 @@ import {
   type SegTool
 } from '../store'
 import { fmt } from '../format'
+import { NumberField } from './NumberField'
 import {
   buildLabelMapExport,
   buildMaskExport,
@@ -390,7 +391,8 @@ function SegmentControls({ box }: { box: SegBox }): JSX.Element {
   )
 }
 
-/** Right-click menu of one region row. Closes on outside press or Escape. */
+/** Right-click menu of one region row. Closes on outside press, Escape, or
+ * the shortcuts dialog opening above it. */
 function RegionContextMenu({
   menu,
   onClose
@@ -418,9 +420,15 @@ function RegionContextMenu({
     }
     window.addEventListener('pointerdown', onDown, true)
     window.addEventListener('keydown', onKey, true)
+    // The shortcuts dialog is modal: dismiss when it opens above this menu
+    // (it would otherwise contend for the same window-level Escape).
+    const unsubscribe = useStore.subscribe((s) => {
+      if (s.shortcutsOpen) onClose()
+    })
     return () => {
       window.removeEventListener('pointerdown', onDown, true)
       window.removeEventListener('keydown', onKey, true)
+      unsubscribe()
     }
   }, [onClose])
 
@@ -533,7 +541,7 @@ function ExportSection(): JSX.Element {
   const regions = useStore((s) => s.regions)
   const segDirty = useStore((s) => s.segDirty)
   const markExported = useStore((s) => s.markExported)
-  const setToast = useStore((s) => s.setToast)
+  const pushToast = useStore((s) => s.pushToast)
   const fail = useStore((s) => s.fail)
 
   const [settings, setSettings] = useState<ExportSettings>(loadExportSettings)
@@ -573,8 +581,9 @@ function ExportSection(): JSX.Element {
         sidecar: payload.sidecar
       })
       markExported(exportedVolume, exportedPath)
-      setToast({
+      pushToast({
         text: `Saved ${result.path.split(/[\\/]/).pop()}${result.sidecarPath ? ' + color table' : ''}`,
+        variant: 'success',
         action: { label: 'Show in file manager', kind: 'reveal', path: result.path }
       })
     } catch (err) {
@@ -742,7 +751,8 @@ export function RegionPanel(): JSX.Element | null {
       {rowMenu && <RegionContextMenu menu={rowMenu} onClose={() => setRowMenu(null)} />}
 
       {regions.length > 0 && (
-        <div className="frame-slider" style={{ marginTop: 10 }}>
+        <div className="seg-field">
+          <label>Opacity</label>
           <input
             type="range"
             min={0}
@@ -751,7 +761,14 @@ export function RegionPanel(): JSX.Element | null {
             value={regionOpacity}
             onChange={(e) => setRegionOpacity(Number(e.target.value))}
           />
-          <span className="frame-label mono">op {regionOpacity.toFixed(2)}</span>
+          <NumberField
+            aria-label="Region opacity"
+            value={regionOpacity}
+            min={0}
+            max={1}
+            format={(v) => v.toFixed(2)}
+            onCommit={setRegionOpacity}
+          />
         </div>
       )}
 

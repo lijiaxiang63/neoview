@@ -5,15 +5,15 @@ import { loadVolume } from './volume/loadVolume'
 import { composeVoxelMap } from './volume/affine'
 import type { Volume } from './volume/types'
 import { LoadCoordinator } from './files/loadCoordinator'
-import { regionExportSource, regionExportView } from './files/folderList'
+import { filterEntries, regionExportSource, regionExportView } from './files/folderList'
 import { SliceView } from './components/SliceView'
 import { VolumeView } from './components/VolumeView'
 import { SidePanel } from './components/SidePanel'
 import { StatusBar } from './components/StatusBar'
 import { EmptyState } from './components/EmptyState'
 import { FilePanel } from './components/FilePanel'
-import { Toast } from './components/Toast'
-import { UpdateBanner } from './components/UpdateBanner'
+import { NotificationCenter } from './components/NotificationCenter'
+import { ShortcutsOverlay } from './components/ShortcutsOverlay'
 
 /** 'auto' routes to an overlay layer when a base volume is already loaded. */
 type LoadTarget = 'base' | 'overlay' | 'auto'
@@ -37,6 +37,18 @@ function ipcErrorMessage(err: unknown): string {
   return raw.replace(/^Error invoking remote method '[^']+': (Error: )?/, '')
 }
 
+// Input types with an editable text buffer (and so a native undo of their
+// own). Range/color/checkbox inputs focus on click but hold no text, so
+// undo must keep reaching region history while one of them has focus.
+const TEXT_INPUT_TYPES = new Set(['text', 'search', 'url', 'tel', 'email', 'password', 'number'])
+
+/** True when the element edits text and therefore owns the undo keys. */
+function isTextEntry(el: Element | null): boolean {
+  if (el instanceof HTMLTextAreaElement) return true
+  if (el instanceof HTMLInputElement) return TEXT_INPUT_TYPES.has(el.type)
+  return el instanceof HTMLElement && el.isContentEditable
+}
+
 // All load/scan orchestration — who may commit, who settles the loading
 // flag, navigation queueing, prefetching, scan tokens and invalidation —
 // lives in the coordinator, a pure module whose interleavings are
@@ -52,15 +64,21 @@ const coordinator = new LoadCoordinator<Volume>(
         scanning: s.folderLoading,
         folderRoot: s.folder?.root ?? null,
         // The coordinator sees the list as the panel shows it — with region
-        // exports folded away — so navigation, prefetch and the folder's
-        // auto-load all skip hidden product files.
-        folderFiles: s.folder ? regionExportView(s.folder.files).files : null
+        // exports folded away and the file filter applied — so navigation,
+        // prefetch and the folder's auto-load all match what the user sees.
+        folderFiles: s.folder
+          ? filterEntries(regionExportView(s.folder.files).files, s.fileFilter)
+          : null
       }
     },
     read: (path) => window.neoview.readFile(path),
     readWithin: (path, maxBytes) => window.neoview.readFileWithin(path, maxBytes),
     parseBase: (name, bytes) => loadVolume(name, bytes),
-    commitBase: (volume, path) => useStore.getState().setVolume(volume, path),
+    commitBase: (volume, path) => {
+      useStore.getState().setVolume(volume, path)
+      // Feeds File > Open Recent (and the OS recent-documents list).
+      if (path) window.neoview.noteFileOpened(path)
+    },
     parseAndAddOverlay: async (name, bytes) => {
       const volume = await loadVolume(name, bytes, { skipTex: true })
       const base = useStore.getState().volume
@@ -117,13 +135,13 @@ async function openFolderViaDialog(): Promise<void> {
 
 function acceptsName(name: string): boolean {
   const n = name.toLowerCase()
-  return n.endsWith('.nii') || n.endsWith('.nii.gz') || n.endsWith('.gz')
+  // Plain .gz is accepted to match the open dialog's filter — the loader
+  // detects gzip by signature, so the inner payload decides validity.
+  return n.endsWith('.nii') || n.endsWith('.gz')
 }
 
 export default function App(): JSX.Element {
   const loadState = useStore((s) => s.loadState)
-  const errorMessage = useStore((s) => s.errorMessage)
-  const dismissError = useStore((s) => s.dismissError)
   const hasVolume = useStore((s) => s.volume !== null)
   const volumeName = useStore((s) => s.volume?.name ?? null)
   const hasMaximized = useStore((s) => s.maximizedView !== null)
@@ -133,6 +151,8 @@ export default function App(): JSX.Element {
   const sidebarOpen = useStore((s) => s.sidePanelOpen)
   const [dragging, setDragging] = useState(false)
   const [dropTarget, setDropTarget] = useState<LoadTarget>('auto')
+  const shortcutsOpen = useStore((s) => s.shortcutsOpen)
+  const setShortcutsOpen = useStore((s) => s.setShortcutsOpen)
 
   // Explicit Open always replaces the base volume (the one way to swap it);
   // drops route to an overlay layer whenever a base is already present.
@@ -202,6 +222,24 @@ export default function App(): JSX.Element {
     const offFolder = window.neoview.onOpenFolderRequest(() => {
       void openFolderViaDialog()
     })
+    const offShortcuts = window.neoview.onShowShortcuts(() =>
+      useStore.getState().setShortcutsOpen(true)
+    )
+    // macOS routes Cmd+Z / Shift+Cmd+Z through the Edit menu; a focused text
+    // field keeps its own undo, everything else drives region-edit history.
+    // Menu accelerators arrive over IPC, bypassing the shortcuts dialog's
+    // keydown capture — the modal must also veto them here, or Cmd+Z would
+    // mutate region history invisibly behind it.
+    const offUndo = window.neoview.onMenuUndo(() => {
+      if (useStore.getState().shortcutsOpen) return
+      if (isTextEntry(document.activeElement)) document.execCommand('undo')
+      else useStore.getState().undo()
+    })
+    const offRedo = window.neoview.onMenuRedo(() => {
+      if (useStore.getState().shortcutsOpen) return
+      if (isTextEntry(document.activeElement)) document.execCommand('redo')
+      else useStore.getState().redo()
+    })
     const offScan = window.neoview.onScanFolderProgress((token, root, files) =>
       coordinator.onScanBatch(token, root, files)
     )
@@ -220,6 +258,9 @@ export default function App(): JSX.Element {
       offOverlay()
       offError()
       offFolder()
+      offShortcuts()
+      offUndo()
+      offRedo()
       offScan()
       offClose()
     }
@@ -231,8 +272,15 @@ export default function App(): JSX.Element {
       // Controls that already consumed the key (e.g. the range-slider thumbs,
       // which are divs the tag guard below cannot catch) must win.
       if (e.defaultPrevented) return
-      const tag = (e.target as HTMLElement | null)?.tagName
-      if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return
+      const target = e.target as HTMLElement | null
+      // Text-editing fields keep every key (their own undo included). Other
+      // form controls keep navigation keys but must not swallow the undo
+      // combo — a just-adjusted slider or select holds focus, and Ctrl+Z
+      // there still means region history.
+      if (isTextEntry(target)) return
+      const undoCombo = (e.metaKey || e.ctrlKey) && !e.altKey && e.key.toLowerCase() === 'z'
+      const tag = target?.tagName
+      if ((tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') && !undoCombo) return
       const st = useStore.getState()
       if (e.key === 'Escape' && st.segBox) {
         st.cancelSeg()
@@ -246,6 +294,13 @@ export default function App(): JSX.Element {
         st.setBrushRadius(st.brushRadius - 1)
       } else if (e.key === ']') {
         st.setBrushRadius(st.brushRadius + 1)
+      } else if (e.key === '?') {
+        st.setShortcutsOpen(true)
+      } else if (undoCombo) {
+        // On macOS the Edit menu's accelerators own these keys; this branch
+        // serves Windows/Linux (text fields bailed out at isTextEntry above).
+        if (e.shiftKey) st.redo()
+        else st.undo()
       } else if ((e.key === 'ArrowDown' || e.key === 'ArrowUp') && st.folder) {
         coordinator.navigate(e.key === 'ArrowDown' ? 1 : -1)
       } else {
@@ -362,8 +417,8 @@ export default function App(): JSX.Element {
         )}
       </main>
       <StatusBar />
-      <Toast />
-      <UpdateBanner />
+      <NotificationCenter />
+      {shortcutsOpen && <ShortcutsOverlay onClose={() => setShortcutsOpen(false)} />}
       {dragging &&
         (hasVolume ? (
           <div className="drag-overlay split">
@@ -385,14 +440,6 @@ export default function App(): JSX.Element {
             <div className="inner">Release to open</div>
           </div>
         ))}
-      {errorMessage && (
-        <div className="error-banner">
-          <span className="msg">{errorMessage}</span>
-          <button onClick={dismissError} aria-label="Dismiss">
-            ✕
-          </button>
-        </div>
-      )}
     </div>
   )
 }

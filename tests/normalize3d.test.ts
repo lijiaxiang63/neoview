@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest'
 import { buildVolume } from '../scripts/make-test-volumes.mjs'
 import { parseVolume } from '../src/renderer/src/volume/parse'
 import {
+  buildLabelTexData,
   buildTexData,
   floatToHalf,
   halfExtents,
@@ -111,6 +112,17 @@ describe('planTexture', () => {
     const plan = planTexture([64, 64, 64], [1, 1, 1], 64 * 64 * 16)
     expect(plan.texDims[0] * plan.texDims[1] * plan.texDims[2]).toBeLessThanOrEqual(64 * 64 * 16)
   })
+
+  it('preserves the exact physical extent when an axis is not stride-divisible', () => {
+    // 513 @ stride 2 rounds up to 257 texels; spacing*stride would render
+    // 514 voxels of physical size while the slice views show 513.
+    const plan = planTexture([513, 4, 4], [1, 1, 1], 257 * 4 * 4)
+    expect(plan.stride).toEqual([2, 1, 1])
+    expect(plan.texDims).toEqual([257, 4, 4])
+    for (let a = 0; a < 3; a++) {
+      expect(plan.texDims[a] * plan.texSpacing[a]).toBe([513, 4, 4][a])
+    }
+  })
 })
 
 describe('floatToHalf', () => {
@@ -129,6 +141,42 @@ describe('floatToHalf', () => {
       expect(h).toBeGreaterThanOrEqual(prev)
       prev = h
     }
+  })
+})
+
+describe('buildLabelTexData', () => {
+  it('maps region ids through the palette at unit stride', () => {
+    const dims: [number, number, number] = [2, 2, 2]
+    const plan = planTexture(dims, [1, 1, 1])
+    const labelMap = new Uint16Array([0, 1, 0, 2, 0, 0, 9, 0])
+    const indexOf = new Uint8Array([0, 1, 2]) // id 9 has no slot -> 0
+    expect(Array.from(buildLabelTexData(labelMap, dims, plan, indexOf))).toEqual([
+      0, 1, 0, 2, 0, 0, 0, 0
+    ])
+  })
+
+  it('keeps a region thinner than the stride visible when downsampling', () => {
+    const dims: [number, number, number] = [4, 4, 4]
+    // An 8-texel budget forces stride 2 on every axis.
+    const plan = planTexture(dims, [1, 1, 1], 8)
+    expect(plan.stride).toEqual([2, 2, 2])
+    const labelMap = new Uint16Array(64)
+    // One labeled voxel at (3,3,3) — off the stride grid, so a point sample
+    // at block origins would drop the region from the 3D view entirely.
+    labelMap[3 * 16 + 3 * 4 + 3] = 1
+    const tex = buildLabelTexData(labelMap, dims, plan, new Uint8Array([0, 1]))
+    expect(tex[1 * 4 + 1 * 2 + 1]).toBe(1) // texel (1,1,1) of the 2x2x2 grid
+    expect(Array.from(tex).filter((v) => v !== 0)).toHaveLength(1)
+  })
+
+  it('clips edge blocks and scans past ids without a palette slot', () => {
+    const dims: [number, number, number] = [3, 1, 1]
+    const plan = planTexture(dims, [1, 1, 1], 2)
+    expect(plan.stride).toEqual([2, 1, 1])
+    // Block 0 = [id 7 (no slot), id 2]; block 1 = the clipped tail voxel.
+    const labelMap = new Uint16Array([7, 2, 2])
+    const indexOf = new Uint8Array([0, 0, 5])
+    expect(Array.from(buildLabelTexData(labelMap, dims, plan, indexOf))).toEqual([5, 5])
   })
 })
 

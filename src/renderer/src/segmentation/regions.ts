@@ -57,7 +57,13 @@ export function colorComponents(css: string): [number, number, number] {
 }
 
 // ---------------------------------------------------------------------------
-// Label-map edits (all mutate the shared Uint16Array in place)
+// Label-map edits (all mutate the shared Uint16Array in place). Every editor
+// takes an optional change collector so gestures can be undone: it receives
+// (index, oldValue) for each voxel BEFORE the first write.
+
+export interface ChangeSink {
+  record(index: number, oldValue: number): void
+}
 
 /** Write a box-shaped binary mask into the label map as region `id`,
  * overwriting whatever was there. Returns the number of voxels written. */
@@ -66,7 +72,8 @@ export function applyMaskAsRegion(
   dims: [number, number, number],
   box: SegBox,
   mask: Uint8Array,
-  id: number
+  id: number,
+  changes: ChangeSink | null = null
 ): number {
   const [nx, ny] = dims
   let written = 0
@@ -76,6 +83,7 @@ export function applyMaskAsRegion(
       let idx = box.min[0] + j * nx + k * nx * ny
       for (let i = box.min[0]; i <= box.max[0]; i++, idx++, p++) {
         if (mask[p] !== 0) {
+          if (changes && labelMap[idx] !== id) changes.record(idx, labelMap[idx])
           labelMap[idx] = id
           written++
         }
@@ -148,7 +156,8 @@ export function paintDisk(
   center: [number, number],
   radius: number,
   id: number,
-  erase: boolean
+  erase: boolean,
+  changes: ChangeSink | null = null
 ): void {
   const w = dims[plane.colAxis]
   const h = dims[plane.rowAxis]
@@ -168,8 +177,12 @@ export function paintDisk(
       if (dc * dc + dr * dr > r2) continue
       const idx = base + c * cs + r * rs
       if (erase) {
-        if (labelMap[idx] === id) labelMap[idx] = 0
-      } else {
+        if (labelMap[idx] === id) {
+          changes?.record(idx, id)
+          labelMap[idx] = 0
+        }
+      } else if (labelMap[idx] !== id) {
+        changes?.record(idx, labelMap[idx])
         labelMap[idx] = id
       }
     }
@@ -186,7 +199,8 @@ export function paintStroke(
   to: [number, number],
   radius: number,
   id: number,
-  erase: boolean
+  erase: boolean,
+  changes: ChangeSink | null = null
 ): void {
   const dist = Math.hypot(to[0] - from[0], to[1] - from[1])
   const steps = Math.max(1, Math.ceil(dist / Math.max(radius * 0.5, 0.5)))
@@ -200,7 +214,8 @@ export function paintStroke(
       [from[0] + (to[0] - from[0]) * t, from[1] + (to[1] - from[1]) * t],
       radius,
       id,
-      erase
+      erase,
+      changes
     )
   }
 }

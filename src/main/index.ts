@@ -12,6 +12,13 @@ import { join, resolve, sep } from 'path'
 import { promises as fs } from 'fs'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import { autoCheckEnabled, checkForUpdates, initUpdater, setAutoCheck } from './update'
+import {
+  addRecent,
+  parseRecentPayload,
+  recentLabels,
+  removeRecent,
+  serializeRecentPayload
+} from './recentFiles'
 import icon from '../../resources/icon.png?asset'
 import iconLight from '../../resources/icon-light.png?asset'
 // Sample data shipped with the app so a fresh install has something to show
@@ -19,10 +26,9 @@ import iconLight from '../../resources/icon-light.png?asset'
 import builtinVolume from '../../resources/builtin-volume.nii.gz?asset'
 import builtinOverlay from '../../resources/builtin-overlay.nii.gz?asset'
 
-// The app UI is dark-only; forcing the native theme makes all window chrome
-// (title bar, menu bar, popup menus, dialogs) render dark to match, instead
-// of following the OS setting.
-nativeTheme.themeSource = 'dark'
+// The renderer styles both a dark and a light theme (prefers-color-scheme),
+// so the native chrome (title bar, menus, dialogs) follows the OS setting.
+nativeTheme.themeSource = 'system'
 
 const MAX_FILE_BYTES = 2 * 1024 ** 3
 
@@ -66,7 +72,9 @@ const SCAN_BATCH_MS = 200
 
 function isVolumeName(name: string): boolean {
   const n = name.toLowerCase()
-  return n.endsWith('.nii') || n.endsWith('.nii.gz')
+  // Plain .gz is accepted to match the open dialog's filter — the loader
+  // detects gzip by signature, so the inner payload decides validity.
+  return n.endsWith('.nii') || n.endsWith('.gz')
 }
 
 /** Name shaped like a region-export product ("<stem>.regions.*" / "<stem>.mask.*",
@@ -233,6 +241,38 @@ async function writeExport(req: ExportRequest): Promise<ExportResult> {
 const HOMEPAGE_URL = 'https://lijiaxiang63.github.io/neoview/'
 const REPO_URL = 'https://github.com/lijiaxiang63/neoview'
 
+// ---------------------------------------------------------------------------
+// Recent files (File > Open Recent). The list persists in userData and is
+// fed by the renderer reporting every base volume it commits with a path.
+
+let recentFiles: string[] = []
+
+function recentFilesPath(): string {
+  return join(app.getPath('userData'), 'recent-files.json')
+}
+
+async function loadRecentFiles(): Promise<void> {
+  recentFiles = parseRecentPayload(await fs.readFile(recentFilesPath(), 'utf8').catch(() => ''))
+}
+
+// Saves chain on this tail so a slow earlier write can never finish after
+// (and clobber) a newer one; each link persists the list as of its call.
+let recentSaveTail: Promise<void> = Promise.resolve()
+
+function saveRecentFiles(): void {
+  const payload = serializeRecentPayload(recentFiles)
+  recentSaveTail = recentSaveTail
+    .then(() => fs.writeFile(recentFilesPath(), payload))
+    .catch(() => {
+      // Losing the recents list is not worth surfacing (and a failed write
+      // must not break the chain for the ones behind it).
+    })
+}
+
+// The View menu's checkbox state survives menu rebuilds (recents changing)
+// by re-applying the last state the renderer reported.
+let lastViewState = { fileList: true, sidePanel: true, folderOpen: false }
+
 /** Read a bundled sample file, labelling it with a fixed display name rather
  * than the asset's (possibly hashed) on-disk name. The path is left empty on
  * purpose: the asset lives inside the (often read-only) installed app bundle,
@@ -289,6 +329,45 @@ function buildMenu(getWindow: () => BrowserWindow | null): void {
     { label: 'Website', click: () => void shell.openExternal(HOMEPAGE_URL) },
     { label: 'GitHub Repository', click: () => void shell.openExternal(REPO_URL) }
   ]
+  const shortcutsItem: Electron.MenuItemConstructorOptions = {
+    label: 'Keyboard Shortcuts',
+    click: () => getWindow()?.webContents.send('show-shortcuts')
+  }
+
+  // A recent entry that fails to read (moved/deleted file) reports the error
+  // the same way a picked file would, and drops out of the list.
+  const openRecent = async (path: string): Promise<void> => {
+    const win = getWindow()
+    if (!win) return
+    try {
+      win.webContents.send('file-opened', await readVolumeFile(path))
+    } catch (err) {
+      win.webContents.send('file-open-error', (err as Error).message)
+      recentFiles = removeRecent(recentFiles, path)
+      saveRecentFiles()
+      buildMenu(getWindow)
+    }
+  }
+  const labels = recentLabels(recentFiles)
+  const recentItems: Electron.MenuItemConstructorOptions[] =
+    recentFiles.length === 0
+      ? [{ label: 'No Recent Files', enabled: false }]
+      : [
+          ...recentFiles.map((p, i) => ({
+            label: labels[i],
+            click: () => void openRecent(p)
+          })),
+          { type: 'separator' as const },
+          {
+            label: 'Clear Menu',
+            click: () => {
+              recentFiles = []
+              saveRecentFiles()
+              app.clearRecentDocuments()
+              buildMenu(getWindow)
+            }
+          }
+        ]
   const updateItems: Electron.MenuItemConstructorOptions[] = [
     {
       label: 'Check for Updates…',
@@ -348,6 +427,7 @@ function buildMenu(getWindow: () => BrowserWindow | null): void {
           // so the menu only asks it to start.
           click: () => getWindow()?.webContents.send('open-folder-request')
         },
+        { label: 'Open Recent', submenu: recentItems },
         { type: 'separator' },
         {
           label: 'Open Built-in Volume',
@@ -373,7 +453,32 @@ function buildMenu(getWindow: () => BrowserWindow | null): void {
     },
     // Edit/Window only on macOS (clipboard shortcuts in text fields need the
     // menu roles there); on Windows/Linux they would just widen the menu bar.
-    ...(isMac ? [{ role: 'editMenu' as const }] : []),
+    // Undo/Redo are custom: their accelerators must reach the renderer, which
+    // routes them to region-edit history (or a text field's own undo).
+    ...(isMac
+      ? [
+          {
+            label: 'Edit',
+            submenu: [
+              {
+                label: 'Undo',
+                accelerator: 'CmdOrCtrl+Z',
+                click: () => getWindow()?.webContents.send('menu-undo')
+              },
+              {
+                label: 'Redo',
+                accelerator: 'Shift+CmdOrCtrl+Z',
+                click: () => getWindow()?.webContents.send('menu-redo')
+              },
+              { type: 'separator' as const },
+              { role: 'cut' as const },
+              { role: 'copy' as const },
+              { role: 'paste' as const },
+              { role: 'selectAll' as const }
+            ]
+          }
+        ]
+      : []),
     {
       label: 'View',
       submenu: [
@@ -381,8 +486,8 @@ function buildMenu(getWindow: () => BrowserWindow | null): void {
           id: 'view-file-list',
           label: 'File List',
           type: 'checkbox',
-          checked: false,
-          enabled: false,
+          checked: lastViewState.folderOpen && lastViewState.fileList,
+          enabled: lastViewState.folderOpen,
           accelerator: 'CmdOrCtrl+Shift+B',
           click: () => getWindow()?.webContents.send('toggle-file-panel')
         },
@@ -390,7 +495,7 @@ function buildMenu(getWindow: () => BrowserWindow | null): void {
           id: 'view-side-panel',
           label: 'Side Panel',
           type: 'checkbox',
-          checked: true,
+          checked: lastViewState.sidePanel,
           accelerator: 'CmdOrCtrl+B',
           click: () => getWindow()?.webContents.send('toggle-side-panel')
         },
@@ -404,10 +509,15 @@ function buildMenu(getWindow: () => BrowserWindow | null): void {
     // macOS keeps updates/About in the app menu, so Help only carries links;
     // the 'help' role also gives it the system search field.
     isMac
-      ? { role: 'help' as const, submenu: linkItems }
+      ? {
+          role: 'help' as const,
+          submenu: [shortcutsItem, { type: 'separator' as const }, ...linkItems]
+        }
       : {
           label: 'Help',
           submenu: [
+            shortcutsItem,
+            { type: 'separator' as const },
             ...linkItems,
             { type: 'separator' as const },
             ...updateItems,
@@ -440,7 +550,7 @@ function createWindow(): BrowserWindow {
     minWidth: 960,
     minHeight: 640,
     show: false,
-    backgroundColor: '#0b0d10',
+    backgroundColor: nativeTheme.shouldUseDarkColors ? '#0b0d10' : '#e7e9ee',
     ...(process.platform === 'linux' ? { icon } : {}),
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
@@ -502,15 +612,61 @@ const gotLock = app.requestSingleInstanceLock()
 if (!gotLock) {
   app.quit()
 } else {
-  app.on('second-instance', () => {
+  // macOS delivers system recent-documents (and Finder) opens here. A path
+  // arriving before the renderer is listening is held and flushed after the
+  // page loads.
+  let pendingOpenPath: string | null = null
+  const openPathInto = async (win: BrowserWindow, path: string): Promise<void> => {
+    try {
+      win.webContents.send('file-opened', await readVolumeFile(path))
+    } catch (err) {
+      win.webContents.send('file-open-error', (err as Error).message)
+    }
+  }
+  app.on('open-file', (e, path) => {
+    e.preventDefault()
+    if (!isVolumeName(path)) return
+    const win = BrowserWindow.getAllWindows()[0]
+    if (win && !win.webContents.isLoading()) void openPathInto(win, path)
+    else pendingOpenPath = path
+  })
+  /** Windows and Linux deliver document opens (recent-documents list, file
+   * association) as a plain path argument instead of an open-file event:
+   * the last argv entry naming a volume file, resolved against `cwd`. */
+  const volumePathFromArgv = (args: readonly string[], cwd: string): string | null => {
+    for (let i = args.length - 1; i >= 0; i--) {
+      const a = args[i]
+      if (!a.startsWith('-') && isVolumeName(a)) return resolve(cwd, a)
+    }
+    return null
+  }
+  // A cold start may carry the document path in argv (argv[0] is the binary).
+  pendingOpenPath = volumePathFromArgv(process.argv.slice(1), process.cwd())
+  app.on('browser-window-created', (_e, win) => {
+    win.webContents.on('did-finish-load', () => {
+      if (!pendingOpenPath) return
+      const path = pendingOpenPath
+      pendingOpenPath = null
+      // A short delay lets the renderer register its listeners first.
+      setTimeout(() => void openPathInto(win, path), 250)
+    })
+  })
+
+  app.on('second-instance', (_e, argv, workingDirectory) => {
     const win = BrowserWindow.getAllWindows()[0]
     if (win) {
       if (win.isMinimized()) win.restore()
       win.focus()
     }
+    // The second launch may have been an OS document open; route its path
+    // exactly like an open-file event.
+    const path = volumePathFromArgv(argv.slice(1), workingDirectory)
+    if (!path) return
+    if (win && !win.webContents.isLoading()) void openPathInto(win, path)
+    else pendingOpenPath = path
   })
 
-  app.whenReady().then(() => {
+  app.whenReady().then(async () => {
     electronApp.setAppUserModelId('com.neoview.app')
 
     app.on('browser-window-created', (_, window) => {
@@ -636,6 +792,11 @@ if (!gotLock) {
     ipcMain.on(
       'view-state',
       (_event, state: { fileList: boolean; sidePanel: boolean; folderOpen: boolean }) => {
+        lastViewState = {
+          fileList: Boolean(state.fileList),
+          sidePanel: Boolean(state.sidePanel),
+          folderOpen: Boolean(state.folderOpen)
+        }
         const menu = Menu.getApplicationMenu()
         const fileList = menu?.getMenuItemById('view-file-list')
         if (fileList) {
@@ -647,6 +808,20 @@ if (!gotLock) {
       }
     )
 
+    // The renderer reports every base volume committed with a real path;
+    // that single point feeds both our menu and the OS recent-documents list.
+    ipcMain.on('note-file-opened', (_event, path: string) => {
+      if (typeof path !== 'string' || !path || !isVolumeName(path)) return
+      recentFiles = addRecent(recentFiles, path)
+      app.addRecentDocument(path)
+      saveRecentFiles()
+      buildMenu(() => BrowserWindow.getAllWindows()[0] ?? null)
+    })
+
+    // Awaited BEFORE the window exists: every 'note-file-opened' (they only
+    // arrive after the renderer loads) then edits the already-loaded list,
+    // so the read can never overwrite an entry added while it was in flight.
+    await loadRecentFiles()
     createWindow()
     initUpdater(() => BrowserWindow.getAllWindows()[0] ?? null)
     buildMenu(() => BrowserWindow.getAllWindows()[0] ?? null)

@@ -57,6 +57,17 @@ export function adjacentIndex(
   return next >= 0 && next < files.length ? next : null
 }
 
+/**
+ * Case-insensitive substring filter over "<relDir>/<name>". An empty (or
+ * all-whitespace) query keeps the input list identity, so callers keyed on
+ * the array (regionExportView's cache, React deps) see no change.
+ */
+export function filterEntries(files: FolderEntry[], query: string): FolderEntry[] {
+  const q = query.trim().toLowerCase()
+  if (q === '') return files
+  return files.filter((f) => `${f.relDir}/${f.name}`.toLowerCase().includes(q))
+}
+
 /** Whether `p` is `root` or sits beneath it. Safe for filesystem roots
  * ('/', drive roots), where naively appending a separator doubles it. */
 export function isUnderRoot(root: string, p: string): boolean {
@@ -65,9 +76,12 @@ export function isUnderRoot(root: string, p: string): boolean {
   return p.startsWith(r + '/') || p.startsWith(r + '\\')
 }
 
-/** Split a file name into stem and a '.nii' / '.nii.gz' badge (case-insensitive). */
+/** Split a file name into stem and a '.nii' / '.nii.gz' / plain '.gz' badge
+ * (case-insensitive). Must derive the same stem as exportRegions.ts#
+ * exportBaseName: regionExportView matches products to sources by stem, so
+ * a "<stem>.regions.nii.gz" written from "<stem>.gz" folds into its row. */
 export function splitDisplayName(name: string): { stem: string; ext: string } {
-  const m = /\.nii(\.gz)?$/i.exec(name)
+  const m = /(\.nii(\.gz)?|\.gz)$/i.exec(name)
   if (!m) return { stem: name, ext: '' }
   return { stem: name.slice(0, m.index), ext: m[0].toLowerCase() }
 }

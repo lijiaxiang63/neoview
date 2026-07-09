@@ -90,6 +90,26 @@ const api = {
     ipcRenderer.on('open-folder-request', listener)
     return () => ipcRenderer.removeListener('open-folder-request', listener)
   },
+  /** Help > Keyboard Shortcuts was chosen in the menu. */
+  onShowShortcuts: (cb: () => void): (() => void) => {
+    const listener = (): void => cb()
+    ipcRenderer.on('show-shortcuts', listener)
+    return () => ipcRenderer.removeListener('show-shortcuts', listener)
+  },
+  /** Edit > Undo / Redo (the renderer decides between a text-field undo and
+   * a region-edit undo). */
+  onMenuUndo: (cb: () => void): (() => void) => {
+    const listener = (): void => cb()
+    ipcRenderer.on('menu-undo', listener)
+    return () => ipcRenderer.removeListener('menu-undo', listener)
+  },
+  onMenuRedo: (cb: () => void): (() => void) => {
+    const listener = (): void => cb()
+    ipcRenderer.on('menu-redo', listener)
+    return () => ipcRenderer.removeListener('menu-redo', listener)
+  },
+  /** A base volume from this path was opened; feeds the Open Recent menu. */
+  noteFileOpened: (path: string): void => ipcRenderer.send('note-file-opened', path),
   /** View > File List was chosen in the menu. */
   onToggleFilePanel: (cb: () => void): (() => void) => {
     const listener = (): void => cb()

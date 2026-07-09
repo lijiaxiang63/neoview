@@ -30,7 +30,11 @@ function ipcErrorText(err: unknown): string {
   return raw.replace(/^Error invoking remote method '[^']+': (Error: )?/, '')
 }
 
-export function UpdateBanner(): JSX.Element | null {
+/** The update lifecycle rendered as a notification card. Persistent phases
+ * (available / downloading / ready) stay until resolved; result phases dismiss
+ * themselves. Always mounted inside the notification stack so it keeps
+ * receiving IPC events. */
+export function UpdateNotif(): JSX.Element | null {
   const [phase, setPhase] = useState<Phase | null>(null)
 
   useEffect(() => {
@@ -93,25 +97,25 @@ export function UpdateBanner(): JSX.Element | null {
   if (!phase) return null
 
   return (
-    <div className="update-banner">
+    <div className={`notif${phase.p === 'error' ? ' error' : ''}`}>
       {phase.p === 'checking' && <span className="msg">Checking for updates…</span>}
       {phase.p === 'none' && <span className="msg">You’re up to date (v{phase.version}).</span>}
       {phase.p === 'error' && <span className="msg">Update check failed: {phase.message}</span>}
       {phase.p === 'available' && (
         <>
-          <div className="update-row">
+          <div className="notif-row">
             <span className="msg">Update available: v{phase.info.version}</span>
-            <button className="toast-action" onClick={() => window.open(phase.info.notesUrl)}>
+            <button className="notif-action" onClick={() => window.open(phase.info.notesUrl)}>
               What’s new
             </button>
           </div>
-          {phase.error && <div className="update-error">{phase.error}</div>}
-          <div className="update-row">
+          {phase.error && <div className="notif-detail">{phase.error}</div>}
+          <div className="notif-row">
             <button className="btn primary" onClick={() => void download(phase.info)}>
               Download{phase.info.assetSize > 0 ? ` (${fmtMB(phase.info.assetSize)})` : ''}
             </button>
             <button
-              className="toast-action"
+              className="notif-action"
               onClick={() => {
                 window.neoview.skipUpdateVersion(phase.info.version)
                 setPhase(null)
@@ -124,16 +128,16 @@ export function UpdateBanner(): JSX.Element | null {
       )}
       {phase.p === 'downloading' && (
         <>
-          <div className="update-row">
+          <div className="notif-row">
             <span className="msg">
               Downloading v{phase.info.version}… {fmtMB(phase.received)}
               {phase.total > 0 ? ` / ${fmtMB(phase.total)}` : ''}
             </span>
-            <button className="toast-action" onClick={() => window.neoview.cancelUpdateDownload()}>
+            <button className="notif-action" onClick={() => window.neoview.cancelUpdateDownload()}>
               Cancel
             </button>
           </div>
-          <div className="update-progress">
+          <div className="notif-progress">
             <div
               className="fill"
               style={{
@@ -145,7 +149,7 @@ export function UpdateBanner(): JSX.Element | null {
         </>
       )}
       {phase.p === 'ready' && (
-        <div className="update-row">
+        <div className="notif-row">
           <span className="msg">v{phase.info.version} downloaded.</span>
           <button className="btn primary" onClick={() => void install(phase.info)}>
             {window.neoview.platform === 'darwin' ? 'Quit & install' : 'Restart to install'}
@@ -155,7 +159,7 @@ export function UpdateBanner(): JSX.Element | null {
       {phase.p === 'saved' && (
         <span className="msg">Installer saved — run it to finish updating.</span>
       )}
-      <button className="toast-close" aria-label="Dismiss" onClick={dismiss}>
+      <button className="notif-close" aria-label="Dismiss" onClick={dismiss}>
         ✕
       </button>
     </div>

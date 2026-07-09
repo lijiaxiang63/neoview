@@ -113,7 +113,7 @@ body {
 .btn.primary {
   background: var(--accent);
   border-color: var(--accent);
-  color: #0a1420;
+  color: var(--on-accent);
   font-weight: 600;
 }
 
@@ -153,9 +153,9 @@ body {
   left: 8px;
   padding: 2px 8px;
   border-radius: 999px;
-  background: rgba(18, 21, 26, 0.85);
-  border: 1px solid var(--border);
-  color: var(--text-1);
+  background: var(--canvas-chip-bg);
+  border: 1px solid var(--canvas-chip-border);
+  color: var(--canvas-text-1);
   font-size: 11px;
   pointer-events: none;
   display: flex;
@@ -164,7 +164,7 @@ body {
 }
 
 .slice-view .chip .plane-name {
-  color: var(--text-0);
+  color: var(--canvas-text-0);
   font-weight: 600;
 }
 
@@ -194,9 +194,9 @@ body {
   left: 8px;
   padding: 2px 8px;
   border-radius: 999px;
-  background: rgba(18, 21, 26, 0.85);
-  border: 1px solid var(--border);
-  color: var(--text-1);
+  background: var(--canvas-chip-bg);
+  border: 1px solid var(--canvas-chip-border);
+  color: var(--canvas-text-1);
   font-size: 11px;
   pointer-events: none;
   display: flex;
@@ -205,7 +205,7 @@ body {
 }
 
 .volume-view .chip .plane-name {
-  color: var(--text-0);
+  color: var(--canvas-text-0);
   font-weight: 600;
 }
 
@@ -217,7 +217,7 @@ body {
   justify-content: center;
   padding: 20px;
   text-align: center;
-  color: var(--text-2);
+  color: var(--canvas-text-2);
   font-size: 12px;
 }
 
@@ -309,6 +309,11 @@ body {
   /* Ellipsize on the left so the innermost folders stay readable. */
   direction: rtl;
   text-align: left;
+}
+
+.file-filter-row {
+  display: flex;
+  padding: 8px 10px 2px;
 }
 
 .file-list {
@@ -456,9 +461,72 @@ body {
 .range-readout {
   display: flex;
   justify-content: space-between;
+  gap: 8px;
   color: var(--text-1);
   font-size: 11px;
   margin-top: 6px;
+}
+
+.range-readout .num-field {
+  width: 84px;
+}
+
+.range-readout .num-field:last-child {
+  text-align: right;
+}
+
+/* ---------- Numeric fields (editable readouts next to sliders) ---------- */
+
+.num-field {
+  background: var(--bg-2);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  color: var(--text-0);
+  font-size: 11px;
+  padding: 3px 6px;
+  outline: none;
+  user-select: text;
+}
+
+.num-field:focus {
+  border-color: var(--accent);
+}
+
+.seg-field .num-field {
+  flex: none;
+  width: 56px;
+  text-align: right;
+}
+
+/* ---------- Frame playback ---------- */
+
+.play-btn {
+  appearance: none;
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  background: var(--bg-2);
+  color: var(--text-1);
+  cursor: pointer;
+  transition:
+    color 0.12s ease,
+    border-color 0.12s ease;
+}
+
+.play-btn:hover {
+  color: var(--text-0);
+  border-color: var(--accent);
+}
+
+.play-btn[aria-pressed='true'] {
+  color: var(--accent-strong);
+  border-color: var(--accent);
+  background: var(--accent-soft);
 }
 
 /* ---------- Overlay layers ---------- */
@@ -733,7 +801,7 @@ body {
   background: var(--bg-2);
   border: 1px solid var(--border-strong);
   border-radius: 8px;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+  box-shadow: var(--shadow);
 }
 
 .ctx-menu button {
@@ -936,98 +1004,76 @@ body {
   color: var(--warn, #e2b93b);
 }
 
-/* ---------- Toast ---------- */
+/* ---------- Notifications ----------
+   One stacking container in the bottom-right holds every transient message:
+   store toasts (undo/reveal), load errors, and the update lifecycle. They all
+   share the .notif card; a colored left edge marks severity. */
 
-.toast {
-  position: absolute;
-  top: 14px;
-  left: 50%;
-  transform: translateX(-50%);
-  z-index: 80;
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 9px 14px;
-  background: var(--bg-2);
-  border: 1px solid var(--border-strong);
-  border-radius: 10px;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
-  max-width: 70%;
-}
-
-.toast .msg {
-  color: var(--text-0);
-  font-size: 12px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.toast .toast-action {
-  appearance: none;
-  border: none;
-  background: none;
-  color: var(--accent-strong);
-  font: inherit;
-  font-size: 12px;
-  font-weight: 600;
-  cursor: pointer;
-  white-space: nowrap;
-}
-
-.toast .toast-action:hover {
-  text-decoration: underline;
-}
-
-.toast .toast-close {
-  appearance: none;
-  border: none;
-  background: none;
-  color: var(--text-2);
-  font-size: 13px;
-  cursor: pointer;
-  padding: 0 2px;
-}
-
-.toast .toast-close:hover {
-  color: var(--text-0);
-}
-
-/* ---------- Update banner ---------- */
-
-.update-banner {
+.notif-stack {
   position: absolute;
   right: 14px;
   bottom: calc(var(--statusbar-h) + 14px);
   z-index: 80;
   display: flex;
   flex-direction: column;
+  align-items: stretch;
+  gap: 10px;
+  width: min(380px, calc(100% - 28px));
+  /* The gaps between cards stay click-through; each card re-enables itself. */
+  pointer-events: none;
+}
+
+.notif {
+  pointer-events: auto;
+  position: relative;
+  display: flex;
+  flex-direction: column;
   gap: 8px;
   padding: 10px 32px 10px 14px;
   background: var(--bg-2);
   border: 1px solid var(--border-strong);
+  border-left: 3px solid var(--accent);
   border-radius: 10px;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
-  max-width: 380px;
+  box-shadow: var(--shadow);
+  animation: notif-in 0.16s ease-out;
 }
 
-.update-banner .msg {
+.notif.success {
+  border-left-color: var(--ok);
+}
+
+.notif.error {
+  border-left-color: var(--danger);
+}
+
+@keyframes notif-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.notif .msg {
   color: var(--text-0);
   font-size: 12px;
 }
 
-.update-banner .update-row {
+.notif .notif-row {
   display: flex;
   align-items: center;
   gap: 12px;
 }
 
-.update-banner .update-error {
+.notif .notif-detail {
   color: var(--danger);
   font-size: 11px;
 }
 
-.update-banner .toast-action {
+.notif-action {
   appearance: none;
   border: none;
   background: none;
@@ -1039,11 +1085,11 @@ body {
   white-space: nowrap;
 }
 
-.update-banner .toast-action:hover {
+.notif-action:hover {
   text-decoration: underline;
 }
 
-.update-banner .toast-close {
+.notif-close {
   position: absolute;
   top: 8px;
   right: 8px;
@@ -1052,22 +1098,23 @@ body {
   background: none;
   color: var(--text-2);
   font-size: 13px;
+  line-height: 1;
   cursor: pointer;
   padding: 0 2px;
 }
 
-.update-banner .toast-close:hover {
+.notif-close:hover {
   color: var(--text-0);
 }
 
-.update-banner .update-progress {
+.notif .notif-progress {
   height: 4px;
   border-radius: 2px;
   background: var(--bg-3);
   overflow: hidden;
 }
 
-.update-banner .update-progress .fill {
+.notif .notif-progress .fill {
   height: 100%;
   background: var(--accent);
   transition: width 0.15s linear;
@@ -1386,43 +1433,97 @@ body {
   }
 }
 
-/* ---------- Error banner ---------- */
+/* ---------- Shortcuts overlay ---------- */
 
-.error-banner {
+.shortcuts-backdrop {
   position: absolute;
-  top: 10px;
-  left: 50%;
-  transform: translateX(-50%);
-  z-index: 70;
+  inset: 0;
+  z-index: 90;
   display: flex;
   align-items: center;
-  gap: 12px;
-  padding: 8px 14px;
-  background: var(--bg-2);
-  border: 1px solid var(--danger);
-  border-left-width: 4px;
-  border-radius: var(--radius-sm);
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
-  max-width: 70%;
+  justify-content: center;
+  background: var(--scrim);
+  backdrop-filter: blur(2px);
 }
 
-.error-banner .msg {
+.shortcuts-panel {
+  width: min(640px, calc(100% - 48px));
+  max-height: calc(100% - 64px);
+  overflow-y: auto;
+  background: var(--bg-1);
+  border: 1px solid var(--border-strong);
+  border-radius: 12px;
+  box-shadow: var(--shadow-lg);
+  padding: 18px 22px 22px;
+}
+
+/* The panel is focused programmatically on open (to pull activation keys off
+   whatever was focused behind the modal); it isn't an interactive control, so
+   no focus ring. */
+.shortcuts-panel:focus {
+  outline: none;
+}
+
+.shortcuts-panel header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 14px;
+}
+
+.shortcuts-panel h2 {
+  font-size: 14px;
+  font-weight: 600;
   color: var(--text-0);
-  font-size: 12px;
 }
 
-.error-banner button {
+.icon-close {
   appearance: none;
   border: none;
   background: none;
   color: var(--text-2);
   font-size: 14px;
+  line-height: 1;
   cursor: pointer;
-  padding: 0 2px;
+  padding: 2px 4px;
 }
 
-.error-banner button:hover {
+.icon-close:hover {
   color: var(--text-0);
+}
+
+.shortcuts-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 18px 28px;
+}
+
+.shortcuts-grid h3 {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-2);
+  margin-bottom: 8px;
+}
+
+.shortcut-row {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 2px 0;
+}
+
+.shortcut-row dt {
+  flex: none;
+  min-width: 96px;
+  color: var(--accent-strong);
+  font-size: 11px;
+}
+
+.shortcut-row dd {
+  color: var(--text-1);
+  font-size: 12px;
 }
 
 /* ---------- Scrollbars ---------- */

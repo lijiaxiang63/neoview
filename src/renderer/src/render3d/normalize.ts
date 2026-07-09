@@ -72,8 +72,76 @@ export function planTexture(
   return {
     stride,
     texDims,
-    texSpacing: [spacing[0] * stride[0], spacing[1] * stride[1], spacing[2] * stride[2]]
+    // Derived from the ORIGINAL physical extent, not spacing*stride: when an
+    // axis is not divisible by its stride, the rounded-up texel count would
+    // otherwise pad the rendered box by up to stride-1 voxels and misalign
+    // the 3D view against the (full-resolution) slice views.
+    texSpacing: [
+      (dims[0] * spacing[0]) / texDims[0],
+      (dims[1] * spacing[1]) / texDims[1],
+      (dims[2] * spacing[2]) / texDims[2]
+    ]
   }
+}
+
+/**
+ * Downsample the region label map onto the 3D texture grid (the same plan as
+ * the base texture, so both stay aligned): one byte per texel carrying a
+ * palette index, 0 = no region. `indexOf` maps region id → palette index;
+ * ids at/behind its length map to 0.
+ */
+export function buildLabelTexData(
+  labelMap: Uint16Array,
+  dims: [number, number, number],
+  plan: TexPlan,
+  indexOf: Uint8Array,
+  out?: Uint8Array
+): Uint8Array {
+  const [nx, ny, nz] = dims
+  const [tx, ty, tz] = plan.texDims
+  const [sx, sy, sz] = plan.stride
+  const count = tx * ty * tz
+  const dst = out && out.length === count ? out : new Uint8Array(count)
+  if (sx === 1 && sy === 1 && sz === 1) {
+    // Unit stride (the common, under-budget case): texel = voxel.
+    for (let i = 0; i < count; i++) {
+      const id = labelMap[i]
+      dst[i] = id < indexOf.length ? indexOf[id] : 0
+    }
+    return dst
+  }
+  // Strided: each texel covers an sx×sy×sz source block (edge-clipped). A
+  // point sample would drop any region thinner than the stride from the 3D
+  // view, so scan the block for a voxel with a visible palette index. Total
+  // work is one pass over the label map, the same as the unit-stride case.
+  let p = 0
+  for (let k = 0; k < tz; k++) {
+    const z0 = k * sz
+    const z1 = Math.min(z0 + sz, nz)
+    for (let j = 0; j < ty; j++) {
+      const y0 = j * sy
+      const y1 = Math.min(y0 + sy, ny)
+      for (let i = 0; i < tx; i++, p++) {
+        const x0 = i * sx
+        const x1 = Math.min(x0 + sx, nx)
+        let v = 0
+        scan: for (let z = z0; z < z1; z++) {
+          for (let y = y0; y < y1; y++) {
+            let idx = (z * ny + y) * nx + x0
+            for (let x = x0; x < x1; x++, idx++) {
+              const id = labelMap[idx]
+              if (id !== 0 && id < indexOf.length && indexOf[id] !== 0) {
+                v = indexOf[id]
+                break scan
+              }
+            }
+          }
+        }
+        dst[p] = v
+      }
+    }
+  }
+  return dst
 }
 
 const f32Scratch = new Float32Array(1)
