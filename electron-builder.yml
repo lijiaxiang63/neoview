@@ -2,16 +2,11 @@ appId: com.neoview.app
 productName: neoview
 directories:
   buildResources: build
+# Whitelist, not blacklist: stray workspace files (editor/agent dirs, docs)
+# must never reach the package. package.json is always included implicitly.
 files:
-  - '!**/.vscode/*'
-  - '!src/*'
-  - '!scripts/*'
-  - '!tests/*'
-  - '!testdata/*'
-  - '!electron.vite.config.{js,ts,mjs,cjs}'
-  - '!{.eslintcache,eslint.config.mjs,.prettierignore,.prettierrc.yaml,dev-app-update.yml,CHANGELOG.md,README.md}'
-  - '!{.env,.env.*,.npmrc,pnpm-lock.yaml}'
-  - '!{tsconfig.json,tsconfig.node.json,tsconfig.web.json}'
+  - out/**
+  - resources/**
 asarUnpack:
   - resources/**
 # Chromium's built-in dialog translations; the app UI itself is English-only.
@@ -32,6 +27,10 @@ nsis:
   createDesktopShortcut: always
 mac:
   category: public.app-category.utilities
+  # The in-app updater only ever downloads the dmg; the default target set
+  # would also build a zip nobody consumes.
+  target:
+    - dmg
   entitlements: build/entitlements.mac.plist
   entitlementsInherit: build/entitlements.mac.plist
   identity: '-'
@@ -40,6 +39,9 @@ mac:
 # Mac (or vice versa); the checker keys off the arch token in the asset name.
 dmg:
   artifactName: ${name}-${version}-${arch}.${ext}
+# Recompresses dmgs to LZMA; the format enum above `compression` tops out at
+# bzip2 (~17% larger).
+afterAllArtifactBuild: ./scripts/dmg-lzma.mjs
 linux:
   target:
     - AppImage

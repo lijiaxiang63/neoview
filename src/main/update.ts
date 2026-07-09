@@ -1,4 +1,4 @@
-import { app, ipcMain, shell, BrowserWindow } from 'electron'
+import { app, ipcMain, net, shell, BrowserWindow } from 'electron'
 import { spawn } from 'child_process'
 import { createWriteStream, readFileSync, promises as fs } from 'fs'
 import { createHash } from 'crypto'
@@ -75,7 +75,9 @@ export async function checkForUpdates(win: BrowserWindow, manual: boolean): Prom
   reportManual = manual
   if (reportManual) sendStatus(win, { kind: 'checking', manual: true })
   try {
-    const res = await fetch(RELEASE_API, {
+    // net.fetch (here and in downloadUpdate) goes through Chromium's network
+    // stack, so system proxy settings apply — Node's global fetch ignores them.
+    const res = await net.fetch(RELEASE_API, {
       headers: { 'User-Agent': userAgent(), Accept: 'application/vnd.github+json' },
       signal: AbortSignal.timeout(CHECK_TIMEOUT_MS)
     })
@@ -121,7 +123,7 @@ async function downloadUpdate(win: BrowserWindow): Promise<string | null> {
   const filePath = join(dir, update.asset.name)
   let out: ReturnType<typeof createWriteStream> | null = null
   try {
-    const res = await fetch(update.asset.url, {
+    const res = await net.fetch(update.asset.url, {
       headers: { 'User-Agent': userAgent() },
       signal: abort.signal
     })
