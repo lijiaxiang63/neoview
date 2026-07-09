@@ -648,7 +648,7 @@ if (!gotLock) {
     }
   })
 
-  app.whenReady().then(() => {
+  app.whenReady().then(async () => {
     electronApp.setAppUserModelId('com.neoview.app')
 
     app.on('browser-window-created', (_, window) => {
@@ -800,11 +800,13 @@ if (!gotLock) {
       buildMenu(() => BrowserWindow.getAllWindows()[0] ?? null)
     })
 
+    // Awaited BEFORE the window exists: every 'note-file-opened' (they only
+    // arrive after the renderer loads) then edits the already-loaded list,
+    // so the read can never overwrite an entry added while it was in flight.
+    await loadRecentFiles()
     createWindow()
     initUpdater(() => BrowserWindow.getAllWindows()[0] ?? null)
     buildMenu(() => BrowserWindow.getAllWindows()[0] ?? null)
-    // The persisted recents arrive a beat later; rebuild once they do.
-    void loadRecentFiles().then(() => buildMenu(() => BrowserWindow.getAllWindows()[0] ?? null))
 
     syncDockIcon()
     // nativeTheme 'updated' won't fire for OS theme changes while themeSource
