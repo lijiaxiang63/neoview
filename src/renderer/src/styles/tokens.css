@@ -4,6 +4,14 @@
   --bg-2: #1a1e25;
   --bg-3: #232935;
   --bg-canvas: #05060a;
+  /* Surfaces layered over the data canvas. The canvas stays dark in both
+     themes (see the light block below), so these must not flip either —
+     themed text tokens would go dark-on-dark in light mode. */
+  --canvas-chip-bg: rgba(18, 21, 26, 0.85);
+  --canvas-chip-border: #262b33;
+  --canvas-text-0: #e8ebf0;
+  --canvas-text-1: #9aa3b0;
+  --canvas-text-2: #5c6570;
   --border: #262b33;
   --border-strong: #333a45;
   --text-0: #e8ebf0;
