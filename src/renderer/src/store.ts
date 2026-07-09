@@ -1026,6 +1026,10 @@ export const useStore = create<AppState>()((set, get) => {
     },
 
     commitPreview: () => {
+      // No region mutation while a brush gesture is in flight (same guard
+      // as undo/redo): Enter can fire mid-drag, and committing under the
+      // open collector would interleave two writers of the label map.
+      if (strokeCollector) return
       // A commit racing the debounce would apply the mask of the previous
       // parameters/frame/box; fold pending edits in first.
       if (previewPending) computePreviewNow()
@@ -1219,6 +1223,9 @@ export const useStore = create<AppState>()((set, get) => {
       })),
 
     deleteRegion: (id) => {
+      // Same in-flight-gesture guard as commitPreview/undo: a delete from a
+      // second pointer would erase under the open collector.
+      if (strokeCollector) return
       const s = get()
       if (!s.labelMap) return
       const index = s.regions.findIndex((r) => r.id === id)

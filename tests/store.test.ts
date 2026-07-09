@@ -483,6 +483,25 @@ describe('regions', () => {
     expect(useStore.getState().undoStack).toHaveLength(2)
   })
 
+  it('commit and delete are blocked while a brush stroke is in flight', () => {
+    seedRegion()
+    useStore.getState().setActiveRegion(1)
+    useStore.getState().setBrushRadius(1)
+    useStore.setState({ segParams: { ...useStore.getState().segParams, low: 3, high: 3 } })
+    useStore.getState().setSegBox({ min: [0, 0, 0], max: [1, 1, 1] })
+    useStore.getState().paintAt(0, [0, 0], [1, 1], false)
+    // Enter mid-drag: the commit must not write under the open collector.
+    useStore.getState().commitPreview()
+    expect(useStore.getState().regions).toHaveLength(1)
+    expect(useStore.getState().segBox).not.toBeNull()
+    // A delete from a second pointer is blocked the same way.
+    useStore.getState().deleteRegion(1)
+    expect(useStore.getState().regions).toHaveLength(1)
+    useStore.getState().endStroke()
+    useStore.getState().commitPreview()
+    expect(useStore.getState().regions).toHaveLength(2)
+  })
+
   it('a stroke whose regions vanished mid-gesture is reverted, not orphaned', () => {
     seedRegion()
     useStore.getState().setActiveRegion(1)
