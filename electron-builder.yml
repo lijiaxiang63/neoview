@@ -10,9 +10,15 @@ files:
 asarUnpack:
   - resources/**
 # Chromium's built-in dialog translations; the app UI itself is English-only.
+# Both naming schemes per language: electron-builder matches locale file names
+# exactly, and macOS ships en.lproj/zh_CN.lproj while Windows/Linux ship
+# en-US.pak/zh-CN.pak — listing only one form empties locales/ on the other
+# platforms, which breaks DevTools there (no locale strings to load).
 electronLanguages:
   - en
+  - en-US
   - zh_CN
+  - zh-CN
 compression: maximum
 fileAssociations:
   - ext: nii
