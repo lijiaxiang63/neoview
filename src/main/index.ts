@@ -32,6 +32,26 @@ nativeTheme.themeSource = 'system'
 
 const MAX_FILE_BYTES = 2 * 1024 ** 3
 
+// Crash forensics: a dead renderer or GPU process otherwise leaves only a
+// blank, unresponsive window with no trace of why. Every incident is
+// appended to crash.log in userData so a report can name the reason
+// (e.g. 'oom' vs 'crashed' vs a GPU process death).
+const crashLogPath = (): string => join(app.getPath('userData'), 'crash.log')
+
+function logIncident(kind: string, details: unknown): void {
+  const payload = { details, systemMemory: process.getSystemMemoryInfo() }
+  const line = `${new Date().toISOString()} ${kind} ${JSON.stringify(payload)}\n`
+  console.error(line.trim())
+  fs.appendFile(crashLogPath(), line).catch(() => {
+    // Logging must never throw.
+  })
+}
+
+// GPU / utility process deaths are app-level, not per-window.
+app.on('child-process-gone', (_e, details) => {
+  logIncident('child-process-gone', details)
+})
+
 interface OpenedFile {
   name: string
   path: string
@@ -563,6 +583,20 @@ function createWindow(): BrowserWindow {
   mainWindow.on('ready-to-show', () => {
     mainWindow.show()
   })
+
+  // A gone renderer paints the window solid white with no other symptom;
+  // record why (reason 'oom' vs 'crashed', exit code) and tell the user
+  // where the log landed. 'unresponsive' separates hangs from crashes.
+  mainWindow.webContents.on('render-process-gone', (_e, details) => {
+    logIncident('render-process-gone', details)
+    dialog.showErrorBox(
+      'Display process stopped',
+      `Reason: ${details.reason} (exit code ${details.exitCode})\n` +
+        `Details were appended to:\n${crashLogPath()}`
+    )
+  })
+  mainWindow.on('unresponsive', () => logIncident('window-unresponsive', {}))
+  mainWindow.on('responsive', () => logIncident('window-responsive-again', {}))
 
   // Closing goes through the renderer first so unsaved region edits can veto
   // it (the renderer replies on 'close-confirmed' once the user agrees).
