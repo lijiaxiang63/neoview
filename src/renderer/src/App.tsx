@@ -219,11 +219,16 @@ export default function App(): JSX.Element {
       const el = document.activeElement
       return el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement
     }
+    // Menu accelerators arrive over IPC, bypassing the shortcuts dialog's
+    // keydown capture — the modal must also veto them here, or Cmd+Z would
+    // mutate region history invisibly behind it.
     const offUndo = window.neoview.onMenuUndo(() => {
+      if (useStore.getState().shortcutsOpen) return
       if (isTextTarget()) document.execCommand('undo')
       else useStore.getState().undo()
     })
     const offRedo = window.neoview.onMenuRedo(() => {
+      if (useStore.getState().shortcutsOpen) return
       if (isTextTarget()) document.execCommand('redo')
       else useStore.getState().redo()
     })
