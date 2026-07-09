@@ -630,6 +630,18 @@ if (!gotLock) {
     if (win && !win.webContents.isLoading()) void openPathInto(win, path)
     else pendingOpenPath = path
   })
+  /** Windows and Linux deliver document opens (recent-documents list, file
+   * association) as a plain path argument instead of an open-file event:
+   * the last argv entry naming a volume file, resolved against `cwd`. */
+  const volumePathFromArgv = (args: readonly string[], cwd: string): string | null => {
+    for (let i = args.length - 1; i >= 0; i--) {
+      const a = args[i]
+      if (!a.startsWith('-') && isVolumeName(a)) return resolve(cwd, a)
+    }
+    return null
+  }
+  // A cold start may carry the document path in argv (argv[0] is the binary).
+  pendingOpenPath = volumePathFromArgv(process.argv.slice(1), process.cwd())
   app.on('browser-window-created', (_e, win) => {
     win.webContents.on('did-finish-load', () => {
       if (!pendingOpenPath) return
@@ -640,12 +652,18 @@ if (!gotLock) {
     })
   })
 
-  app.on('second-instance', () => {
+  app.on('second-instance', (_e, argv, workingDirectory) => {
     const win = BrowserWindow.getAllWindows()[0]
     if (win) {
       if (win.isMinimized()) win.restore()
       win.focus()
     }
+    // The second launch may have been an OS document open; route its path
+    // exactly like an open-file event.
+    const path = volumePathFromArgv(argv.slice(1), workingDirectory)
+    if (!path) return
+    if (win && !win.webContents.isLoading()) void openPathInto(win, path)
+    else pendingOpenPath = path
   })
 
   app.whenReady().then(async () => {
