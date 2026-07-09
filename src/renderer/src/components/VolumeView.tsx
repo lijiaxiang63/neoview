@@ -5,6 +5,7 @@ import { OrbitCamera, FOV_Y_RAD } from '../render3d/camera'
 import {
   buildLabelTexData,
   buildTexData,
+  MAX_TEX_VOXELS,
   planTexture,
   scaledToNormalized,
   type TexPlan
@@ -156,7 +157,17 @@ export function VolumeView(): JSX.Element {
 
   // Region palette (index = 1 + position in the regions list). Region ids can
   // exceed the palette; those regions simply stay 2D-only.
-  const regionIdsKey = useMemo(() => regions.map((r) => r.id).join(','), [regions])
+  //
+  // Visibility enters the TEXTURE only when the volume is strided: the block
+  // scan must not let a hidden region shadow a visible one sharing a block,
+  // so hidden ids get no palette slot and toggles rebuild (debounced). At
+  // full resolution the LUT alpha alone hides regions — no rebuild. Strided
+  // ⟺ over the texture budget, the same rule planTexture applies.
+  const strided = volume ? volume.dims[0] * volume.dims[1] * volume.dims[2] > MAX_TEX_VOXELS : false
+  const regionIdsKey = useMemo(
+    () => regions.map((r) => `${r.id}${strided && !r.visible ? '!' : ''}`).join(','),
+    [regions, strided]
+  )
 
   // Palette LUT + opacity: cheap uniform/LUT updates on color/visibility/
   // opacity changes — no texture rebuild.
@@ -196,8 +207,9 @@ export function VolumeView(): JSX.Element {
       if (s.volume !== volume || !s.labelMap) return
       const maxId = s.regions.reduce((m, r) => Math.max(m, r.id), 0)
       const indexOf = new Uint8Array(maxId + 1)
+      const bakeVisibility = plan.stride.some((v) => v > 1)
       s.regions.forEach((r, i) => {
-        if (i < LABEL_PALETTE_MAX) indexOf[r.id] = i + 1
+        if (i < LABEL_PALETTE_MAX && (!bakeVisibility || r.visible)) indexOf[r.id] = i + 1
       })
       rc.setLabelVolume(buildLabelTexData(s.labelMap, volume.dims, plan, indexOf))
       schedule('full')
