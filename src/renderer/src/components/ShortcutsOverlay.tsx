@@ -1,4 +1,4 @@
-import { useEffect, type JSX } from 'react'
+import { useEffect, useRef, type JSX } from 'react'
 
 interface Props {
   onClose: () => void
@@ -66,17 +66,36 @@ const SECTIONS: Section[] = [
 
 /** Modal list of every shortcut and gesture. Esc, ✕ or a backdrop click closes. */
 export function ShortcutsOverlay({ onClose }: Props): JSX.Element {
+  const panelRef = useRef<HTMLDivElement>(null)
+
+  // Take focus on open: a toolbar/region button focused behind the modal
+  // would otherwise keep receiving Enter/Space activation — that's a browser
+  // default action, not a listener, so stopping propagation can't block it.
+  useEffect(() => {
+    panelRef.current?.focus()
+  }, [])
+
   useEffect(() => {
     // Capture phase, every key: the dialog is modal, so no keystroke may
     // reach the app-level shortcut handler underneath (Enter would commit a
     // drawn preview, arrows would switch files). Immediate-stop, because
     // sibling listeners on the same window target ignore a plain stop.
-    // Default actions (Tab, button activation, scrolling) still work.
+    // Default actions (Tab, in-dialog button activation, scrolling) still work.
     const onKey = (e: KeyboardEvent): void => {
       e.stopImmediatePropagation()
       if (e.key === 'Escape') {
         e.preventDefault()
         onClose()
+        return
+      }
+      // Activation keys are default actions: if focus has wandered back
+      // behind the modal (Tab past the close button), cancel them so hidden
+      // controls can't be triggered while the dialog is up.
+      if (e.key === 'Enter' || e.key === ' ') {
+        const panel = panelRef.current
+        if (!panel || !(e.target instanceof Node) || !panel.contains(e.target)) {
+          e.preventDefault()
+        }
       }
     }
     window.addEventListener('keydown', onKey, true)
@@ -86,9 +105,11 @@ export function ShortcutsOverlay({ onClose }: Props): JSX.Element {
   return (
     <div className="shortcuts-backdrop" onPointerDown={onClose}>
       <div
+        ref={panelRef}
         className="shortcuts-panel"
         role="dialog"
         aria-label="Keyboard shortcuts"
+        tabIndex={-1}
         onPointerDown={(e) => e.stopPropagation()}
       >
         <header>

@@ -1457,6 +1457,13 @@ body {
   padding: 18px 22px 22px;
 }
 
+/* The panel is focused programmatically on open (to pull activation keys off
+   whatever was focused behind the modal); it isn't an interactive control, so
+   no focus ring. */
+.shortcuts-panel:focus {
+  outline: none;
+}
+
 .shortcuts-panel header {
   display: flex;
   align-items: center;
