@@ -92,6 +92,23 @@ describe('previewCore', () => {
     expect(cache.labelMap).toBeNull()
   })
 
+  it('dropOverlay releases one cached overlay and leaves the rest intact', () => {
+    const cache = emptyCache()
+    applyMessage(cache, { type: 'volume', grid })
+    applyMessage(cache, { type: 'overlay', id: 7, grid })
+    applyMessage(cache, { type: 'overlay', id: 8, grid })
+    applyMessage(cache, { type: 'dropOverlay', id: 7 })
+    expect([...cache.overlays.keys()]).toEqual([8])
+    // A compute against the dropped overlay now misses (sync fallback);
+    // the surviving one still works.
+    expect(
+      computeInCache(cache, request({ constraint: { type: 'overlay', overlayId: 7 } }))
+    ).toBeNull()
+    expect(
+      computeInCache(cache, request({ constraint: { type: 'overlay', overlayId: 8 } }))
+    ).not.toBeNull()
+  })
+
   it('returns null when a constraint refers to data the cache is missing', () => {
     const cache = emptyCache()
     applyMessage(cache, { type: 'volume', grid })

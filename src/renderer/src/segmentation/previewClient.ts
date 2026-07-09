@@ -27,6 +27,29 @@ export class PreviewClient {
     return typeof Worker !== 'undefined' && !this.failed
   }
 
+  /** Terminate the worker and forget everything it mirrors. Called when the
+   * base volume changes: the cached grids can pin GBs of a dataset that is
+   * gone, and the next big preview may never come. The next request lazily
+   * respawns a fresh worker ('failed' stays sticky — a broken worker is not
+   * retried just because the file changed). */
+  reset(): void {
+    this.worker?.terminate()
+    this.worker = null
+    this.sentVolume = null
+    this.sentLabelRev = -1
+    this.sentOverlays.clear()
+    this.onResult = null
+  }
+
+  /** Drop one mirrored overlay (removed layers' ids are never reused, so
+   * nothing can reference the buffer again). No-op if it was never sent. */
+  dropOverlay(id: number): void {
+    if (!this.worker || !this.sentOverlays.has(id)) return
+    this.sentOverlays.delete(id)
+    const msg: ToWorker = { type: 'dropOverlay', id }
+    this.worker.postMessage(msg)
+  }
+
   private ensureWorker(): Worker | null {
     if (this.failed) return null
     if (!this.worker) {

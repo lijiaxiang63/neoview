@@ -762,6 +762,9 @@ export const useStore = create<AppState>()((set, get) => {
 
     setVolume: (v, sourcePath = null) => {
       cancelScheduledPreview()
+      // The worker's mirrored grids belong to the outgoing dataset; left
+      // alone they would pin its buffers until the next big preview.
+      previewClient.reset()
       // The outgoing file's pending pref save must land under ITS path (and
       // before this file's pref is read back, in case it is the same file).
       flushPrefSave()
@@ -838,6 +841,7 @@ export const useStore = create<AppState>()((set, get) => {
 
     removeOverlay: (id) => {
       set((s) => ({ overlays: s.overlays.filter((l) => l.id !== id) }))
+      previewClient.dropOverlay(id)
       // A constraint pointing at the removed layer would silently pin the
       // preview to stale data.
       const { segParams } = get()

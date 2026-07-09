@@ -40,6 +40,7 @@ export interface ComputeRequest {
 export type ToWorker =
   | { type: 'volume'; grid: AlignedGridSource }
   | { type: 'overlay'; id: number; grid: AlignedGridSource }
+  | { type: 'dropOverlay'; id: number }
   | { type: 'labelMap'; data: Uint16Array }
   | { type: 'compute'; req: ComputeRequest }
 
@@ -69,6 +70,10 @@ export function applyMessage(
     cache.labelMap = null
   } else if (msg.type === 'overlay') {
     cache.overlays.set(msg.id, msg.grid)
+  } else if (msg.type === 'dropOverlay') {
+    // A removed layer's buffer must not stay resident (ids are never
+    // reused, so nothing can reference it again).
+    cache.overlays.delete(msg.id)
   } else {
     cache.labelMap = msg.data
   }
