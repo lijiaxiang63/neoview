@@ -67,10 +67,13 @@ const SECTIONS: Section[] = [
 /** Modal list of every shortcut and gesture. Esc, ✕ or a backdrop click closes. */
 export function ShortcutsOverlay({ onClose }: Props): JSX.Element {
   useEffect(() => {
+    // Capture phase, every key: the dialog is modal, so no keystroke may
+    // reach the app-level shortcut handler underneath (Enter would commit a
+    // drawn preview, arrows would switch files). Only propagation stops —
+    // default actions (Tab, button activation, scrolling) still work.
     const onKey = (e: KeyboardEvent): void => {
+      e.stopPropagation()
       if (e.key === 'Escape') {
-        // Capture phase so Esc closes only the overlay (not also the seg box).
-        e.stopPropagation()
         e.preventDefault()
         onClose()
       }
