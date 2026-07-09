@@ -465,6 +465,41 @@ describe('regions', () => {
     expect(s.segDirty).toBe(true)
   })
 
+  it('undo is a no-op while a brush stroke is in flight', () => {
+    seedRegion()
+    useStore.getState().setActiveRegion(1)
+    useStore.getState().setBrushRadius(1)
+    // A complete gesture -> one history entry (cross sits on slice 1).
+    useStore.getState().paintAt(0, [0, 0], [1, 1], false)
+    useStore.getState().endStroke()
+    expect(useStore.getState().undoStack).toHaveLength(1)
+    // Second gesture in flight: history must not move under the collector
+    // (menu accelerators can fire mid-drag).
+    useStore.getState().paintAt(0, [0, 0], [1, 1], true)
+    useStore.getState().undo()
+    expect(useStore.getState().undoStack).toHaveLength(1)
+    expect(useStore.getState().redoStack).toHaveLength(0)
+    useStore.getState().endStroke()
+    expect(useStore.getState().undoStack).toHaveLength(2)
+  })
+
+  it('a stroke whose regions vanished mid-gesture is reverted, not orphaned', () => {
+    seedRegion()
+    useStore.getState().setActiveRegion(1)
+    useStore.getState().setBrushRadius(1)
+    const labelMap = useStore.getState().labelMap!
+    useStore.getState().paintAt(0, [0, 0], [1, 1], false)
+    expect(labelMap.slice(4).some((v) => v === 1)).toBe(true) // stamped slice 1
+    // All regions removed mid-gesture by another input path.
+    useStore.setState({ regions: [], activeRegionId: null })
+    useStore.getState().endStroke()
+    // The stamps are reverted (they would otherwise silently join the next
+    // region to reuse id 1); the untouched seed voxels stay.
+    expect(labelMap.slice(4).every((v) => v === 0)).toBe(true)
+    expect(labelMap[0]).toBe(1)
+    expect(useStore.getState().undoStack).toHaveLength(0)
+  })
+
   it('undo of a re-segment restores the snapshot the next re-edit opens with', () => {
     useStore.getState().setVolume(segVolume())
     const params = useStore.getState().segParams

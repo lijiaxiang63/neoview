@@ -373,6 +373,18 @@ let prefSaveTimer: ReturnType<typeof setTimeout> | undefined
 // file switch must FLUSH this (write it now), never cancel it.
 let pendingPrefSave: { path: string; pref: ViewPref } | null = null
 
+/** Write the pending capture immediately (idempotent). Runs on the timer,
+ * from setVolume (a file switch inside the debounce window must neither
+ * misattribute the save nor drop it), and on pagehide (quit/reload). */
+function flushPrefSave(): void {
+  clearTimeout(prefSaveTimer)
+  if (!pendingPrefSave || !prefStorage) return
+  saveViewPref(pendingPrefSave.path, pendingPrefSave.pref, prefStorage)
+  pendingPrefSave = null
+}
+// The window is absent in the unit-test environment (like prefStorage).
+if (typeof window !== 'undefined') window.addEventListener('pagehide', flushPrefSave)
+
 // The brush gesture in flight: paintAt fills it, endStroke folds it into one
 // undo entry. Module-level because a stroke spans many store actions.
 let strokeCollector: ChangeCollector | null = null
@@ -587,6 +599,11 @@ export const useStore = create<AppState>()((set, get) => {
    * (active/edit selection, a region constraint) is cleared.
    */
   function applyHistory(dir: 'undo' | 'redo'): void {
+    // A brush gesture in flight owns the label map: moving history under it
+    // would corrupt the collector's first-write values and could strand the
+    // stroke's voxels outside any entry (menu accelerators and shortcut
+    // keys can fire mid-drag).
+    if (strokeCollector) return
     const s = get()
     const vol = s.volume
     const stack = dir === 'undo' ? s.undoStack : s.redoStack
@@ -643,16 +660,6 @@ export const useStore = create<AppState>()((set, get) => {
     } else if (get().segBox) {
       schedulePreview()
     }
-  }
-
-  /** Write the pending capture immediately (idempotent). Runs on the timer,
-   * and from setVolume so a file switch inside the debounce window can
-   * neither misattribute the save nor drop it. */
-  function flushPrefSave(): void {
-    clearTimeout(prefSaveTimer)
-    if (!pendingPrefSave || !prefStorage) return
-    saveViewPref(pendingPrefSave.path, pendingPrefSave.pref, prefStorage)
-    pendingPrefSave = null
   }
 
   /** Debounced write of the current display range/preset to the per-file
@@ -762,6 +769,9 @@ export const useStore = create<AppState>()((set, get) => {
 
     setVolume: (v, sourcePath = null) => {
       cancelScheduledPreview()
+      // A missed pointer-up must not carry stamped voxels across the base
+      // change (the collector indexes into the OLD grid).
+      strokeCollector = null
       // The worker's mirrored grids belong to the outgoing dataset; left
       // alone they would pin its buffers until the next big preview.
       previewClient.reset()
@@ -1117,7 +1127,18 @@ export const useStore = create<AppState>()((set, get) => {
       const vol = s.volume
       const patch = s.labelMap && strokeCollector ? strokeCollector.finish(s.labelMap) : null
       strokeCollector = null
-      if (!vol || !s.labelMap || s.regions.length === 0) return
+      if (!vol || !s.labelMap) return
+      if (s.regions.length === 0) {
+        // No region can own the stroke (they were all removed mid-gesture
+        // by another input): every label-map change must be in history or
+        // reverted, so revert — orphaned voxels would silently join the
+        // next region to reuse the id.
+        if (patch) {
+          applyPatchValues(s.labelMap, patch.indices, patch.before)
+          set({ labelMapRev: s.labelMapRev + 1 })
+        }
+        return
+      }
       set({
         regions: computeRegionStats(vol, s.labelMap, s.regions, frameOffsetOf(vol, s.frame)),
         ...(patch

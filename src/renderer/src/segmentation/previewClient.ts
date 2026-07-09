@@ -22,6 +22,12 @@ export class PreviewClient {
   private sentLabelRev = -1
   private sentOverlays = new Set<number>()
   private onResult: ((token: number, result: SegmentResult | null) => void) | null = null
+  // One compute runs at a time; the newest request waits in `pending`
+  // (replacing any earlier waiter). Without this, rapid scheduling — 4D
+  // playback ticks, slider scrubs — would queue an unbounded FIFO backlog
+  // of full floods whose results the store drops by token anyway.
+  private inFlight = false
+  private pending: ToWorker | null = null
 
   available(): boolean {
     return typeof Worker !== 'undefined' && !this.failed
@@ -39,6 +45,8 @@ export class PreviewClient {
     this.sentLabelRev = -1
     this.sentOverlays.clear()
     this.onResult = null
+    this.inFlight = false
+    this.pending = null
   }
 
   /** Drop one mirrored overlay (removed layers' ids are never reused, so
@@ -63,6 +71,14 @@ export class PreviewClient {
       }
       this.worker.onmessage = (e: MessageEvent<FromWorker>) => {
         const msg = e.data
+        // Post the coalesced waiter before delivering, so the worker never
+        // idles between the two computes.
+        if (this.pending && this.worker) {
+          this.worker.postMessage(this.pending)
+          this.pending = null
+        } else {
+          this.inFlight = false
+        }
         this.onResult?.(msg.token, msg.type === 'result' ? msg.result : null)
       }
       this.worker.onerror = () => {
@@ -71,6 +87,8 @@ export class PreviewClient {
         this.failed = true
         this.worker?.terminate()
         this.worker = null
+        this.inFlight = false
+        this.pending = null
         this.onResult?.(-1, null)
       }
     }
@@ -141,7 +159,14 @@ export class PreviewClient {
 
     this.onResult = onResult
     const msg: ToWorker = { type: 'compute', req }
-    worker.postMessage(msg)
+    // The grid messages above were already posted; FIFO keeps them ahead of
+    // this compute even when it waits out the one in flight.
+    if (this.inFlight) {
+      this.pending = msg
+    } else {
+      this.inFlight = true
+      worker.postMessage(msg)
+    }
     return true
   }
 }

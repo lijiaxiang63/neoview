@@ -225,18 +225,22 @@ export class Raycaster {
     return true
   }
 
+  // Every setter records its payload BEFORE the lost-context guard: data
+  // arriving during a loss must win on restore, or handleRestored would
+  // resurrect the pre-loss state the caller just replaced.
+
   setVolume(
     data: Uint16Array,
     dims: [number, number, number],
     spacing: [number, number, number]
   ): void {
-    if (!this.gl || this.unsupportedReason || this.contextLost) return
+    if (!this.gl || this.unsupportedReason) return
     this.dims = [...dims]
     this.halfExt = halfExtents(dims, spacing)
     this.lastData = data
     const maxDim = Math.max(dims[0], dims[1], dims[2])
     this.fullSteps = Math.min(512, Math.max(128, Math.ceil(1.5 * maxDim)))
-    this.uploadTexture(data, this.dims)
+    if (!this.contextLost) this.uploadTexture(data, this.dims)
     // A new volume means a new grid; the old label texture no longer aligns.
     this.setLabelVolume(null)
   }
@@ -246,8 +250,9 @@ export class Raycaster {
    * texture (built with the same plan); null removes the region layer.
    */
   setLabelVolume(data: Uint8Array | null): void {
-    if (!this.gl || this.unsupportedReason || this.contextLost) return
+    if (!this.gl || this.unsupportedReason) return
     this.lastLabData = data
+    if (this.contextLost) return
     if (!data) {
       if (this.labTex) {
         this.gl.deleteTexture(this.labTex)
@@ -260,8 +265,9 @@ export class Raycaster {
 
   /** 256-entry RGBA palette (index 0 unused); alpha 0 hides a region. */
   setLabelLut(rgba: Uint8Array): void {
-    if (!this.gl || this.unsupportedReason || this.contextLost) return
+    if (!this.gl || this.unsupportedReason) return
     this.lastLabLut = rgba
+    if (this.contextLost) return
     this.uploadLabelLut(rgba)
   }
 
@@ -271,9 +277,10 @@ export class Raycaster {
 
   /** Replace texel data for the current dims (4D frame change). */
   setFrameData(data: Uint16Array): void {
-    if (!this.gl || !this.tex || !this.dims || this.unsupportedReason || this.contextLost) return
-    const gl = this.gl
+    if (!this.gl || !this.dims || this.unsupportedReason) return
     this.lastData = data
+    if (this.contextLost || !this.tex) return
+    const gl = this.gl
     gl.activeTexture(gl.TEXTURE0)
     gl.bindTexture(gl.TEXTURE_3D, this.tex)
     gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1)

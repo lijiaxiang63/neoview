@@ -10,6 +10,7 @@ import {
   splitDisplayName,
   type FolderEntry
 } from '../src/renderer/src/files/folderList'
+import { exportBaseName } from '../src/renderer/src/segmentation/exportRegions'
 
 function entry(name: string, relDir = ''): FolderEntry {
   return { name, relDir, path: `/root/${relDir ? relDir + '/' : ''}${name}` }
@@ -132,6 +133,15 @@ describe('splitDisplayName', () => {
 
   it('leaves other names whole', () => {
     expect(splitDisplayName('notes.txt')).toEqual({ stem: 'notes.txt', ext: '' })
+  })
+
+  it('derives the same stem as exportBaseName for every name shape', () => {
+    // The folder panel folds an export into its source row only when the
+    // two derivations agree; "x.gz.nii" is the shape where a chained
+    // double-strip used to diverge and mark the wrong row.
+    for (const name of ['v.nii', 'v.nii.gz', 'v.gz', 'x.gz.nii', 'a.tar.gz', 'noext']) {
+      expect(exportBaseName(name)).toBe(splitDisplayName(name).stem)
+    }
   })
 })
 
