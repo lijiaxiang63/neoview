@@ -726,7 +726,14 @@ export const useStore = create<AppState>()((set, get) => {
 
     // A fresh folder starts with an empty filter — a leftover query would
     // silently hide the new list.
-    setFolder: (f) => set({ folder: f, filePanelOpen: true, fileFilter: '' }),
+    setFolder: (f) =>
+      set((s) => ({
+        folder: f,
+        filePanelOpen: true,
+        // A streaming scan calls this again with its final list; a filter
+        // typed meanwhile must survive. Only a different folder resets it.
+        fileFilter: s.folder && s.folder.root === f.root ? s.fileFilter : ''
+      })),
 
     appendFolderFiles: (root, files) =>
       set((s) => {

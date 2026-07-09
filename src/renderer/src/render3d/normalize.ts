@@ -89,19 +89,47 @@ export function buildLabelTexData(
   indexOf: Uint8Array,
   out?: Uint8Array
 ): Uint8Array {
-  const [nx, ny] = [dims[0], dims[1]]
+  const [nx, ny, nz] = dims
   const [tx, ty, tz] = plan.texDims
   const [sx, sy, sz] = plan.stride
   const count = tx * ty * tz
   const dst = out && out.length === count ? out : new Uint8Array(count)
+  if (sx === 1 && sy === 1 && sz === 1) {
+    // Unit stride (the common, under-budget case): texel = voxel.
+    for (let i = 0; i < count; i++) {
+      const id = labelMap[i]
+      dst[i] = id < indexOf.length ? indexOf[id] : 0
+    }
+    return dst
+  }
+  // Strided: each texel covers an sx×sy×sz source block (edge-clipped). A
+  // point sample would drop any region thinner than the stride from the 3D
+  // view, so scan the block for a voxel with a visible palette index. Total
+  // work is one pass over the label map, the same as the unit-stride case.
   let p = 0
   for (let k = 0; k < tz; k++) {
-    const kOff = k * sz * nx * ny
+    const z0 = k * sz
+    const z1 = Math.min(z0 + sz, nz)
     for (let j = 0; j < ty; j++) {
-      let idx = kOff + j * sy * nx
-      for (let i = 0; i < tx; i++, idx += sx, p++) {
-        const id = labelMap[idx]
-        dst[p] = id < indexOf.length ? indexOf[id] : 0
+      const y0 = j * sy
+      const y1 = Math.min(y0 + sy, ny)
+      for (let i = 0; i < tx; i++, p++) {
+        const x0 = i * sx
+        const x1 = Math.min(x0 + sx, nx)
+        let v = 0
+        scan: for (let z = z0; z < z1; z++) {
+          for (let y = y0; y < y1; y++) {
+            let idx = (z * ny + y) * nx + x0
+            for (let x = x0; x < x1; x++, idx++) {
+              const id = labelMap[idx]
+              if (id !== 0 && id < indexOf.length && indexOf[id] !== 0) {
+                v = indexOf[id]
+                break scan
+              }
+            }
+          }
+        }
+        dst[p] = v
       }
     }
   }

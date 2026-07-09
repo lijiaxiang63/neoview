@@ -127,6 +127,17 @@ describe('opened folder', () => {
     expect(useStore.getState().folder).toBeNull()
   })
 
+  it('a filter typed during a streaming scan survives the final list', () => {
+    useStore.getState().setFolder(folder)
+    useStore.getState().setFileFilter('b2')
+    // The scan's final result re-sets the same root: the filter must stay.
+    useStore.getState().setFolder({ ...folder, truncated: true })
+    expect(useStore.getState().fileFilter).toBe('b2')
+    // A different folder resets it.
+    useStore.getState().setFolder({ ...folder, root: '/other' })
+    expect(useStore.getState().fileFilter).toBe('')
+  })
+
   it('appendFolderFiles merges sorted, dedups, and ignores other roots', () => {
     useStore.getState().setFolder(folder)
     useStore.getState().appendFolderFiles('/data/set', [
