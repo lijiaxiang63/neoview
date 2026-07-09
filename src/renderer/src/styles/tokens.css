@@ -38,7 +38,10 @@
     --bg-1: #f4f5f7;
     --bg-2: #ffffff;
     --bg-3: #e6e9ef;
-    --bg-canvas: #cbd0d8;
+    /* --bg-canvas stays dark (inherited): it sits behind intensity data,
+       which renders light-on-dark — slice pixels window to black and the
+       raycaster composites toward white over a transparent clear, so a
+       light surface would seam the letterbox and wash out MIP entirely. */
     --border: #d6dae1;
     --border-strong: #c1c8d2;
     --text-0: #1a1e25;
