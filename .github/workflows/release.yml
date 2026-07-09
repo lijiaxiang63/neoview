@@ -79,7 +79,6 @@ jobs:
           retention-days: 7
           path: |
             dist/*.dmg
-            dist/*.zip
             dist/*.exe
             dist/*.AppImage
             dist/*.deb
@@ -131,7 +130,6 @@ jobs:
             ---
           files: |
             dist/*.dmg
-            dist/*.zip
             dist/*.exe
             dist/*.AppImage
             dist/*.deb
