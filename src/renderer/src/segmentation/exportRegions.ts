@@ -27,7 +27,9 @@ export function saveExportSettings(s: ExportSettings): void {
   localStorage.setItem(DIR_KEY, s.dir)
 }
 
-/** Source name without its volume extension, for deriving output names. */
+/** Source name without its volume extension, for deriving output names.
+ * Keep in step with folderList.ts#splitDisplayName — the folder panel folds
+ * a product into its source row only when the two derive the same stem. */
 export function exportBaseName(volumeName: string): string {
   return volumeName.replace(/\.nii(\.gz)?$/i, '').replace(/\.gz$/i, '')
 }
