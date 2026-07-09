@@ -32,19 +32,30 @@ export function NumberField({
 }: Props): JSX.Element {
   // null = idle (render the formatted prop); a string = the user is editing.
   const [text, setText] = useState<string | null>(null)
+  // Event-time copy of `text`. blur() inside the Enter/Escape handlers fires
+  // onBlur synchronously, before React applies their setText — a commit
+  // closing over `text` would see the pre-keystroke value (committing what
+  // Escape just reverted). The ref is what commit reads; clearing it also
+  // makes commit one-shot, so Enter's commit-then-blur can't fire twice.
+  const editText = useRef<string | null>(null)
   const inputRef = useRef<HTMLInputElement>(null)
 
+  const setEditText = (t: string | null): void => {
+    editText.current = t
+    setText(t)
+  }
+
   const commit = (): void => {
-    if (text !== null) {
-      const v = Number(text.trim())
-      if (text.trim() !== '' && Number.isFinite(v)) {
-        let out = v
-        if (min !== undefined) out = Math.max(min, out)
-        if (max !== undefined) out = Math.min(max, out)
-        if (out !== value) onCommit(out)
-      }
+    const t = editText.current
+    setEditText(null)
+    if (t === null) return
+    const v = Number(t.trim())
+    if (t.trim() !== '' && Number.isFinite(v)) {
+      let out = v
+      if (min !== undefined) out = Math.max(min, out)
+      if (max !== undefined) out = Math.min(max, out)
+      if (out !== value) onCommit(out)
     }
-    setText(null)
   }
 
   return (
@@ -55,21 +66,21 @@ export function NumberField({
       inputMode="decimal"
       value={text ?? format(value)}
       onFocus={(e) => {
-        setText(String(value))
+        setEditText(String(value))
         // Select-all so typing replaces instead of appending.
         requestAnimationFrame(() => e.target.select())
       }}
-      onChange={(e) => setText(e.target.value)}
+      onChange={(e) => setEditText(e.target.value)}
       onBlur={commit}
       onKeyDown={(e) => {
         if (e.key === 'Enter') {
+          // blur is the one committer; it reads the up-to-date ref.
           e.preventDefault()
-          commit()
           inputRef.current?.blur()
         } else if (e.key === 'Escape') {
           e.preventDefault()
           e.stopPropagation()
-          setText(null)
+          setEditText(null)
           inputRef.current?.blur()
         }
       }}
