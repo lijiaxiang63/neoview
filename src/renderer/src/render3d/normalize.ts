@@ -72,7 +72,15 @@ export function planTexture(
   return {
     stride,
     texDims,
-    texSpacing: [spacing[0] * stride[0], spacing[1] * stride[1], spacing[2] * stride[2]]
+    // Derived from the ORIGINAL physical extent, not spacing*stride: when an
+    // axis is not divisible by its stride, the rounded-up texel count would
+    // otherwise pad the rendered box by up to stride-1 voxels and misalign
+    // the 3D view against the (full-resolution) slice views.
+    texSpacing: [
+      (dims[0] * spacing[0]) / texDims[0],
+      (dims[1] * spacing[1]) / texDims[1],
+      (dims[2] * spacing[2]) / texDims[2]
+    ]
   }
 }
 

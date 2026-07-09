@@ -112,6 +112,17 @@ describe('planTexture', () => {
     const plan = planTexture([64, 64, 64], [1, 1, 1], 64 * 64 * 16)
     expect(plan.texDims[0] * plan.texDims[1] * plan.texDims[2]).toBeLessThanOrEqual(64 * 64 * 16)
   })
+
+  it('preserves the exact physical extent when an axis is not stride-divisible', () => {
+    // 513 @ stride 2 rounds up to 257 texels; spacing*stride would render
+    // 514 voxels of physical size while the slice views show 513.
+    const plan = planTexture([513, 4, 4], [1, 1, 1], 257 * 4 * 4)
+    expect(plan.stride).toEqual([2, 1, 1])
+    expect(plan.texDims).toEqual([257, 4, 4])
+    for (let a = 0; a < 3; a++) {
+      expect(plan.texDims[a] * plan.texSpacing[a]).toBe([513, 4, 4][a])
+    }
+  })
 })
 
 describe('floatToHalf', () => {
