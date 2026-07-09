@@ -1186,7 +1186,11 @@ export const useStore = create<AppState>()((set, get) => {
       // mask union, so any of these edits makes a prior export stale.
       set((s) => ({
         regions: s.regions.map((r) => (r.id === id ? { ...r, ...patch } : r)),
-        segDirty: true
+        segDirty: true,
+        // An edit forks history like paint/commit/delete: a surviving redo
+        // could resurrect this region from a snapshot predating the change,
+        // silently dropping it.
+        redoStack: []
       })),
 
     deleteRegion: (id) => {

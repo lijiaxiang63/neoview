@@ -263,6 +263,18 @@ describe('regions', () => {
     expect(useStore.getState().segDirty).toBe(true)
   })
 
+  it('metadata edits clear the redo stack (a redo would drop them)', () => {
+    seedRegion()
+    useStore.getState().deleteRegion(1)
+    useStore.getState().undo()
+    expect(useStore.getState().redoStack).toHaveLength(1)
+    useStore.getState().updateRegion(1, { name: 'renamed' })
+    expect(useStore.getState().redoStack).toEqual([])
+    // Redo is now a no-op; the rename survives.
+    useStore.getState().redo()
+    expect(useStore.getState().regions[0].name).toBe('renamed')
+  })
+
   it('setFrame recomputes region stats for the new frame', () => {
     seedRegion()
     useStore.getState().setFrame(1)
