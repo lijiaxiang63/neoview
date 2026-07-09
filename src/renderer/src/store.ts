@@ -620,7 +620,8 @@ export const useStore = create<AppState>()((set, get) => {
     // The snapshot decides which regions exist; metadata (name/color/
     // visibility) is deliberately outside history, so a region that still
     // exists keeps its CURRENT fields — only resurrected regions come from
-    // the snapshot wholesale. Stats are recomputed below either way.
+    // the snapshot wholesale (safe because updateRegion patches metadata
+    // edits into retained snapshots). Stats are recomputed below either way.
     const snapshot = entry.regions ? entry.regions[dir === 'undo' ? 'before' : 'after'] : s.regions
     const list = snapshot.map((r) => s.regions.find((c) => c.id === r.id) ?? r)
     const regions = labelMap
@@ -1213,14 +1214,31 @@ export const useStore = create<AppState>()((set, get) => {
     updateRegion: (id, patch) =>
       // Name/color feed the exported color table and visibility feeds the
       // mask union, so any of these edits makes a prior export stale.
-      set((s) => ({
-        regions: s.regions.map((r) => (r.id === id ? { ...r, ...patch } : r)),
-        segDirty: true,
-        // An edit forks history like paint/commit/delete: a surviving redo
-        // could resurrect this region from a snapshot predating the change,
-        // silently dropping it.
-        redoStack: []
-      })),
+      set((s) => {
+        // Metadata lives outside history, so entry snapshots must never win
+        // over it: propagate the patch into every retained snapshot that
+        // contains this region, or an undo of this region's creation followed
+        // by redo would resurrect it from a pre-edit snapshot.
+        const patchList = (list: Region[]): Region[] =>
+          list.some((r) => r.id === id)
+            ? list.map((r) => (r.id === id ? { ...r, ...patch } : r))
+            : list
+        const patchEntry = (e: HistoryEntry<SegSnapshot>): HistoryEntry<SegSnapshot> =>
+          e.regions
+            ? {
+                ...e,
+                regions: { before: patchList(e.regions.before), after: patchList(e.regions.after) }
+              }
+            : e
+        return {
+          regions: patchList(s.regions),
+          segDirty: true,
+          undoStack: s.undoStack.map(patchEntry),
+          // An edit forks history like paint/commit/delete: a surviving redo
+          // could re-delete or resurrect regions the user no longer expects.
+          redoStack: []
+        }
+      }),
 
     deleteRegion: (id) => {
       // Same in-flight-gesture guard as commitPreview/undo: a delete from a

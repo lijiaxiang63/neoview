@@ -275,6 +275,36 @@ describe('regions', () => {
     expect(useStore.getState().regions[0].name).toBe('renamed')
   })
 
+  it('metadata edits survive undo+redo of the region-creating entry', () => {
+    seedRegion()
+    // Simulate the commit's creation entry: undo removes region 1, redo
+    // resurrects it from the entry's `after` snapshot.
+    const labelMap = useStore.getState().labelMap!
+    useStore.setState({
+      undoStack: [
+        {
+          patch: {
+            indices: new Uint32Array([0, 1]),
+            before: new Uint16Array([0, 0]),
+            after: new Uint16Array([1, 1])
+          },
+          regions: { before: [], after: useStore.getState().regions },
+          nextId: { before: 1, after: 2 }
+        }
+      ]
+    })
+    useStore.getState().updateRegion(1, { name: 'renamed', color: '#00ff00' })
+    useStore.getState().undo()
+    expect(useStore.getState().regions).toEqual([])
+    expect(labelMap[0]).toBe(0)
+    useStore.getState().redo()
+    // The resurrected region carries the post-commit edits, not the
+    // metadata frozen into the snapshot at commit time.
+    const region = useStore.getState().regions[0]
+    expect(region.name).toBe('renamed')
+    expect(region.color).toBe('#00ff00')
+  })
+
   it('setFrame recomputes region stats for the new frame', () => {
     seedRegion()
     useStore.getState().setFrame(1)
