@@ -37,6 +37,18 @@ function ipcErrorMessage(err: unknown): string {
   return raw.replace(/^Error invoking remote method '[^']+': (Error: )?/, '')
 }
 
+// Input types with an editable text buffer (and so a native undo of their
+// own). Range/color/checkbox inputs focus on click but hold no text, so
+// undo must keep reaching region history while one of them has focus.
+const TEXT_INPUT_TYPES = new Set(['text', 'search', 'url', 'tel', 'email', 'password', 'number'])
+
+/** True when the element edits text and therefore owns the undo keys. */
+function isTextEntry(el: Element | null): boolean {
+  if (el instanceof HTMLTextAreaElement) return true
+  if (el instanceof HTMLInputElement) return TEXT_INPUT_TYPES.has(el.type)
+  return el instanceof HTMLElement && el.isContentEditable
+}
+
 // All load/scan orchestration — who may commit, who settles the loading
 // flag, navigation queueing, prefetching, scan tokens and invalidation —
 // lives in the coordinator, a pure module whose interleavings are
@@ -215,21 +227,17 @@ export default function App(): JSX.Element {
     )
     // macOS routes Cmd+Z / Shift+Cmd+Z through the Edit menu; a focused text
     // field keeps its own undo, everything else drives region-edit history.
-    const isTextTarget = (): boolean => {
-      const el = document.activeElement
-      return el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement
-    }
     // Menu accelerators arrive over IPC, bypassing the shortcuts dialog's
     // keydown capture — the modal must also veto them here, or Cmd+Z would
     // mutate region history invisibly behind it.
     const offUndo = window.neoview.onMenuUndo(() => {
       if (useStore.getState().shortcutsOpen) return
-      if (isTextTarget()) document.execCommand('undo')
+      if (isTextEntry(document.activeElement)) document.execCommand('undo')
       else useStore.getState().undo()
     })
     const offRedo = window.neoview.onMenuRedo(() => {
       if (useStore.getState().shortcutsOpen) return
-      if (isTextTarget()) document.execCommand('redo')
+      if (isTextEntry(document.activeElement)) document.execCommand('redo')
       else useStore.getState().redo()
     })
     const offScan = window.neoview.onScanFolderProgress((token, root, files) =>
@@ -264,8 +272,15 @@ export default function App(): JSX.Element {
       // Controls that already consumed the key (e.g. the range-slider thumbs,
       // which are divs the tag guard below cannot catch) must win.
       if (e.defaultPrevented) return
-      const tag = (e.target as HTMLElement | null)?.tagName
-      if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return
+      const target = e.target as HTMLElement | null
+      // Text-editing fields keep every key (their own undo included). Other
+      // form controls keep navigation keys but must not swallow the undo
+      // combo — a just-adjusted slider or select holds focus, and Ctrl+Z
+      // there still means region history.
+      if (isTextEntry(target)) return
+      const undoCombo = (e.metaKey || e.ctrlKey) && !e.altKey && e.key.toLowerCase() === 'z'
+      const tag = target?.tagName
+      if ((tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') && !undoCombo) return
       const st = useStore.getState()
       if (e.key === 'Escape' && st.segBox) {
         st.cancelSeg()
@@ -281,9 +296,9 @@ export default function App(): JSX.Element {
         st.setBrushRadius(st.brushRadius + 1)
       } else if (e.key === '?') {
         st.setShortcutsOpen(true)
-      } else if ((e.metaKey || e.ctrlKey) && !e.altKey && e.key.toLowerCase() === 'z') {
+      } else if (undoCombo) {
         // On macOS the Edit menu's accelerators own these keys; this branch
-        // serves Windows/Linux (text fields bail out at the tag guard above).
+        // serves Windows/Linux (text fields bailed out at isTextEntry above).
         if (e.shiftKey) st.redo()
         else st.undo()
       } else if ((e.key === 'ArrowDown' || e.key === 'ArrowUp') && st.folder) {
