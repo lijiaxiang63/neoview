@@ -46,10 +46,11 @@ import {
   pushEntry,
   type HistoryEntry
 } from './segmentation/history'
+import type { RenderMode } from './render3d/types'
 
 export type Preset = 'auto' | 'full' | 'fixed-0-80' | 'suggested' | 'custom'
 
-export type RenderMode = 'mip' | 'composite'
+export type { RenderMode } from './render3d/types'
 
 /** Slice-view colormap for the base volume ('gray' = the fused fast path). */
 export type BaseColormap = 'gray' | 'warm' | 'cool'

@@ -1,9 +1,7 @@
 import { FRAG_SRC, VERT_SRC } from './shaders'
 import { halfExtents } from './normalize'
 import type { CameraBasis } from './camera'
-import type { RenderMode } from '../store'
-
-export type Quality = 'interactive' | 'full'
+import type { Quality, RenderMode } from './types'
 
 interface Uniforms {
   eye: WebGLUniformLocation | null
@@ -50,14 +48,9 @@ export class Raycaster {
   private density = 0.35
   private fullSteps = 256
 
-  /** Retained copy of the last uploaded frame, for context restoration. */
-  private lastData: Uint16Array | null = null
-
   // Region overlay: palette-index 3D texture + 256-entry color LUT.
   private labTex: WebGLTexture | null = null
   private labLutTex: WebGLTexture | null = null
-  private lastLabData: Uint8Array | null = null
-  private lastLabLut: Uint8Array | null = null
   private labAlpha = 0.5
 
   unsupportedReason: string | null = null
@@ -97,12 +90,11 @@ export class Raycaster {
     this.tex = null
     this.labTex = null
     this.labLutTex = null
-    if (!this.setup()) return
-    if (this.lastData && this.dims) {
-      this.uploadTexture(this.lastData, this.dims)
-    }
-    if (this.lastLabData) this.uploadLabelTexture(this.lastLabData)
-    if (this.lastLabLut) this.uploadLabelLut(this.lastLabLut)
+    this.program = null
+    this.vao = null
+    this.uni = null
+    this.unsupportedReason = null
+    this.setup()
     this.onContextRestored?.()
   }
 
@@ -225,10 +217,6 @@ export class Raycaster {
     return true
   }
 
-  // Every setter records its payload BEFORE the lost-context guard: data
-  // arriving during a loss must win on restore, or handleRestored would
-  // resurrect the pre-loss state the caller just replaced.
-
   setVolume(
     data: Uint16Array,
     dims: [number, number, number],
@@ -237,7 +225,6 @@ export class Raycaster {
     if (!this.gl || this.unsupportedReason) return
     this.dims = [...dims]
     this.halfExt = halfExtents(dims, spacing)
-    this.lastData = data
     const maxDim = Math.max(dims[0], dims[1], dims[2])
     this.fullSteps = Math.min(512, Math.max(128, Math.ceil(1.5 * maxDim)))
     if (!this.contextLost) this.uploadTexture(data, this.dims)
@@ -251,7 +238,6 @@ export class Raycaster {
    */
   setLabelVolume(data: Uint8Array | null): void {
     if (!this.gl || this.unsupportedReason) return
-    this.lastLabData = data
     if (this.contextLost) return
     if (!data) {
       if (this.labTex) {
@@ -266,7 +252,6 @@ export class Raycaster {
   /** 256-entry RGBA palette (index 0 unused); alpha 0 hides a region. */
   setLabelLut(rgba: Uint8Array): void {
     if (!this.gl || this.unsupportedReason) return
-    this.lastLabLut = rgba
     if (this.contextLost) return
     this.uploadLabelLut(rgba)
   }
@@ -278,7 +263,6 @@ export class Raycaster {
   /** Replace texel data for the current dims (4D frame change). */
   setFrameData(data: Uint16Array): void {
     if (!this.gl || !this.dims || this.unsupportedReason) return
-    this.lastData = data
     if (this.contextLost || !this.tex) return
     const gl = this.gl
     gl.activeTexture(gl.TEXTURE0)
@@ -391,8 +375,5 @@ export class Raycaster {
     if (this.program) gl.deleteProgram(this.program)
     if (this.vao) gl.deleteVertexArray(this.vao)
     this.gl = null
-    this.lastData = null
-    this.lastLabData = null
-    this.lastLabLut = null
   }
 }
