@@ -8,7 +8,7 @@ import {
   nativeTheme,
   systemPreferences
 } from 'electron'
-import { join, resolve, sep } from 'path'
+import { join, resolve } from 'path'
 import { promises as fs } from 'fs'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import { autoCheckEnabled, checkForUpdates, initUpdater, setAutoCheck } from './update'
@@ -19,6 +19,14 @@ import {
   removeRecent,
   serializeRecentPayload
 } from './recentFiles'
+import type { FilePanelState } from '../shared/files'
+import { FileAccessAuthorizer } from './files/access'
+import { createFileDialogs } from './files/dialogs'
+import { createExportService } from './files/exports'
+import { registerFileIpc } from './files/ipc'
+import { isVolumeFileName } from './files/names'
+import { createFileReader } from './files/reader'
+import { createFolderScanner } from './files/scanner'
 import icon from '../../resources/icon.png?asset'
 import iconLight from '../../resources/icon-light.png?asset'
 // Sample data shipped with the app so a fresh install has something to show
@@ -29,8 +37,6 @@ import builtinOverlay from '../../resources/builtin-overlay.nii.gz?asset'
 // The renderer styles both a dark and a light theme (prefers-color-scheme),
 // so the native chrome (title bar, menus, dialogs) follows the OS setting.
 nativeTheme.themeSource = 'system'
-
-const MAX_FILE_BYTES = 2 * 1024 ** 3
 
 // Crash forensics: a dead renderer or GPU process otherwise leaves only a
 // blank, unresponsive window with no trace of why. Every incident is
@@ -52,211 +58,21 @@ app.on('child-process-gone', (_e, details) => {
   logIncident('child-process-gone', details)
 })
 
-interface OpenedFile {
-  name: string
-  path: string
-  bytes: ArrayBuffer
-}
-
-async function readVolumeFile(path: string): Promise<OpenedFile> {
-  const stat = await fs.stat(path)
-  if (stat.size > MAX_FILE_BYTES) {
-    throw new Error('File is larger than 2 GB, which is not supported.')
-  }
-  const buf = await fs.readFile(path)
-  const bytes = buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength)
-  const name = path.split(/[\\/]/).pop() ?? path
-  return { name, path, bytes }
-}
-
-interface FolderEntry {
-  name: string
-  path: string
-  /** Directory relative to the scanned root, '/'-joined; '' for the root itself. */
-  relDir: string
-}
-
-interface FolderScan {
-  root: string
-  files: FolderEntry[]
-  truncated: boolean
-}
-
-const SCAN_DEPTH_MAX = 8
-const SCAN_FILES_MAX = 2000
-// Directory reads run through a small pool: on slow (external) disks the
-// per-readdir latency dominates, and overlapping reads roughly halves the
-// scan time; beyond ~8 concurrent reads the disk itself is the bottleneck.
-const SCAN_CONCURRENCY = 16
-const SCAN_BATCH_MS = 200
-
-function isVolumeName(name: string): boolean {
-  const n = name.toLowerCase()
-  // Plain .gz is accepted to match the open dialog's filter — the loader
-  // detects gzip by signature, so the inner payload decides validity.
-  return n.endsWith('.nii') || n.endsWith('.gz')
-}
-
-/** Name shaped like a region-export product ("<stem>.regions.*" / "<stem>.mask.*",
- * '-1'… collision suffixes included). Keep in step with the renderer's
- * folderList.ts#regionExportSource, which folds these into their source rows. */
-function isRegionExportName(name: string): boolean {
-  return /\.(regions|mask)(-\d+)?\.nii(\.gz)?$/i.test(name)
-}
-
-/** onBatch streams newly found files every SCAN_BATCH_MS (first find flushes
- * immediately), so the caller can show results while the scan runs. */
-async function scanFolder(
-  root: string,
-  onBatch?: (files: FolderEntry[]) => void
-): Promise<FolderScan> {
-  const files: FolderEntry[] = []
-  let sent = 0
-  let lastFlush = 0
-  const maybeFlush = (): void => {
-    if (!onBatch || sent >= files.length || Date.now() - lastFlush < SCAN_BATCH_MS) return
-    onBatch(files.slice(sent))
-    sent = files.length
-    lastFlush = Date.now()
-  }
-  // `truncated` reports that entries were left out; `stopped` additionally
-  // aborts the walk. They part ways for region-export products (below).
-  let truncated = false
-  let stopped = false
-  // The cap is budgeted per kind: the renderer folds region-export products
-  // into their source rows, so products must not eat the plain files' budget
-  // (a folder of 1500 volumes + 1500 exports would otherwise truncate at
-  // 2000 raw entries and display only ~500 volumes). Products past their own
-  // budget are dropped without stopping the scan — every real volume is
-  // still found — but the drop is still REPORTED as truncation: a dropped
-  // product may be a source-less one the renderer would have shown as a
-  // plain row, so the list can be incomplete and the panel must say so.
-  let plainCount = 0
-  let productCount = 0
-  const pending: Array<{ dir: string; relDir: string; depth: number }> = [
-    { dir: root, relDir: '', depth: 0 }
-  ]
-
-  const processDir = async (item: {
-    dir: string
-    relDir: string
-    depth: number
-  }): Promise<void> => {
-    // An unreadable subfolder should not kill the whole scan.
-    const entries = await fs.readdir(item.dir, { withFileTypes: true }).catch(() => [])
-    for (const ent of entries) {
-      if (stopped) return
-      if (ent.name.startsWith('.') || ent.isSymbolicLink()) continue
-      if (ent.isDirectory()) {
-        if (item.depth < SCAN_DEPTH_MAX) {
-          pending.push({
-            dir: join(item.dir, ent.name),
-            relDir: item.relDir ? `${item.relDir}/${ent.name}` : ent.name,
-            depth: item.depth + 1
-          })
-        }
-      } else if (ent.isFile() && isVolumeName(ent.name)) {
-        if (isRegionExportName(ent.name)) {
-          if (productCount >= SCAN_FILES_MAX) {
-            truncated = true
-            continue
-          }
-          productCount++
-        } else {
-          if (plainCount >= SCAN_FILES_MAX) {
-            truncated = true
-            stopped = true
-            return
-          }
-          plainCount++
-        }
-        files.push({ name: ent.name, path: join(item.dir, ent.name), relDir: item.relDir })
-        maybeFlush()
-      }
-    }
-  }
-
-  await new Promise<void>((resolveDone) => {
-    let active = 0
-    const pump = (): void => {
-      if (stopped) pending.length = 0
-      // Resolve only once in-flight reads drain, so the result stops mutating.
-      if (pending.length === 0 && active === 0) {
-        resolveDone()
-        return
-      }
-      while (active < SCAN_CONCURRENCY && pending.length > 0) {
-        const item = pending.shift()
-        if (!item) break
-        active++
-        void processDir(item).finally(() => {
-          active--
-          pump()
-        })
-      }
-    }
-    pump()
-  })
-  return { root, files, truncated }
-}
-
-/** Roots the user has opened; 'read-file' only serves paths under one of them. */
-const scannedRoots = new Set<string>()
-
-interface ExportRequest {
-  /** Target directory; must already exist. */
-  dir: string
-  fileName: string
-  bytes: ArrayBuffer
-  /** Optional companion text file written next to the main one. */
-  sidecar: { fileName: string; text: string } | null
-}
-
-interface ExportResult {
-  path: string
-  sidecarPath: string | null
-}
-
-function splitExportName(fileName: string): { stem: string; ext: string } {
-  const m = /\.(nii\.gz|nii|gz|txt)$/i.exec(fileName)
-  if (!m) return { stem: fileName, ext: '' }
-  return { stem: fileName.slice(0, m.index), ext: m[0] }
-}
-
-/** First "<stem><suffix><ext>" that does not exist yet: '', '-1', '-2', … */
-async function uniquePath(dir: string, fileName: string): Promise<string> {
-  const { stem, ext } = splitExportName(fileName)
-  for (let n = 0; ; n++) {
-    const candidate = join(dir, n === 0 ? `${stem}${ext}` : `${stem}-${n}${ext}`)
-    try {
-      await fs.access(candidate)
-    } catch {
-      return candidate
-    }
-  }
-}
-
-async function writeExport(req: ExportRequest): Promise<ExportResult> {
-  const dir = req.dir
-  if (!(await fs.stat(dir).catch(() => null))?.isDirectory()) {
-    throw new Error(`Export folder does not exist: ${dir}`)
-  }
-  // Reject anything path-like so the renderer cannot escape the chosen folder.
-  if (/[\\/]/.test(req.fileName) || (req.sidecar && /[\\/]/.test(req.sidecar.fileName))) {
-    throw new Error('Invalid export file name.')
-  }
-  const path = await uniquePath(dir, req.fileName)
-  await fs.writeFile(path, Buffer.from(req.bytes))
-  let sidecarPath: string | null = null
-  if (req.sidecar) {
-    // Keep the sidecar's name in step with any collision suffix on the main file.
-    const chosenStem = splitExportName(path.split(/[\\/]/).pop() ?? '').stem
-    const sidecarExt = splitExportName(req.sidecar.fileName).ext || '.txt'
-    sidecarPath = await uniquePath(dir, `${chosenStem}${sidecarExt}`)
-    await fs.writeFile(sidecarPath, req.sidecar.text, 'utf8')
-  }
-  return { path, sidecarPath }
-}
+const fileReader = createFileReader({ stat: fs.stat, readFile: fs.readFile })
+const folderScanner = createFolderScanner({
+  readdir: (path) => fs.readdir(path, { withFileTypes: true })
+})
+const exportService = createExportService({
+  stat: fs.stat,
+  access: fs.access,
+  writeBytes: (path, bytes) => fs.writeFile(path, bytes),
+  writeText: (path, text) => fs.writeFile(path, text, 'utf8')
+})
+const fileAccess = new FileAccessAuthorizer({ realpath: fs.realpath })
+const fileDialogs = createFileDialogs(
+  { showOpenDialog: (window, options) => dialog.showOpenDialog(window, options) },
+  fileReader
+)
 
 const HOMEPAGE_URL = 'https://lijiaxiang63.github.io/neoview/'
 const REPO_URL = 'https://github.com/lijiaxiang63/neoview'
@@ -293,18 +109,6 @@ function saveRecentFiles(): void {
 // by re-applying the last state the renderer reported.
 let lastViewState = { fileList: true, sidePanel: true, folderOpen: false }
 
-/** Read a bundled sample file, labelling it with a fixed display name rather
- * than the asset's (possibly hashed) on-disk name. The path is left empty on
- * purpose: the asset lives inside the (often read-only) installed app bundle,
- * so it must not become the renderer's source path — otherwise the region
- * export flow would default to writing next to it. An empty path routes the
- * sample through the same "unknown source" handling as a pathless file. */
-async function readBuiltinFile(assetPath: string, name: string): Promise<OpenedFile> {
-  const buf = await fs.readFile(assetPath)
-  const bytes = buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength)
-  return { name, path: '', bytes }
-}
-
 /** Load a bundled sample into the window over `channel` ('file-opened' for the
  * base volume, 'overlay-opened' for a layer), reporting failures the same way
  * a picked file would. */
@@ -315,22 +119,11 @@ async function sendBuiltinFile(
   channel: 'file-opened' | 'overlay-opened'
 ): Promise<void> {
   try {
-    win.webContents.send(channel, await readBuiltinFile(assetPath, name))
+    // Bundled assets deliberately carry an empty path so exports ask for a folder.
+    win.webContents.send(channel, await fileReader.readNamed(assetPath, name))
   } catch (err) {
     win.webContents.send('file-open-error', (err as Error).message)
   }
-}
-
-async function pickAndReadFile(win: BrowserWindow): Promise<OpenedFile | null> {
-  const result = await dialog.showOpenDialog(win, {
-    properties: ['openFile'],
-    filters: [
-      { name: 'Volume files', extensions: ['nii', 'nii.gz', 'gz'] },
-      { name: 'All files', extensions: ['*'] }
-    ]
-  })
-  if (result.canceled || result.filePaths.length === 0) return null
-  return readVolumeFile(result.filePaths[0])
 }
 
 function buildMenu(getWindow: () => BrowserWindow | null): void {
@@ -360,7 +153,7 @@ function buildMenu(getWindow: () => BrowserWindow | null): void {
     const win = getWindow()
     if (!win) return
     try {
-      win.webContents.send('file-opened', await readVolumeFile(path))
+      win.webContents.send('file-opened', await fileReader.read(path))
     } catch (err) {
       win.webContents.send('file-open-error', (err as Error).message)
       recentFiles = removeRecent(recentFiles, path)
@@ -433,7 +226,7 @@ function buildMenu(getWindow: () => BrowserWindow | null): void {
             const win = getWindow()
             if (!win) return
             try {
-              const opened = await pickAndReadFile(win)
+              const opened = await fileDialogs.pickAndRead(win)
               if (opened) win.webContents.send('file-opened', opened)
             } catch (err) {
               win.webContents.send('file-open-error', (err as Error).message)
@@ -652,14 +445,14 @@ if (!gotLock) {
   let pendingOpenPath: string | null = null
   const openPathInto = async (win: BrowserWindow, path: string): Promise<void> => {
     try {
-      win.webContents.send('file-opened', await readVolumeFile(path))
+      win.webContents.send('file-opened', await fileReader.read(path))
     } catch (err) {
       win.webContents.send('file-open-error', (err as Error).message)
     }
   }
   app.on('open-file', (e, path) => {
     e.preventDefault()
-    if (!isVolumeName(path)) return
+    if (!isVolumeFileName(path)) return
     const win = BrowserWindow.getAllWindows()[0]
     if (win && !win.webContents.isLoading()) void openPathInto(win, path)
     else pendingOpenPath = path
@@ -670,7 +463,7 @@ if (!gotLock) {
   const volumePathFromArgv = (args: readonly string[], cwd: string): string | null => {
     for (let i = args.length - 1; i >= 0; i--) {
       const a = args[i]
-      if (!a.startsWith('-') && isVolumeName(a)) return resolve(cwd, a)
+      if (!a.startsWith('-') && isVolumeFileName(a)) return resolve(cwd, a)
     }
     return null
   }
@@ -707,155 +500,47 @@ if (!gotLock) {
       optimizer.watchWindowShortcuts(window)
     })
 
-    ipcMain.handle('open-dialog', async (event) => {
-      const win = BrowserWindow.fromWebContents(event.sender)
-      if (!win) return null
-      return pickAndReadFile(win)
-    })
+    // Load persisted recents before any renderer can report a newly opened
+    // path, so an in-flight read can never overwrite a later addition.
+    await loadRecentFiles()
 
-    // Scans stream found files to the requesting window while they run, so
-    // the list fills (and the first file can load) before the scan finishes.
-    // The scanned root is registered before scanning starts — 'read-file'
-    // serves streamed paths immediately — and stored as a real path so the
-    // symlink-resolved containment check below lines up.
-    // The caller's token rides along in every progress batch (opaque here),
-    // so the renderer can discard batches from a scan it has superseded.
-    const scanAndStream = async (
-      sender: Electron.WebContents,
-      path: string,
-      token: number
-    ): Promise<FolderScan> => {
-      scannedRoots.add(await fs.realpath(path))
-      return scanFolder(path, (batch) => {
-        if (!sender.isDestroyed()) {
-          sender.send('scan-folder-progress', { token, root: path, files: batch })
-        }
-      })
-    }
-
-    const asToken = (t: unknown): number => (typeof t === 'number' ? t : 0)
-
-    // Directory picker + scan in one main-owned flow: the renderer never
-    // supplies the path, so it cannot register arbitrary roots this way.
-    ipcMain.handle('open-folder-scan', async (event, token: number) => {
-      const win = BrowserWindow.fromWebContents(event.sender)
-      if (!win) return null
-      const result = await dialog.showOpenDialog(win, { properties: ['openDirectory'] })
-      if (result.canceled || result.filePaths.length === 0) return null
-      return scanAndStream(event.sender, result.filePaths[0], asToken(token))
-    })
-
-    // Read-only metadata probe (registers nothing): drops ask this before
-    // starting a scan, so a plain-file drop never touches scan state.
-    ipcMain.handle('is-directory', async (_event, path: string) => {
-      if (typeof path !== 'string' || !path) return false
-      const stat = await fs.stat(path).catch(() => null)
-      return stat?.isDirectory() ?? false
-    })
-
-    // Drag&drop path; null when it is not a directory (the caller falls back
-    // to single-file handling). The preload derives the path from the dropped
-    // File object itself, so page script cannot funnel arbitrary strings here.
-    ipcMain.handle('scan-folder', async (event, path: string, token: number) => {
-      if (typeof path !== 'string' || !path) return null
-      const stat = await fs.stat(path).catch(() => null)
-      if (!stat?.isDirectory()) return null
-      return scanAndStream(event.sender, path, asToken(token))
-    })
-
-    /** `p` is `root` or beneath it (roots may already end with the separator,
-     * e.g. '/' or a drive root — appending another would break the test). */
-    const isUnder = (root: string, p: string): boolean => {
-      if (p === root) return true
-      const prefix = root.endsWith(sep) ? root : root + sep
-      return p.startsWith(prefix)
-    }
-
-    /** Validate a renderer-supplied path for reading: volume extension and
-     * containment in a scanned root. Resolves symlinks before the containment
-     * check, so `<root>/link/...` cannot escape the opened folder (the roots
-     * are stored resolved too). The file is still read and reported under the
-     * requested path: the renderer matches it against the folder list by that
-     * identity. */
-    const authorizeReadPath = async (path: unknown): Promise<string> => {
-      if (typeof path !== 'string' || !isVolumeName(path)) {
-        throw new Error('Not a .nii or .nii.gz file.')
+    const disposeFileIpc = registerFileIpc({
+      ipc: ipcMain,
+      access: fileAccess,
+      dialogs: fileDialogs,
+      reader: fileReader,
+      scanner: folderScanner,
+      exporter: exportService,
+      windowFromSender: (sender) => BrowserWindow.fromWebContents(sender),
+      isDirectory: async (path) => (await fs.stat(path).catch(() => null))?.isDirectory() ?? false,
+      revealInFolder: (path) => shell.showItemInFolder(path),
+      noteFileOpened: (path) => {
+        recentFiles = addRecent(recentFiles, path)
+        app.addRecentDocument(path)
+        saveRecentFiles()
+        buildMenu(() => BrowserWindow.getAllWindows()[0] ?? null)
       }
-      const full = resolve(path)
-      const real = await fs.realpath(full).catch(() => null)
-      const inRoot = real !== null && [...scannedRoots].some((root) => isUnder(root, real))
-      if (!inRoot) throw new Error('File is outside the opened folder.')
-      return full
-    }
-
-    ipcMain.handle('read-file', async (_event, path: string) => {
-      return readVolumeFile(await authorizeReadPath(path))
     })
-
-    // Size-gated read for opportunistic prefetching: the size check runs on
-    // the stat, BEFORE any bytes are read or transferred, so warming a large
-    // neighbor can never allocate a huge buffer behind the user's back.
-    ipcMain.handle('read-file-limited', async (_event, path: string, maxBytes: number) => {
-      const full = await authorizeReadPath(path)
-      const limit =
-        typeof maxBytes === 'number' && Number.isFinite(maxBytes)
-          ? Math.min(Math.max(maxBytes, 0), MAX_FILE_BYTES)
-          : 0
-      const stat = await fs.stat(full)
-      if (stat.size > limit) return null
-      return readVolumeFile(full)
-    })
-
-    ipcMain.handle('export-file', async (_event, req: ExportRequest) => writeExport(req))
-
-    ipcMain.handle('pick-directory', async (event) => {
-      const win = BrowserWindow.fromWebContents(event.sender)
-      if (!win) return null
-      const result = await dialog.showOpenDialog(win, {
-        properties: ['openDirectory', 'createDirectory']
-      })
-      return result.canceled || result.filePaths.length === 0 ? null : result.filePaths[0]
-    })
-
-    ipcMain.on('reveal-in-folder', (_event, path: string) => {
-      if (typeof path === 'string' && path) shell.showItemInFolder(path)
-    })
+    app.once('will-quit', disposeFileIpc)
 
     // The renderer owns panel visibility; it mirrors every change here so the
     // View menu's checkboxes track it (including toggles it makes itself).
-    ipcMain.on(
-      'view-state',
-      (_event, state: { fileList: boolean; sidePanel: boolean; folderOpen: boolean }) => {
-        lastViewState = {
-          fileList: Boolean(state.fileList),
-          sidePanel: Boolean(state.sidePanel),
-          folderOpen: Boolean(state.folderOpen)
-        }
-        const menu = Menu.getApplicationMenu()
-        const fileList = menu?.getMenuItemById('view-file-list')
-        if (fileList) {
-          fileList.enabled = Boolean(state.folderOpen)
-          fileList.checked = Boolean(state.folderOpen && state.fileList)
-        }
-        const sidePanel = menu?.getMenuItemById('view-side-panel')
-        if (sidePanel) sidePanel.checked = Boolean(state.sidePanel)
+    ipcMain.on('view-state', (_event, state: FilePanelState) => {
+      lastViewState = {
+        fileList: Boolean(state.fileList),
+        sidePanel: Boolean(state.sidePanel),
+        folderOpen: Boolean(state.folderOpen)
       }
-    )
-
-    // The renderer reports every base volume committed with a real path;
-    // that single point feeds both our menu and the OS recent-documents list.
-    ipcMain.on('note-file-opened', (_event, path: string) => {
-      if (typeof path !== 'string' || !path || !isVolumeName(path)) return
-      recentFiles = addRecent(recentFiles, path)
-      app.addRecentDocument(path)
-      saveRecentFiles()
-      buildMenu(() => BrowserWindow.getAllWindows()[0] ?? null)
+      const menu = Menu.getApplicationMenu()
+      const fileList = menu?.getMenuItemById('view-file-list')
+      if (fileList) {
+        fileList.enabled = Boolean(state.folderOpen)
+        fileList.checked = Boolean(state.folderOpen && state.fileList)
+      }
+      const sidePanel = menu?.getMenuItemById('view-side-panel')
+      if (sidePanel) sidePanel.checked = Boolean(state.sidePanel)
     })
 
-    // Awaited BEFORE the window exists: every 'note-file-opened' (they only
-    // arrive after the renderer loads) then edits the already-loaded list,
-    // so the read can never overwrite an entry added while it was in flight.
-    await loadRecentFiles()
     createWindow()
     initUpdater(() => BrowserWindow.getAllWindows()[0] ?? null)
     buildMenu(() => BrowserWindow.getAllWindows()[0] ?? null)

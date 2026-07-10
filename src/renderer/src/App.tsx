@@ -99,7 +99,9 @@ const coordinator = new LoadCoordinator<Volume>(
     setPending: (p) => useStore.getState().setPendingFilePath(p),
     setFolder: (f) => useStore.getState().setFolder(f),
     appendFolder: (root, files) => useStore.getState().appendFolderFiles(root, files),
-    setScanning: (b) => useStore.getState().setFolderLoading(b)
+    setScanning: (b) => useStore.getState().setFolderLoading(b),
+    confirmScan: (token) => window.neoview.confirmFolderScan(token),
+    cancelScan: (token) => window.neoview.cancelFolderScan(token)
   },
   {
     // An export product stays visible only until its source volume streams in
@@ -111,8 +113,11 @@ const coordinator = new LoadCoordinator<Volume>(
 
 // The folder closing (e.g. an outside file replaced it) releases the cached
 // prefetch bytes instead of pinning them until the next navigation.
-useStore.subscribe((s) => {
-  if (s.folder === null) coordinator.releasePrefetch()
+useStore.subscribe((state, previous) => {
+  if (state.folder === null) coordinator.releasePrefetch()
+  if (previous.folder !== null && state.folder === null) {
+    window.neoview.releaseFolderAccess()
+  }
 })
 
 // Covers the picker as well as the scan, so a double-click on the button (or

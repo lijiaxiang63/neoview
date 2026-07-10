@@ -1,10 +1,6 @@
-/** One volume file found while scanning an opened folder. */
-export interface FolderEntry {
-  name: string
-  path: string
-  /** Directory relative to the scanned root, '/'-joined; '' for the root itself. */
-  relDir: string
-}
+import type { FolderEntry } from '../../../shared/files'
+
+export type { FolderEntry } from '../../../shared/files'
 
 export interface FileGroup {
   relDir: string

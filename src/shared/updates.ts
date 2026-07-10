@@ -1,4 +1,4 @@
-/** Update-flow payloads shared by main, preload, and renderer (types only). */
+/** Pure update-flow payload contracts crossing process boundaries. */
 
 export type UpdateStatus =
   | { kind: 'checking'; manual: boolean }
@@ -16,4 +16,9 @@ export type UpdateStatus =
 export interface UpdateProgress {
   received: number
   total: number
+}
+
+export interface UpdateInstallResult {
+  /** Whether the application is quitting to hand off to the installer. */
+  quits: boolean
 }

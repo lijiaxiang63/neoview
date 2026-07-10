@@ -1,4 +1,5 @@
 import { adjacentIndex, isUnderRoot, sortEntries, type FolderEntry } from './folderList'
+import type { FolderScan, OpenedFile } from '../../../shared/files'
 
 // All load/scan orchestration lives in this one pure module so its
 // interleavings are unit-testable (tests/loadCoordinator.test.ts): every
@@ -21,16 +22,9 @@ import { adjacentIndex, isUnderRoot, sortEntries, type FolderEntry } from './fol
 //    the flag can neither stick forever nor be cleared out from under a
 //    newer load.
 
-export interface OpenedBytes {
-  name: string
-  bytes: ArrayBuffer
-}
+export type OpenedBytes = Pick<OpenedFile, 'name' | 'bytes'>
 
-export interface ScanResult {
-  root: string
-  files: FolderEntry[]
-  truncated: boolean
-}
+export type ScanResult = FolderScan
 
 /** The slice of app state the coordinator's decisions depend on. */
 export interface CoordinatorSnapshot {
@@ -67,6 +61,9 @@ export interface CoordinatorEffects<V> {
   setFolder(folder: ScanResult): void
   appendFolder(root: string, files: FolderEntry[]): void
   setScanning(b: boolean): void
+  /** Confirm or cancel one main-side scan by its generation token. */
+  confirmScan(token: number): void
+  cancelScan(token: number): void
 }
 
 // Prefetches above this size are skipped entirely (never read, never
@@ -179,6 +176,12 @@ export class LoadCoordinator<V> {
    * (or the picker was canceled). The list fills from streamed batches while
    * the scan runs; the resolved scan is the authoritative final state. */
   async scanFolder(scan: (token: number) => Promise<ScanResult | null>): Promise<boolean> {
+    // A directory drop may replace a scan even though the picker flow itself
+    // prevents re-entry. Settle its main-side candidate before issuing the new
+    // request, preserving it only if this renderer already confirmed a batch.
+    if (this.fx.snapshot().scanning) {
+      this.fx.cancelScan(this.scanGen)
+    }
     const gen = ++this.scanGen
     this.autoLoadArmed = true
     this.fx.setScanning(true)
@@ -221,9 +224,11 @@ export class LoadCoordinator<V> {
    * batches and final result are ignored rather than fighting the user's
    * choice. The scan itself just runs out harmlessly. */
   abandonScan(): void {
+    const token = this.scanGen
     this.scanGen++
     this.autoLoadArmed = false
     this.fx.setScanning(false)
+    this.fx.cancelScan(token)
   }
 
   /** The folder closed (e.g. an outside file replaced it): release the
@@ -284,6 +289,7 @@ export class LoadCoordinator<V> {
   private confirmScan(): boolean {
     if (this.confirmedScanGen === this.scanGen) return false
     this.confirmedScanGen = this.scanGen
+    this.fx.confirmScan(this.scanGen)
     this.queued = null
     this.baseGen++
     // The invalidated parse can never publish now, so its loading flag is

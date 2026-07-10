@@ -67,6 +67,8 @@ interface Harness {
   reads: { path: string; d: Deferred<OpenedBytes> }[]
   cappedReads: { path: string; maxBytes: number; d: Deferred<OpenedBytes | null> }[]
   parses: { name: string; d: Deferred<string> }[]
+  scanConfirms: number[]
+  scanCancels: number[]
   setConfirm: (v: boolean) => void
 }
 
@@ -94,6 +96,8 @@ function makeHarness(
   const reads: Harness['reads'] = []
   const cappedReads: Harness['cappedReads'] = []
   const parses: Harness['parses'] = []
+  const scanConfirms: number[] = []
+  const scanCancels: number[] = []
   let confirmResult = opts.confirm ?? true
 
   const fx: CoordinatorEffects<string> = {
@@ -157,7 +161,9 @@ function makeHarness(
     },
     setScanning: (b) => {
       state.scanning = b
-    }
+    },
+    confirmScan: (token) => scanConfirms.push(token),
+    cancelScan: (token) => scanCancels.push(token)
   }
   const co = new LoadCoordinator<string>(fx, {
     prefetchMax: opts.prefetchMax,
@@ -171,6 +177,8 @@ function makeHarness(
     reads,
     cappedReads,
     parses,
+    scanConfirms,
+    scanCancels,
     setConfirm: (v) => {
       confirmResult = v
     }
@@ -413,11 +421,16 @@ describe('folder scans', () => {
 
   it('a scan that finds nothing still settles a superseded parse', async () => {
     const h = makeHarness()
+    let token = 0
     void h.co.openBase('slow.nii', bytes(), '/old/slow.nii')
     await tick()
     await expect(
-      h.co.scanFolder(() => Promise.resolve({ root: '/empty', files: [], truncated: false }))
+      h.co.scanFolder((value) => {
+        token = value
+        return Promise.resolve({ root: '/empty', files: [], truncated: false })
+      })
     ).resolves.toBe(true)
+    expect(h.scanConfirms).toEqual([token])
     expect(h.state.loading).toBe(false) // settled at final-result confirmation
     expect(h.state.folder?.root).toBe('/empty')
     h.parses[0].d.resolve('vol:slow')
@@ -460,6 +473,7 @@ describe('folder scans', () => {
     void h.co.openBase('x.nii', bytes(), '/x/x.nii')
     await tick()
     expect(h.state.scanning).toBe(false) // abandoned by the explicit open
+    expect(h.scanCancels).toEqual([token])
     h.co.onScanBatch(token, '/scan', [entry('/scan/a.nii')])
     expect(h.state.folder).toBeNull() // stale batch changed nothing
     h.parses[0].d.resolve('vol:x')
@@ -468,6 +482,34 @@ describe('folder scans', () => {
     scanDone.resolve({ root: '/scan', files: [entry('/scan/a.nii')], truncated: false })
     await expect(scanP).resolves.toBe(true) // handled — but changed nothing
     expect(h.state.folder).toBeNull()
+  })
+
+  it('accepting a batch confirms its token before an abandon cancels it', () => {
+    const h = makeHarness()
+    let token = 0
+    void h.co.scanFolder((value) => {
+      token = value
+      return new Promise<ScanResult | null>(() => {})
+    })
+    h.co.onScanBatch(token, '/scan', [entry('/scan/a.nii')])
+
+    h.co.abandonScan()
+
+    expect(h.scanConfirms).toEqual([token])
+    expect(h.scanCancels).toEqual([token])
+  })
+
+  it('starting a newer scan cancels an unconfirmed main-side candidate first', () => {
+    const h = makeHarness()
+    let firstToken = 0
+    void h.co.scanFolder((token) => {
+      firstToken = token
+      return new Promise<ScanResult | null>(() => {})
+    })
+
+    void h.co.scanFolder(() => new Promise<ScanResult | null>(() => {}))
+
+    expect(h.scanCancels).toEqual([firstToken])
   })
 
   it('a source under the scanned root defers replacement to the final result', async () => {

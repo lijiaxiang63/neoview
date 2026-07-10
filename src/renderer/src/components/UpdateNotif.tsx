@@ -1,5 +1,5 @@
 import { useEffect, useState, type JSX } from 'react'
-import type { UpdateProgress, UpdateStatus } from '../../../preload/updates'
+import type { UpdateProgress, UpdateStatus } from '../../../shared/updates'
 
 const RESULT_MS = 6000
 

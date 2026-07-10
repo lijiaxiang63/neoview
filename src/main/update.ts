@@ -6,7 +6,7 @@ import { once } from 'events'
 import { finished } from 'stream/promises'
 import { join } from 'path'
 import { findUpdate, type UpdateInfo } from './updateCheck'
-import type { UpdateStatus } from '../preload/updates'
+import type { UpdateInstallResult, UpdateProgress, UpdateStatus } from '../shared/updates'
 
 const RELEASE_API = 'https://api.github.com/repos/lijiaxiang63/neoview/releases/latest'
 const CHECK_TIMEOUT_MS = 15_000
@@ -142,7 +142,8 @@ async function downloadUpdate(win: BrowserWindow): Promise<string | null> {
       const now = Date.now()
       if (now - lastProgress >= PROGRESS_INTERVAL_MS) {
         lastProgress = now
-        if (!win.isDestroyed()) win.webContents.send('update-progress', { received, total })
+        const progress: UpdateProgress = { received, total }
+        if (!win.isDestroyed()) win.webContents.send('update-progress', progress)
       }
     }
     out.end()
@@ -150,7 +151,8 @@ async function downloadUpdate(win: BrowserWindow): Promise<string | null> {
     if (hash && `sha256:${hash.digest('hex')}` !== update.asset.digest) {
       throw new Error('Downloaded file failed its integrity check.')
     }
-    if (!win.isDestroyed()) win.webContents.send('update-progress', { received, total: received })
+    const progress: UpdateProgress = { received, total: received }
+    if (!win.isDestroyed()) win.webContents.send('update-progress', progress)
     downloadedPath = filePath
     return filePath
   } catch (err) {
@@ -198,7 +200,7 @@ export function initUpdater(getWindow: () => BrowserWindow | null): void {
 
   ipcMain.on('update-download-cancel', () => downloadAbort?.abort())
 
-  ipcMain.handle('update-install', async () => {
+  ipcMain.handle('update-install', async (): Promise<UpdateInstallResult> => {
     const path = downloadedPath
     if (!path) throw new Error('No downloaded update to install.')
     if (process.platform === 'linux') {

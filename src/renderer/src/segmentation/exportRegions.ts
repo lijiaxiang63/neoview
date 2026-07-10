@@ -2,6 +2,7 @@ import type { Volume } from '../volume/types'
 import { serializeVolume } from '../volume/parse'
 import { gzip } from '../volume/gunzip'
 import { buildColorTable, maskUnion, remapForExport, type Region } from './regions'
+import type { ExportRequest } from '../../../shared/files'
 
 export type ExportFormat = 'nii.gz' | 'nii'
 
@@ -46,12 +47,7 @@ export function dirOfPath(path: string): string {
   return dir === '' || /^[A-Za-z]:$/.test(dir) ? path.slice(0, cut + 1) : dir
 }
 
-export interface ExportPayload {
-  fileName: string
-  bytes: ArrayBuffer
-  /** Color table rides along for the label-map variant. */
-  sidecar: { fileName: string; text: string } | null
-}
+export type ExportPayload = Omit<ExportRequest, 'dir'>
 
 async function finishBytes(raw: ArrayBuffer, format: ExportFormat): Promise<ArrayBuffer> {
   return format === 'nii.gz' ? gzip(raw) : raw

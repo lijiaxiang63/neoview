@@ -1,36 +1,25 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron'
-import type { UpdateProgress, UpdateStatus } from './updates'
+import type {
+  ExportRequest,
+  ExportResult,
+  FilePanelState,
+  FolderEntry,
+  FolderScan,
+  FolderScanProgress,
+  OpenedFile
+} from '../shared/files'
+import type { UpdateInstallResult, UpdateProgress, UpdateStatus } from '../shared/updates'
 
-export interface OpenedFile {
-  name: string
-  path: string
-  bytes: ArrayBuffer
-}
-
-export interface FolderEntry {
-  name: string
-  path: string
-  /** Directory relative to the scanned root, '/'-joined; '' for the root itself. */
-  relDir: string
-}
-
-export interface FolderScan {
-  root: string
-  files: FolderEntry[]
-  truncated: boolean
-}
-
-export interface ExportRequest {
-  dir: string
-  fileName: string
-  bytes: ArrayBuffer
-  sidecar: { fileName: string; text: string } | null
-}
-
-export interface ExportResult {
-  path: string
-  sidecarPath: string | null
-}
+export type {
+  ExportRequest,
+  ExportResult,
+  FilePanelState,
+  FolderEntry,
+  FolderScan,
+  FolderScanProgress,
+  OpenedFile
+} from '../shared/files'
+export type { UpdateInstallResult, UpdateProgress, UpdateStatus } from '../shared/updates'
 
 const api = {
   openDialog: (): Promise<OpenedFile | null> => ipcRenderer.invoke('open-dialog'),
@@ -77,10 +66,8 @@ const api = {
   onScanFolderProgress: (
     cb: (token: number, root: string, files: FolderEntry[]) => void
   ): (() => void) => {
-    const listener = (
-      _e: Electron.IpcRendererEvent,
-      msg: { token: number; root: string; files: FolderEntry[] }
-    ): void => cb(msg.token, msg.root, msg.files)
+    const listener = (_e: Electron.IpcRendererEvent, msg: FolderScanProgress): void =>
+      cb(msg.token, msg.root, msg.files)
     ipcRenderer.on('scan-folder-progress', listener)
     return () => ipcRenderer.removeListener('scan-folder-progress', listener)
   },
@@ -123,14 +110,19 @@ const api = {
     return () => ipcRenderer.removeListener('toggle-side-panel', listener)
   },
   /** Mirror panel visibility to the View menu's checkbox items. */
-  sendViewState: (state: { fileList: boolean; sidePanel: boolean; folderOpen: boolean }): void =>
-    ipcRenderer.send('view-state', state),
+  sendViewState: (state: FilePanelState): void => ipcRenderer.send('view-state', state),
   /** Read one file from inside a previously opened folder. */
   readFile: (path: string): Promise<OpenedFile> => ipcRenderer.invoke('read-file', path),
   /** Read a folder file only when its size is within maxBytes; null otherwise
    * (the size gate runs main-side, before any bytes cross the boundary). */
   readFileWithin: (path: string, maxBytes: number): Promise<OpenedFile | null> =>
     ipcRenderer.invoke('read-file-limited', path, maxBytes),
+  /** Confirm that this scan's root has become the renderer's current folder. */
+  confirmFolderScan: (token: number): void => ipcRenderer.send('confirm-folder-scan', token),
+  /** Invalidate the matching scan; late cancellation of an older token is ignored. */
+  cancelFolderScan: (token: number): void => ipcRenderer.send('cancel-folder-scan', token),
+  /** The displayed folder closed; its read authorization is no longer needed. */
+  releaseFolderAccess: (): void => ipcRenderer.send('release-folder-access'),
   /** Absolute path of a dropped File ('' when unavailable). */
   pathForFile: (file: File): string => {
     try {
@@ -168,7 +160,7 @@ const api = {
   downloadUpdate: (): Promise<string | null> => ipcRenderer.invoke('update-download'),
   cancelUpdateDownload: (): void => ipcRenderer.send('update-download-cancel'),
   /** quits=true means the app is quitting to hand off to the installer. */
-  installUpdate: (): Promise<{ quits: boolean }> => ipcRenderer.invoke('update-install'),
+  installUpdate: (): Promise<UpdateInstallResult> => ipcRenderer.invoke('update-install'),
   skipUpdateVersion: (version: string): void => ipcRenderer.send('update-skip', version)
 }
 
