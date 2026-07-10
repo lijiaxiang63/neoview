@@ -49,6 +49,12 @@ export class PreviewClient {
     this.pending = null
   }
 
+  /** Release every resource owned by this client. Kept distinct from reset
+   * so store instances have an explicit lifecycle endpoint. */
+  dispose(): void {
+    this.reset()
+  }
+
   /** Drop one mirrored overlay (removed layers' ids are never reused, so
    * nothing can reference the buffer again). No-op if it was never sent. */
   dropOverlay(id: number): void {

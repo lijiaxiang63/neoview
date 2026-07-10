@@ -1,16 +1,14 @@
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { loadViewPref } from '../src/renderer/src/files/viewPrefs'
+import { createAppStore, type AppStore } from '../src/renderer/src/store'
 import type { Volume, VolumeStats } from '../src/renderer/src/volume/types'
 
-// The store captures its pref storage at module load (absent in the test
-// environment), so localStorage must be stubbed BEFORE the store is imported
-// for the debounced pref save to be live in this file.
 const mem = new Map<string, string>()
-vi.stubGlobal('localStorage', {
+const storage = {
   getItem: (k: string) => mem.get(k) ?? null,
   setItem: (k: string, v: string) => void mem.set(k, v)
-})
-const { useStore } = await import('../src/renderer/src/store')
+}
+let useStore: AppStore
 
 function baseVolume(): Volume {
   const stats: VolumeStats = {
@@ -31,15 +29,36 @@ function baseVolume(): Volume {
 }
 
 describe('per-file display pref save', () => {
-  const storage = { getItem: (k: string) => mem.get(k) ?? null }
+  beforeEach(() => {
+    vi.useFakeTimers()
+    useStore = createAppStore({ storage, pagehideTarget: null })
+  })
 
   afterEach(() => {
+    useStore.dispose()
     vi.useRealTimers()
     mem.clear()
   })
 
+  it('two stores keep pending saves under their own paths', () => {
+    const other = createAppStore({ storage, pagehideTarget: null })
+    try {
+      useStore.getState().setVolume(baseVolume(), '/data/a')
+      other.getState().setVolume(baseVolume(), '/data/b')
+      useStore.getState().setRange(5, 50)
+      other.getState().setRange(10, 60)
+      useStore.dispose()
+      expect(loadViewPref('/data/a', storage)).toEqual({ preset: 'custom', lo: 5, hi: 50 })
+      expect(loadViewPref('/data/b', storage)).toBeNull()
+      expect(vi.getTimerCount()).toBe(1)
+      vi.advanceTimersByTime(400)
+      expect(loadViewPref('/data/b', storage)).toEqual({ preset: 'custom', lo: 10, hi: 60 })
+    } finally {
+      other.dispose()
+    }
+  })
+
   it('a range change is saved under the file it was made on, even after navigating away', () => {
-    vi.useFakeTimers()
     useStore.getState().setVolume(baseVolume(), '/data/a.nii')
     useStore.getState().setRange(5, 50)
     // Navigate to another file before the debounce fires: the save must
@@ -51,7 +70,6 @@ describe('per-file display pref save', () => {
   })
 
   it("editing a second file within the debounce window keeps the first file's save", () => {
-    vi.useFakeTimers()
     useStore.getState().setVolume(baseVolume(), '/data/a.nii')
     useStore.getState().setRange(5, 50)
     useStore.getState().setVolume(baseVolume(), '/data/b.nii')
@@ -63,7 +81,6 @@ describe('per-file display pref save', () => {
   })
 
   it('reopening the same file within the debounce window restores the just-edited range', () => {
-    vi.useFakeTimers()
     useStore.getState().setVolume(baseVolume(), '/data/a.nii')
     useStore.getState().setRange(5, 50)
     // The pending save must be flushed before the reopened file's pref is

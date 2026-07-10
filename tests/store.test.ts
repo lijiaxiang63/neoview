@@ -1,19 +1,34 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   BRIGHTNESS_DEFAULT,
   BRIGHTNESS_MAX,
   BRIGHTNESS_MIN,
+  createAppStore,
   DENSITY_MAX,
   DENSITY_MIN,
   floodCap,
   hasUnsavedRegions,
   pickInitialPreset,
   presetRange,
-  useStore,
+  type AppStore,
+  type PagehideTarget,
+  type PreviewController,
   type SegParams
 } from '../src/renderer/src/store'
-import { MAX_RESULT_VOXELS } from '../src/renderer/src/segmentation/segment'
+import { MAX_RESULT_VOXELS, type SegBox } from '../src/renderer/src/segmentation/segment'
+import { loadViewPref } from '../src/renderer/src/files/viewPrefs'
 import type { Volume, VolumeStats } from '../src/renderer/src/volume/types'
+
+let useStore: AppStore
+
+beforeEach(() => {
+  useStore = createAppStore({ storage: null, pagehideTarget: null })
+})
+
+afterEach(() => {
+  useStore.dispose()
+  vi.useRealTimers()
+})
 
 function fakeVolume(stats: Partial<VolumeStats>, datatypeCode = 4): Volume {
   return {
@@ -64,6 +79,151 @@ describe('pickInitialPreset', () => {
     const vol = fakeVolume({ dataMin: 0, dataMax: 4000, p2: 20, p98: 2200 })
     expect(pickInitialPreset(vol)).toBe('auto')
     expect(presetRange(vol, 'auto')).toEqual({ lo: 20, hi: 2200 })
+  })
+})
+
+describe('store instances and lifecycle', () => {
+  it('keeps state, ids, and subscriptions isolated between two instances', () => {
+    const a = createAppStore({ storage: null, pagehideTarget: null })
+    const b = createAppStore({ storage: null, pagehideTarget: null })
+    try {
+      expect(a.getState().segParams).not.toBe(b.getState().segParams)
+      expect(a.getState().exportedPaths).not.toBe(b.getState().exportedPaths)
+
+      const onA = vi.fn()
+      const unsubscribe = a.subscribe(onA)
+      b.getState().setDensity(0.8)
+      expect(onA).not.toHaveBeenCalled()
+      a.getState().setDensity(0.6)
+      expect(onA).toHaveBeenCalledTimes(1)
+      unsubscribe()
+
+      a.getState().setVolume(baseVolume())
+      b.getState().setVolume(baseVolume())
+      const layer = fakeVolume({ dataMin: 0, dataMax: 1, typeRange: [0, 255] }, 2)
+      a.getState().addOverlay(layer)
+      b.getState().addOverlay(layer)
+      expect(a.getState().overlays[0].id).toBe(1)
+      expect(b.getState().overlays[0].id).toBe(1)
+
+      expect(a.getState().pushToast({ text: 'a' })).toBe(0)
+      expect(b.getState().pushToast({ text: 'b' })).toBe(0)
+      expect(a.getState().toasts.map((t) => t.text)).toEqual(['a'])
+      expect(b.getState().toasts.map((t) => t.text)).toEqual(['b'])
+    } finally {
+      a.dispose()
+      b.dispose()
+    }
+  })
+
+  it('dispose flushes prefs and releases timers, subscriptions, pagehide, and preview', () => {
+    vi.useFakeTimers()
+    const mem = new Map<string, string>()
+    const storage = {
+      getItem: (key: string): string | null => mem.get(key) ?? null,
+      setItem: vi.fn((key: string, value: string) => void mem.set(key, value))
+    }
+    const addEventListener = vi.fn()
+    const removeEventListener = vi.fn()
+    const pagehideTarget: PagehideTarget = { addEventListener, removeEventListener }
+    const controller: PreviewController = {
+      available: () => false,
+      reset: vi.fn(),
+      dropOverlay: vi.fn(),
+      request: (() => false) as PreviewController['request'],
+      dispose: vi.fn()
+    }
+    const owned = createAppStore({
+      storage,
+      pagehideTarget,
+      createPreviewController: () => controller
+    })
+
+    owned.getState().setVolume(baseVolume(), '/data/a')
+    owned.getState().setRange(5, 50)
+    owned.getState().setSegBox({ min: [0, 0, 0], max: [1, 1, 1] })
+    expect(vi.getTimerCount()).toBe(2)
+    const subscriber = vi.fn()
+    owned.subscribe(subscriber)
+
+    owned.dispose()
+    expect(vi.getTimerCount()).toBe(0)
+    expect(loadViewPref('/data/a', storage)).toEqual({ preset: 'custom', lo: 5, hi: 50 })
+    expect(controller.dispose).toHaveBeenCalledTimes(1)
+    expect(removeEventListener).toHaveBeenCalledWith('pagehide', addEventListener.mock.calls[0][1])
+    owned.setState({ density: 0.8 })
+    expect(subscriber).not.toHaveBeenCalled()
+
+    // Teardown is idempotent; a StrictMode/HMR cleanup cannot release twice.
+    owned.dispose()
+    expect(controller.dispose).toHaveBeenCalledTimes(1)
+    expect(removeEventListener).toHaveBeenCalledTimes(1)
+  })
+
+  it('routes async preview results only to their owning live instance', () => {
+    vi.useFakeTimers()
+    type ResultCallback = Parameters<PreviewController['request']>[5]
+    const pendingA: { token: number; callback: ResultCallback }[] = []
+    const pendingB: { token: number; callback: ResultCallback }[] = []
+    const controller = (
+      pending: { token: number; callback: ResultCallback }[]
+    ): PreviewController => ({
+      available: () => true,
+      reset: vi.fn(),
+      dropOverlay: vi.fn(),
+      request: (_vol, _labelMap, _labelMapRev, _overlays, req, callback) => {
+        pending.push({ token: req.token, callback })
+        return true
+      },
+      dispose: vi.fn()
+    })
+    const a = createAppStore({
+      storage: null,
+      pagehideTarget: null,
+      createPreviewController: () => controller(pendingA)
+    })
+    const b = createAppStore({
+      storage: null,
+      pagehideTarget: null,
+      createPreviewController: () => controller(pendingB)
+    })
+    try {
+      const side = 2048
+      const largeVolume = (): Volume => ({
+        ...baseVolume(),
+        dims: [side, side, 1],
+        frames: 1,
+        raw: new Uint8Array(side * side)
+      })
+      a.getState().setVolume(largeVolume())
+      b.getState().setVolume(largeVolume())
+      const box: SegBox = { min: [0, 0, 0], max: [side - 1, side - 1, 0] }
+      a.getState().setSegBox(box)
+      b.getState().setSegBox(box)
+      vi.advanceTimersByTime(90)
+      expect(pendingA).toHaveLength(1)
+      expect(pendingB).toHaveLength(1)
+
+      const result = {
+        mask: new Uint8Array([1]),
+        bounds: { min: [0, 0, 0], max: [0, 0, 0] } satisfies SegBox,
+        voxels: 1,
+        components: 1,
+        truncated: false
+      }
+      pendingA[0].callback(pendingA[0].token, result)
+      expect(a.getState().preview?.voxels).toBe(1)
+      expect(b.getState().preview).toBeNull()
+
+      a.dispose()
+      pendingA[0].callback(pendingA[0].token, { ...result, voxels: 2 })
+      expect(a.getState().preview?.voxels).toBe(1)
+      pendingB[0].callback(pendingB[0].token, { ...result, voxels: 3 })
+      expect(b.getState().preview?.voxels).toBe(3)
+    } finally {
+      a.dispose()
+      b.dispose()
+    }
   })
 })
 
@@ -175,12 +335,14 @@ describe('opened folder', () => {
 })
 
 describe('overlay layers', () => {
-  it('addOverlay appends with guessed kind, defaults, and unique ids', () => {
+  function seedOverlays(): void {
     useStore.getState().setVolume(baseVolume())
-    const mask = fakeVolume({ dataMin: 0, dataMax: 1, typeRange: [0, 255] }, 2)
-    const map = fakeVolume({ dataMin: -50, dataMax: 80 }, 16)
-    useStore.getState().addOverlay(mask)
-    useStore.getState().addOverlay(map)
+    useStore.getState().addOverlay(fakeVolume({ dataMin: 0, dataMax: 1, typeRange: [0, 255] }, 2))
+    useStore.getState().addOverlay(fakeVolume({ dataMin: -50, dataMax: 80 }, 16))
+  }
+
+  it('addOverlay appends with guessed kind, defaults, and unique ids', () => {
+    seedOverlays()
     const [a, b] = useStore.getState().overlays
     expect(a.kind).toBe('mask')
     expect(b.kind).toBe('map')
@@ -192,12 +354,14 @@ describe('overlay layers', () => {
   })
 
   it('removeOverlay drops only the matching layer', () => {
+    seedOverlays()
     const [a, b] = useStore.getState().overlays
     useStore.getState().removeOverlay(a.id)
     expect(useStore.getState().overlays.map((l) => l.id)).toEqual([b.id])
   })
 
   it('updateOverlay patches immutably', () => {
+    seedOverlays()
     const before = useStore.getState().overlays
     const target = before[0]
     useStore.getState().updateOverlay(target.id, { kind: 'labels', opacity: 0.3 })
@@ -210,6 +374,7 @@ describe('overlay layers', () => {
   })
 
   it('setVolume clears all layers', () => {
+    seedOverlays()
     expect(useStore.getState().overlays.length).toBeGreaterThan(0)
     useStore.getState().setVolume(baseVolume())
     expect(useStore.getState().overlays).toEqual([])
@@ -231,12 +396,12 @@ describe('regions', () => {
   }
 
   /** Load segVolume and hand-plant one region (id 1) on voxels 0 and 1. */
-  function seedRegion(): void {
-    useStore.getState().setVolume(segVolume())
+  function seedRegion(target: AppStore = useStore): void {
+    target.getState().setVolume(segVolume())
     const labelMap = new Uint16Array(8)
     labelMap[0] = 1
     labelMap[1] = 1
-    useStore.setState({
+    target.setState({
       labelMap,
       regions: [
         {
@@ -252,6 +417,26 @@ describe('regions', () => {
       segDirty: false
     })
   }
+
+  it('an in-flight brush gesture blocks only its own store history', () => {
+    const other = createAppStore({ storage: null, pagehideTarget: null })
+    try {
+      seedRegion()
+      seedRegion(other)
+      other.getState().deleteRegion(1)
+      expect(other.getState().regions).toEqual([])
+
+      useStore.getState().setActiveRegion(1)
+      useStore.getState().paintAt(0, [0, 0], [1, 1], false)
+      other.getState().undo()
+      expect(other.getState().regions).toHaveLength(1)
+      expect(other.getState().labelMap![0]).toBe(1)
+
+      useStore.getState().endStroke()
+    } finally {
+      other.dispose()
+    }
+  })
 
   it('metadata edits mark the segmentation unsaved', () => {
     seedRegion()
@@ -327,10 +512,10 @@ describe('regions', () => {
     seedRegion()
     const s = useStore.getState()
     s.markExported(s.volume!, s.sourcePath)
-    expect(hasUnsavedRegions()).toBe(false)
+    expect(hasUnsavedRegions(useStore)).toBe(false)
     useStore.getState().deleteRegion(1)
     expect(useStore.getState().regions).toEqual([])
-    expect(hasUnsavedRegions()).toBe(true)
+    expect(hasUnsavedRegions(useStore)).toBe(true)
   })
 
   it('markExported records the source path for the file panel', () => {

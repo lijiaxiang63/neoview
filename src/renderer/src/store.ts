@@ -1,4 +1,5 @@
-import { create } from 'zustand'
+import { useStore as useZustandStore, type StoreApi, type UseBoundStore } from 'zustand'
+import { createStore } from 'zustand/vanilla'
 import type { Volume } from './volume/types'
 import { sortEntries, type FolderEntry } from './files/folderList'
 import { loadViewPref, saveViewPref, type ViewPref } from './files/viewPrefs'
@@ -130,7 +131,7 @@ export interface FolderState {
   truncated: boolean
 }
 
-interface AppState {
+export interface AppState {
   volume: Volume | null
   /** Absolute path of the opened base file (null for unknown origins). */
   sourcePath: string | null
@@ -269,6 +270,35 @@ interface AppState {
   dismissToast: (id: number) => void
 }
 
+export type PreviewController = Pick<
+  PreviewClient,
+  'available' | 'reset' | 'dropOverlay' | 'request' | 'dispose'
+>
+
+export interface PagehideTarget {
+  addEventListener(type: 'pagehide', listener: () => void): void
+  removeEventListener(type: 'pagehide', listener: () => void): void
+}
+
+export interface AppStoreTimers {
+  setTimeout(callback: () => void, delay: number): ReturnType<typeof setTimeout>
+  clearTimeout(handle: ReturnType<typeof setTimeout>): void
+}
+
+export interface AppStoreDeps {
+  /** Undefined uses the runtime localStorage; null disables persistence. */
+  storage?: Pick<Storage, 'getItem' | 'setItem'> | null
+  /** Undefined uses the runtime window; null disables the pagehide binding. */
+  pagehideTarget?: PagehideTarget | null
+  /** Every call must return a controller owned by the new store instance. */
+  createPreviewController?: () => PreviewController
+  timers?: AppStoreTimers
+}
+
+export type AppStore = UseBoundStore<StoreApi<AppState>> & { dispose: () => void }
+
+const identityState = (state: AppState): AppState => state
+
 export const DENSITY_MIN = 0.02
 export const DENSITY_MAX = 1
 export const BRIGHTNESS_MIN = 0.05
@@ -289,6 +319,10 @@ const DEFAULT_SEG_PARAMS: SegParams = {
   minVoxels: 3,
   growMargin: null,
   constraint: { type: 'none' }
+}
+
+function defaultSegParams(): SegParams {
+  return { ...DEFAULT_SEG_PARAMS, constraint: { type: 'none' } }
 }
 
 /** Per-method parameter defaults applied on a method switch (thresholds are
@@ -355,62 +389,11 @@ export function floodCap(p: SegParams, boundsVoxels: number, volumeVoxels: numbe
   return p.method === 'grow' && boundsVoxels >= volumeVoxels ? MAX_RESULT_VOXELS : Infinity
 }
 
-/** Unsaved region edits exist (drives the replace/close confirmation).
- * Deleting the last region is still an unsaved edit — a previously exported
- * file would keep voxels the user just removed. */
-export function hasUnsavedRegions(): boolean {
-  return useStore.getState().segDirty
-}
-
-// Never reset: layer ids must stay unique across base changes for React keys.
-let nextOverlayId = 1
-
-// localStorage is absent in the unit-test environment; prefs just no-op there.
-const prefStorage: Pick<Storage, 'getItem' | 'setItem'> | null =
-  typeof localStorage === 'undefined' ? null : localStorage
-let prefSaveTimer: ReturnType<typeof setTimeout> | undefined
-// The capture waiting out the debounce. Prefs are keyed per file, so a
-// file switch must FLUSH this (write it now), never cancel it.
-let pendingPrefSave: { path: string; pref: ViewPref } | null = null
-
-/** Write the pending capture immediately (idempotent). Runs on the timer,
- * from setVolume (a file switch inside the debounce window must neither
- * misattribute the save nor drop it), and on pagehide (quit/reload). */
-function flushPrefSave(): void {
-  clearTimeout(prefSaveTimer)
-  if (!pendingPrefSave || !prefStorage) return
-  saveViewPref(pendingPrefSave.path, pendingPrefSave.pref, prefStorage)
-  pendingPrefSave = null
-}
-// The window is absent in the unit-test environment (like prefStorage).
-if (typeof window !== 'undefined') window.addEventListener('pagehide', flushPrefSave)
-
-// The brush gesture in flight: paintAt fills it, endStroke folds it into one
-// undo entry. Module-level because a stroke spans many store actions.
-let strokeCollector: ChangeCollector | null = null
-
-// Monotonic toast id; the notification stack keys and dismisses by it.
-let nextToastId = 0
-
 // A toast's Undo button fires the global undo, i.e. the top of the undo
 // stack; pushing a new entry retargets that, so every push must drop any
 // still-visible undo toast (its button would revert the newer edit).
 const dropUndoToasts = (toasts: ToastItem[]): ToastItem[] =>
   toasts.filter((t) => t.action?.kind !== 'undo')
-
-// Preview recomputes are debounced so box drags and slider scrubs stay fluid;
-// the box-sized compute happens at most once per delay window.
-let previewTimer: ReturnType<typeof setTimeout> | undefined
-// True while an input change has not been reflected in `preview` yet, so a
-// commit can recompute synchronously instead of applying a stale mask.
-let previewPending = false
-// Monotonic ticket: only the newest preview computation (sync or worker) may
-// publish; every newer computation and every cancellation bumps it.
-let previewToken = 0
-// Large floods run in a persistent worker so threshold scrubbing over big
-// bounds cannot jank the UI; small bounds stay synchronous (lower latency,
-// no buffer mirroring).
-const previewClient = new PreviewClient()
 const WORKER_MIN_BOUNDS_VOXELS = 4 * 1024 * 1024
 
 function frameOffsetOf(vol: Volume, frame: number): number {
@@ -418,7 +401,48 @@ function frameOffsetOf(vol: Volume, frame: number): number {
   return Math.min(frame, vol.frames - 1) * n
 }
 
-export const useStore = create<AppState>()((set, get) => {
+interface StoreLifecycle {
+  prefStorage: Pick<Storage, 'getItem' | 'setItem'> | null
+  pagehideTarget: PagehideTarget | null
+  timers: AppStoreTimers
+  previewClient: PreviewController
+  dispose: () => void
+}
+
+function createAppState(
+  lifecycle: StoreLifecycle,
+  set: StoreApi<AppState>['setState'],
+  get: StoreApi<AppState>['getState']
+): AppState {
+  const { prefStorage, pagehideTarget, timers, previewClient } = lifecycle
+  // Every mutable lifecycle value below belongs to exactly this instance.
+  // Layer ids stay unique across base changes inside one store.
+  let nextOverlayId = 1
+  let nextToastId = 0
+  let strokeCollector: ChangeCollector | null = null
+  let prefSaveTimer: ReturnType<typeof setTimeout> | undefined
+  let pendingPrefSave: { path: string; pref: ViewPref } | null = null
+  let previewTimer: ReturnType<typeof setTimeout> | undefined
+  let previewPending = false
+  let previewToken = 0
+  let disposed = false
+
+  function clearPrefSaveTimer(): void {
+    if (prefSaveTimer === undefined) return
+    timers.clearTimeout(prefSaveTimer)
+    prefSaveTimer = undefined
+  }
+
+  /** Write the pending capture immediately (idempotent). Runs on the timer,
+   * from setVolume (a file switch inside the debounce window must neither
+   * misattribute the save nor drop it), on pagehide, and during dispose. */
+  function flushPrefSave(): void {
+    clearPrefSaveTimer()
+    if (!pendingPrefSave || !prefStorage) return
+    saveViewPref(pendingPrefSave.path, pendingPrefSave.pref, prefStorage)
+    pendingPrefSave = null
+  }
+
   /** The active constraint as a per-voxel predicate (null = unconstrained). */
   function constraintPredicate(): VoxelPredicate | null {
     const s = get()
@@ -478,6 +502,7 @@ export const useStore = create<AppState>()((set, get) => {
     domain: { min: number; max: number; mean: number },
     histogram: HistogramResult
   ): void {
+    if (disposed) return
     set({
       preview: {
         mask: result.mask,
@@ -496,6 +521,7 @@ export const useStore = create<AppState>()((set, get) => {
   function computePreviewNow(): void {
     previewPending = false
     previewToken++
+    if (disposed) return
     const s = get()
     const vol = s.volume
     if (!vol || !s.segBox) {
@@ -522,6 +548,7 @@ export const useStore = create<AppState>()((set, get) => {
   /** Debounce target: route big floods to the preview worker, everything
    * else (and every worker miss/failure) to the synchronous path. */
   function computePreview(): void {
+    if (disposed) return
     const s = get()
     const vol = s.volume
     if (!vol || !s.segBox) {
@@ -557,6 +584,7 @@ export const useStore = create<AppState>()((set, get) => {
         constraint: p.constraint
       },
       (respToken, result) => {
+        if (disposed) return
         // -1 = the worker itself died; recover synchronously if still wanted.
         if (respToken === -1) {
           if (token === previewToken) computePreviewNow()
@@ -576,19 +604,29 @@ export const useStore = create<AppState>()((set, get) => {
     if (!posted) computePreviewNow()
   }
 
+  function clearPreviewTimer(): void {
+    if (previewTimer === undefined) return
+    timers.clearTimeout(previewTimer)
+    previewTimer = undefined
+  }
+
   function schedulePreview(): void {
+    if (disposed) return
     previewPending = true
     // A newer input supersedes any worker compute in flight: bump the token so
     // its late result is dropped instead of overwriting the pending state.
     previewToken++
-    clearTimeout(previewTimer)
-    previewTimer = setTimeout(computePreview, 90)
+    clearPreviewTimer()
+    previewTimer = timers.setTimeout(() => {
+      previewTimer = undefined
+      computePreview()
+    }, 90)
   }
 
   function cancelScheduledPreview(): void {
     previewPending = false
     previewToken++
-    clearTimeout(previewTimer)
+    clearPreviewTimer()
   }
 
   /**
@@ -668,15 +706,15 @@ export const useStore = create<AppState>()((set, get) => {
    * captured NOW: the debounce only ever coalesces edits to the same file,
    * because setVolume flushes before the path can change. */
   function schedulePrefSave(): void {
-    if (!prefStorage) return
+    if (disposed || !prefStorage) return
     const s = get()
     if (!s.volume || !s.sourcePath) return
     pendingPrefSave = {
       path: s.sourcePath,
       pref: { preset: s.activePreset, lo: s.range.lo, hi: s.range.hi }
     }
-    clearTimeout(prefSaveTimer)
-    prefSaveTimer = setTimeout(flushPrefSave, 300)
+    clearPrefSaveTimer()
+    prefSaveTimer = timers.setTimeout(flushPrefSave, 300)
   }
 
   /** Grow's seed level: the box mean (the box is, by contract, entirely
@@ -690,7 +728,7 @@ export const useStore = create<AppState>()((set, get) => {
     return stats.count > 0 ? clampTo(stats.mean, GROW_SEED_RANGE) : GROW_SEED_DEFAULT
   }
 
-  return {
+  const state: AppState = {
     volume: null,
     sourcePath: null,
     folder: null,
@@ -725,7 +763,7 @@ export const useStore = create<AppState>()((set, get) => {
     maximizedView: null,
     segSlabAxis: null,
     slabDepth: SLAB_DEPTH_DEFAULT,
-    segParams: DEFAULT_SEG_PARAMS,
+    segParams: defaultSegParams(),
     preview: null,
     brushRadius: 4,
     regionOpacity: 0.5,
@@ -775,7 +813,7 @@ export const useStore = create<AppState>()((set, get) => {
       strokeCollector = null
       // The worker's mirrored grids belong to the outgoing dataset; left
       // alone they would pin its buffers until the next big preview.
-      previewClient.reset()
+      if (!disposed) previewClient.reset()
       // The outgoing file's pending pref save must land under ITS path (and
       // before this file's pref is read back, in case it is the same file).
       flushPrefSave()
@@ -826,7 +864,7 @@ export const useStore = create<AppState>()((set, get) => {
         maximizedView: null,
         segSlabAxis: null,
         preview: null,
-        segParams: DEFAULT_SEG_PARAMS,
+        segParams: defaultSegParams(),
         segDirty: false,
         undoStack: [],
         redoStack: [],
@@ -852,7 +890,7 @@ export const useStore = create<AppState>()((set, get) => {
 
     removeOverlay: (id) => {
       set((s) => ({ overlays: s.overlays.filter((l) => l.id !== id) }))
-      previewClient.dropOverlay(id)
+      if (!disposed) previewClient.dropOverlay(id)
       // A constraint pointing at the removed layer would silently pin the
       // preview to stale data.
       const { segParams } = get()
@@ -1305,4 +1343,93 @@ export const useStore = create<AppState>()((set, get) => {
 
     dismissToast: (id) => set((s) => ({ toasts: s.toasts.filter((t) => t.id !== id) }))
   }
-})
+
+  lifecycle.dispose = (): void => {
+    if (disposed) return
+    // Persistence is part of teardown: do not silently drop the last edit.
+    flushPrefSave()
+    disposed = true
+    if (previewTimer !== undefined) {
+      timers.clearTimeout(previewTimer)
+      previewTimer = undefined
+    }
+    previewPending = false
+    previewToken++
+    strokeCollector = null
+    previewClient.dispose()
+    pagehideTarget?.removeEventListener('pagehide', flushPrefSave)
+  }
+  pagehideTarget?.addEventListener('pagehide', flushPrefSave)
+
+  return state
+}
+
+export function createAppStore(deps: AppStoreDeps = {}): AppStore {
+  const lifecycle: StoreLifecycle = {
+    prefStorage:
+      deps.storage === undefined
+        ? typeof localStorage === 'undefined'
+          ? null
+          : localStorage
+        : deps.storage,
+    pagehideTarget:
+      deps.pagehideTarget === undefined
+        ? typeof window === 'undefined'
+          ? null
+          : window
+        : deps.pagehideTarget,
+    timers: deps.timers ?? {
+      setTimeout: (callback, delay) => setTimeout(callback, delay),
+      clearTimeout: (handle) => clearTimeout(handle)
+    },
+    previewClient: deps.createPreviewController?.() ?? new PreviewClient(),
+    dispose: () => undefined
+  }
+  const api = createStore<AppState>((set, get) => createAppState(lifecycle, set, get))
+  const rawSubscribe = api.subscribe
+  const subscriptions = new Set<() => void>()
+  let disposed = false
+  api.subscribe = (listener) => {
+    if (disposed) return () => undefined
+    const rawUnsubscribe = rawSubscribe(listener)
+    let active = true
+    const unsubscribe = (): void => {
+      if (!active) return
+      active = false
+      rawUnsubscribe()
+      subscriptions.delete(unsubscribe)
+    }
+    subscriptions.add(unsubscribe)
+    return unsubscribe
+  }
+
+  function useBoundStore(): AppState
+  function useBoundStore<U>(selector: (state: AppState) => U): U
+  function useBoundStore<U>(selector?: (state: AppState) => U): AppState | U {
+    const select = (selector ?? identityState) as (state: AppState) => AppState | U
+    return useZustandStore(api, select)
+  }
+
+  const store = Object.assign(useBoundStore, api)
+  const dispose = (): void => {
+    if (disposed) return
+    disposed = true
+    for (const unsubscribe of [...subscriptions]) unsubscribe()
+    lifecycle.dispose()
+  }
+  return Object.assign(store, { dispose })
+}
+
+/** Runtime singleton: components keep the existing bound-hook API. */
+export const useStore = createAppStore()
+
+/** Unsaved region edits exist (drives the replace/close confirmation).
+ * Deleting the last region is still an unsaved edit — a previously exported
+ * file would keep voxels the user just removed. */
+export function hasUnsavedRegions(store: Pick<StoreApi<AppState>, 'getState'> = useStore): boolean {
+  return store.getState().segDirty
+}
+
+// Hot replacement must release the old singleton's pagehide listener,
+// timers, and lazily-created worker before the replacement module starts.
+if (import.meta.hot) import.meta.hot.dispose(() => useStore.dispose())
