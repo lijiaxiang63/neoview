@@ -1,7 +1,5 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
-
 ## Hard rules
 
 - **Vocabulary**: The only domain-specific tokens allowed anywhere (code, comments, UI copy, docs, commit messages, dependency choices) are the literal file extensions `.nii` / `.nii.gz`, and only in file filters / drop checks. Everything else uses neutral terms: volume, voxel, slice, plane XY/XZ/YZ, axis 0/1/2, intensity, affine, display range. Raw header field names (`sizeof_hdr`, `pixdim`, `srow_x`, …) may appear only inside `src/renderer/src/volume/parse.ts` and its tests — never in UI strings. Do not add third-party parsing/rendering libraries (their names violate the rule); the parser is written from scratch on purpose. Files under `testdata/` may have arbitrary names — reference them via globs, never echo their name parts.
@@ -71,3 +69,16 @@ Zero-dependency updater against the repo's releases. `updateCheck.ts` is the pur
 ### Tests
 
 Pure logic is deliberately kept out of GL/React so it's unit-testable: parser, affine, stats, normalize/planTexture/floatToHalf, camera basis, store. Fixtures come from `scripts/make-test-volumes.mjs` (`buildVolume` is imported directly by tests; closed-form voxel values). There is no WebGL in the test environment — keep the raycaster thin and push anything computable into `normalize.ts`/`camera.ts`.
+
+## Change completion
+
+For implementation and refactoring requests:
+
+- Do not stop after planning; implement the requested change.
+- Run targeted tests during implementation.
+- Run the full required verification commands before completion.
+- Review the complete diff for regressions, races, lifecycle issues,
+  dependency violations, performance changes, and missing tests.
+- Fix all actionable findings and rerun verification.
+- Repeat review, fix, and verification until no actionable findings remain.
+- Do not commit or push unless explicitly requested.
