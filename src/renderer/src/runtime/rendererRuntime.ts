@@ -232,19 +232,21 @@ class OwnedRendererRuntime implements RendererRuntime {
       parseBase: (name, bytes) => this.deps.loadVolume(name, bytes),
       commitBase: (volume, path) => {
         if (!this.active) return
-        store.getState().setVolume(volume, path)
+        store.getState().setVolume(volume, path, false)
         if (path) bridge.noteFileOpened(path)
       },
-      parseAndAddOverlay: async (name, bytes) => {
+      parseAndAddOverlay: async (name, bytes, isCurrent) => {
+        const base = store.getState().volume
+        if (!base) throw new Error('Load the base volume first.')
         const volume = await this.deps.loadVolume(name, bytes, { skipTex: true })
-        if (!this.active) return
+        if (!this.active || !isCurrent()) return
         const state = store.getState()
-        if (!state.volume) {
-          state.fail('Load the base volume first.')
-        } else if (!this.deps.volumesAlign(state.volume, volume)) {
-          state.fail('Overlay could not be aligned: its affine is not invertible.')
+        if (state.volume !== base) {
+          return
+        } else if (!this.deps.volumesAlign(base, volume)) {
+          throw new Error('Overlay could not be aligned: its affine is not invertible.')
         } else {
-          state.addOverlay(volume)
+          state.addOverlay(volume, false)
         }
       },
       confirmReplaceBase: () => this.confirmDiscard(),

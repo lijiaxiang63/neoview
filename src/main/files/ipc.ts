@@ -134,17 +134,21 @@ export function registerFileIpc(deps: FileIpcDependencies): () => void {
       if (!activated) activated = deps.access.activateScan(prepared)
       return activated
     }
-    const scan = await deps.scanner.scan(path, (files) => {
-      // Authorization changes before the batch crosses the boundary, so every
-      // path the renderer can display is readable immediately.
-      if (!activateCurrent()) return
-      if (sender.isDestroyed()) {
-        releaseOwner(sender.id)
-        return
-      }
-      const progress: FolderScanProgress = { token, root: path, files }
-      sender.send('scan-folder-progress', progress)
-    })
+    const scan = await deps.scanner.scan(
+      path,
+      (files) => {
+        // Authorization changes before the batch crosses the boundary, so every
+        // path the renderer can display is readable immediately.
+        if (!activateCurrent()) return
+        if (sender.isDestroyed()) {
+          releaseOwner(sender.id)
+          return
+        }
+        const progress: FolderScanProgress = { token, root: path, files }
+        sender.send('scan-folder-progress', progress)
+      },
+      () => !disposed && !sender.isDestroyed() && deps.access.isCurrent(prepared)
+    )
     if (!activateCurrent() || sender.isDestroyed()) {
       if (sender.isDestroyed()) releaseOwner(sender.id)
       return null
@@ -169,6 +173,7 @@ export function registerFileIpc(deps: FileIpcDependencies): () => void {
     if (pending?.request !== request) return
     if (result === null) {
       pendingScans.delete(ownerId)
+      if (deps.access.isCurrent(request)) deps.access.cancelScan(ownerId)
     } else {
       pending.completed = true
       if (pending.confirmed) pendingScans.delete(ownerId)
@@ -187,14 +192,19 @@ export function registerFileIpc(deps: FileIpcDependencies): () => void {
       trackSender(event.sender)
       const scanToken = tokenOf(token)
       const request = beginScan(event.sender, scanToken)
-      const path = await deps.dialogs.pickScanRoot(window)
-      if (path === null) {
+      try {
+        const path = await deps.dialogs.pickScanRoot(window)
+        if (path === null) {
+          finishScan(event.sender.id, request, null)
+          return null
+        }
+        const result = await scanAndStream(event.sender, path, scanToken, request)
+        finishScan(event.sender.id, request, result)
+        return result
+      } catch (error) {
         finishScan(event.sender.id, request, null)
-        return null
+        throw error
       }
-      const result = await scanAndStream(event.sender, path, scanToken, request)
-      finishScan(event.sender.id, request, result)
-      return result
     })
 
     // Read-only metadata probe; it changes no authorization state.
@@ -207,9 +217,14 @@ export function registerFileIpc(deps: FileIpcDependencies): () => void {
       trackSender(event.sender)
       const scanToken = tokenOf(token)
       const request = beginScan(event.sender, scanToken)
-      const result = await scanAndStream(event.sender, path, scanToken, request)
-      finishScan(event.sender.id, request, result)
-      return result
+      try {
+        const result = await scanAndStream(event.sender, path, scanToken, request)
+        finishScan(event.sender.id, request, result)
+        return result
+      } catch (error) {
+        finishScan(event.sender.id, request, null)
+        throw error
+      }
     })
 
     addHandle('read-file', async (event, path: unknown) => {

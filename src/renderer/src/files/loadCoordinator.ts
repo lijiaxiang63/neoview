@@ -9,18 +9,17 @@ import type { FolderScan, OpenedFile } from '../../../shared/files'
 //
 // The two invariants everything reduces to:
 //
-// 1. OWNERSHIP — every base load takes a fresh generation; only the newest
-//    generation may publish. A confirmed folder scan also takes a generation
-//    (without a load), so anything parsing when a new folder arrives can no
-//    longer commit over it. Navigation adds one weaker layer: a queued
+// 1. DATA OWNERSHIP — every base load takes a fresh generation; only the
+//    newest generation may publish. Base replacement and confirmed folder
+//    scans also invalidate the layer session, so layers parsed against the
+//    prior base cannot attach. Navigation adds one weaker layer: a queued
 //    target that moved on makes its own load stale without a new generation.
 //
-// 2. SETTLEMENT — the generation that raised the loading flag owns it, and
-//    exactly one party settles it: the commit/fail if the load stays
-//    current, the discard if it goes stale while still owning the flag, or
-//    the scan confirmation that invalidated it. Nothing else touches it, so
-//    the flag can neither stick forever nor be cleared out from under a
-//    newer load.
+// 2. FEEDBACK SETTLEMENT — every concurrently valid base/layer operation
+//    joins one active group. Members publish data independently, but shared
+//    loading/error feedback settles only after the group empties; any failure
+//    wins over success. A newer base/folder invalidates the group, and a
+//    direct newer non-loading error is never cleared by late settlement.
 
 export type OpenedBytes = Pick<OpenedFile, 'name' | 'bytes'>
 
@@ -46,9 +45,10 @@ export interface CoordinatorEffects<V> {
    * oversized file is never read or transferred at all. */
   readWithin(path: string, maxBytes: number): Promise<OpenedBytes | null>
   parseBase(name: string, bytes: ArrayBuffer): Promise<V>
+  /** Commit data without settling the shared loading/error status. */
   commitBase(volume: V, path: string | null): void
-  /** Parse and attach an overlay layer; reports its own domain failures. */
-  parseAndAddOverlay(name: string, bytes: ArrayBuffer): Promise<void>
+  /** Parse and attach an overlay layer without settling shared status. */
+  parseAndAddOverlay(name: string, bytes: ArrayBuffer, isCurrent: () => boolean): Promise<void>
   /** May veto replacing the base (unsaved region work). */
   confirmReplaceBase(): boolean
   raiseLoading(): void
@@ -78,9 +78,14 @@ export class LoadCoordinator<V> {
   // Ownership generation: every base load takes one; a confirmed scan bumps
   // it without a load. Only the newest generation may publish.
   private baseGen = 0
-  // The generation that raised the loading flag and has not settled it yet
-  // (null once settled, or when an overlay op is carrying the flag).
-  private loadingOwner: number | null = null
+  // Base and same-session overlays can be valid concurrently. The shared
+  // feedback settles only after every still-current operation finishes.
+  private nextLoadId = 0
+  private readonly activeLoads = new Set<number>()
+  private loadFailures: unknown[] = []
+  // Base replacement/folder confirmation invalidates overlays parsing
+  // against the prior base without making concurrent same-base layers race.
+  private overlaySessionGen = 0
 
   // Navigation is a queue of one: key presses only move the target; the pump
   // loads whatever the target is once the current load settles, discarding
@@ -139,18 +144,24 @@ export class LoadCoordinator<V> {
     await this.runBaseLoad(name, bytes, path)
   }
 
-  /** Overlay open: never contends for the base, so no generation. The op
-   * settles the loading flag itself on every path (commit or fail). */
+  /** Overlay data may attach alongside another layer, but its shared loading
+   * status is operation-owned and a base/folder session invalidates its data. */
   async openOverlay(name: string, bytes: ArrayBuffer): Promise<void> {
     if (this.disposed) return
-    this.loadingOwner = null
-    this.fx.raiseLoading()
+    const session = this.overlaySessionGen
+    const loadId = this.beginLoading()
     try {
-      await this.fx.parseAndAddOverlay(name, bytes)
+      await this.fx.parseAndAddOverlay(
+        name,
+        bytes,
+        () => !this.disposed && session === this.overlaySessionGen
+      )
       if (this.disposed) return
+      this.finishLoad(loadId, false)
     } catch (err) {
       if (this.disposed) return
-      this.fx.failParse(err)
+      if (session !== this.overlaySessionGen) return
+      this.finishLoad(loadId, true, err)
     }
   }
 
@@ -208,6 +219,11 @@ export class LoadCoordinator<V> {
       })
       this.maybeAutoLoad(true)
       return true
+    } catch (error) {
+      if (this.disposed) return false
+      if (gen !== this.scanGen) return true
+      this.fx.cancelScan(gen)
+      throw error
     } finally {
       if (!this.disposed && gen === this.scanGen) {
         this.autoLoadArmed = false
@@ -260,11 +276,12 @@ export class LoadCoordinator<V> {
     const hadNavigation = this.queued !== null || this.pumpActive
     this.disposed = true
     this.baseGen++
+    this.invalidateOverlaySession()
     this.scanGen++
     this.queued = null
     this.autoLoadArmed = false
     this.releasePrefetch()
-    this.loadingOwner = null
+    this.invalidateLoadGroup()
     if (snapshot.scanning) {
       this.fx.cancelScan(scanToken)
       this.fx.setScanning(false)
@@ -286,38 +303,58 @@ export class LoadCoordinator<V> {
   ): Promise<void> {
     if (this.disposed) return
     const gen = ++this.baseGen
-    this.loadingOwner = gen
-    this.fx.raiseLoading()
+    this.invalidateOverlaySession()
+    this.invalidateLoadGroup()
+    const loadId = this.beginLoading()
     try {
       const volume = await this.fx.parseBase(name, bytes)
       if (this.disposed) return
       if (gen !== this.baseGen || isStaleTarget?.()) {
-        this.settleIfOwner(gen)
+        this.finishLoad(loadId, false)
         return
       }
-      this.loadingOwner = null
       this.fx.commitBase(volume, path)
+      this.finishLoad(loadId, false)
     } catch (err) {
       if (this.disposed) return
       if (gen !== this.baseGen || isStaleTarget?.()) {
         // A superseded target's failure (e.g. a corrupt file the user
         // already scrubbed past) is not the current view's problem.
-        this.settleIfOwner(gen)
+        this.finishLoad(loadId, false)
         return
       }
-      this.loadingOwner = null
-      this.fx.failParse(err)
+      this.finishLoad(loadId, true, err)
     }
   }
 
-  /** A load discards its result: settle the loading flag only if this load
-   * still owns it. A newer load owns it now → leave it raised for them; a
-   * scan confirmation already settled it → nothing to do. */
-  private settleIfOwner(gen: number): void {
-    if (!this.disposed && this.loadingOwner === gen) {
-      this.loadingOwner = null
-      this.fx.dismissLoading()
-    }
+  private beginLoading(): number {
+    const loadId = ++this.nextLoadId
+    this.activeLoads.add(loadId)
+    this.fx.raiseLoading()
+    return loadId
+  }
+
+  private finishLoad(loadId: number, failedThisOperation: boolean, error?: unknown): void {
+    if (!this.activeLoads.delete(loadId)) return
+    if (failedThisOperation) this.loadFailures.push(error)
+    if (this.activeLoads.size > 0) return
+    const failure = this.loadFailures.at(-1)
+    const failed = this.loadFailures.length > 0
+    this.loadFailures = []
+    // A direct bridge error can settle feedback without going through this
+    // coordinator. Never overwrite or dismiss that newer non-loading state.
+    if (this.disposed || !this.fx.snapshot().loading) return
+    if (failed) this.fx.failParse(failure)
+    else this.fx.dismissLoading()
+  }
+
+  private invalidateOverlaySession(): void {
+    this.overlaySessionGen++
+  }
+
+  private invalidateLoadGroup(): void {
+    this.activeLoads.clear()
+    this.loadFailures = []
   }
 
   /** First contact with a scan's results makes it real: exactly once per
@@ -334,13 +371,12 @@ export class LoadCoordinator<V> {
     // paths match the previous one. Never carry bytes across that boundary.
     this.releasePrefetch()
     this.baseGen++
+    this.invalidateOverlaySession()
     // The invalidated parse can never publish now, so its loading flag is
     // ownerless — settle it here rather than leaving it raised forever
     // (this scan may trigger no load of its own).
-    if (this.loadingOwner !== null) {
-      this.loadingOwner = null
-      this.fx.dismissLoading()
-    }
+    this.invalidateLoadGroup()
+    if (this.fx.snapshot().loading) this.fx.dismissLoading()
     return true
   }
 

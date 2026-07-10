@@ -38,7 +38,6 @@ describe('application event decisions', () => {
   it('accepts the native dialog extensions case-insensitively', () => {
     expect(acceptsVolumeFileName('a.nii')).toBe(true)
     expect(acceptsVolumeFileName('a.NII.GZ')).toBe(true)
-    expect(acceptsVolumeFileName('a.gz')).toBe(true)
     expect(acceptsVolumeFileName('a.zip')).toBe(false)
   })
 

@@ -608,4 +608,79 @@ describe('disposed async work', () => {
     await tick()
     expect(h.store.getState().volume).toBe(null)
   })
+
+  it('drops a layer parse that settles after the base identity changes', async () => {
+    const h = runtimeHarness()
+    h.runtime.dispose()
+    const layerParse = deferred<Volume>()
+    const runtime = createRendererRuntime({
+      ...h.deps,
+      createCoordinator: undefined,
+      loadVolume: (_name, _bytes, options) =>
+        options?.skipTex ? layerParse.promise : Promise.resolve(volume('replacement.nii'))
+    })
+    runtimes.push(runtime)
+    const original = volume('original.nii')
+    h.store.getState().setVolume(original)
+    runtime.init()
+
+    h.bridge.emit('overlay-opened', opened('layer.nii'))
+    await tick()
+    expect(h.store.getState().loadState).toBe('loading')
+    h.store.getState().setVolume(volume('replacement.nii'))
+    layerParse.resolve(volume('layer.nii'))
+    await tick()
+
+    expect(h.store.getState().overlays).toEqual([])
+    expect(h.store.getState().loadState).toBe('ready')
+  })
+
+  it('does not clear a newer load error when a stale layer parse settles', async () => {
+    const h = runtimeHarness()
+    h.runtime.dispose()
+    const layerParse = deferred<Volume>()
+    const runtime = createRendererRuntime({
+      ...h.deps,
+      createCoordinator: undefined,
+      loadVolume: (_name, _bytes, options) =>
+        options?.skipTex ? layerParse.promise : Promise.resolve(volume('replacement.nii'))
+    })
+    runtimes.push(runtime)
+    h.store.getState().setVolume(volume('original.nii'))
+    runtime.init()
+
+    h.bridge.emit('overlay-opened', opened('layer.nii'))
+    await tick()
+    h.store.getState().setVolume(volume('replacement.nii'))
+    h.store.getState().fail('Replacement failed.')
+    layerParse.resolve(volume('layer.nii'))
+    await tick()
+
+    expect(h.store.getState().overlays).toEqual([])
+    expect(h.store.getState().errorMessage).toBe('Replacement failed.')
+  })
+
+  it('does not replace a newer direct error when a stale layer parse rejects', async () => {
+    const h = runtimeHarness()
+    h.runtime.dispose()
+    const layerParse = deferred<Volume>()
+    const runtime = createRendererRuntime({
+      ...h.deps,
+      createCoordinator: undefined,
+      loadVolume: (_name, _bytes, options) =>
+        options?.skipTex ? layerParse.promise : Promise.resolve(volume('replacement.nii'))
+    })
+    runtimes.push(runtime)
+    h.store.getState().setVolume(volume('original.nii'))
+    runtime.init()
+
+    h.bridge.emit('overlay-opened', opened('layer.nii'))
+    await tick()
+    h.store.getState().setVolume(volume('replacement.nii'))
+    h.store.getState().fail('Replacement failed.')
+    layerParse.reject(new Error('Layer failed.'))
+    await tick()
+
+    expect(h.store.getState().errorMessage).toBe('Replacement failed.')
+  })
 })

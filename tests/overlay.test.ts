@@ -69,8 +69,8 @@ describe('extractOverlayRGBA — grid alignment', () => {
   it('same-grid labels hit exactly one pixel on all three planes', () => {
     const value = (i: number, j: number, k: number): number =>
       i === 2 && j === 3 && k === 1 ? 7 : 0
-    const base = mkVol({ dims: [8, 6, 4], dtype: 'uint8', value: () => 9, sform: identity })
-    const overlay = mkVol({ dims: [8, 6, 4], dtype: 'uint8', value, sform: identity })
+    const base = mkVol({ dims: [8, 6, 4], dtype: 'uint8', value: () => 9, rowTransform: identity })
+    const overlay = mkVol({ dims: [8, 6, 4], dtype: 'uint8', value, rowTransform: identity })
     const layer = mkLayer(overlay, { kind: 'labels' })
 
     // Plane XY: slice k=1, expect pixel (c=i=2, r=j=3).
@@ -93,13 +93,13 @@ describe('extractOverlayRGBA — grid alignment', () => {
   })
 
   it('2x-coarse overlay covers the nearest-neighbor pixel set', () => {
-    const base = mkVol({ dims: [8, 8, 4], dtype: 'uint8', value: () => 0, sform: identity })
+    const base = mkVol({ dims: [8, 8, 4], dtype: 'uint8', value: () => 0, rowTransform: identity })
     const overlay = mkVol({
       dims: [4, 4, 2],
       dtype: 'uint8',
       value: (i: number, j: number, k: number) => (i === 1 && j === 1 && k === 1 ? 1 : 0),
       spacing: [2, 2, 2],
-      sform: {
+      rowTransform: {
         rows: [
           [2, 0, 0, 0],
           [0, 2, 0, 0],
@@ -120,12 +120,12 @@ describe('extractOverlayRGBA — grid alignment', () => {
   })
 
   it('base pixels mapping outside the overlay are transparent', () => {
-    const base = mkVol({ dims: [6, 6, 2], dtype: 'uint8', value: () => 1, sform: identity })
+    const base = mkVol({ dims: [6, 6, 2], dtype: 'uint8', value: () => 1, rowTransform: identity })
     const overlay = mkVol({
       dims: [6, 6, 2],
       dtype: 'uint8',
       value: () => 1,
-      sform: {
+      rowTransform: {
         rows: [
           [1, 0, 0, 10], // shifted +10 along world axis 0: base i maps to i-10 < 0
           [0, 1, 0, 0],
@@ -139,13 +139,13 @@ describe('extractOverlayRGBA — grid alignment', () => {
   })
 
   it('clamps the shared frame index to the overlay frame count', () => {
-    const base = mkVol({ dims: [4, 4, 2], dtype: 'uint8', value: () => 1, sform: identity })
+    const base = mkVol({ dims: [4, 4, 2], dtype: 'uint8', value: () => 1, rowTransform: identity })
     const overlay = mkVol({
       dims: [4, 4, 2, 2],
       dtype: 'uint8',
       value: (i: number, j: number, k: number, t: number) =>
         t === 1 && i === 0 && j === 0 ? 3 : 0,
-      sform: identity
+      rowTransform: identity
     })
     const layer = mkLayer(overlay, { kind: 'labels' })
     const img = stub(4, 4)
@@ -161,7 +161,7 @@ describe('extractOverlayRGBA — map windows', () => {
       dims: [8, 2, 2],
       dtype: 'float32',
       value: (i: number) => i * 50, // 0, 50, 100, ..., 350
-      sform: identity
+      rowTransform: identity
     })
     const layer = mkLayer(base, { kind: 'map', colormap: 'warm', range: { lo: 100, hi: 200 } })
     const img = stub(8, 2)
@@ -178,7 +178,7 @@ describe('extractOverlayRGBA — map windows', () => {
       dims: [8, 2, 2],
       dtype: 'float32',
       value: (i: number) => (i - 4) * 50, // -200 .. 150
-      sform: identity
+      rowTransform: identity
     })
     const layer = mkLayer(base, { kind: 'map', colormap: 'signed', range: { lo: 100, hi: 200 } })
     const img = stub(8, 2)
@@ -196,7 +196,7 @@ describe('extractOverlayRGBA — map windows', () => {
       dims: [2, 2, 2],
       dtype: 'float32',
       value: (i: number) => (i === 0 ? NaN : 500),
-      sform: identity
+      rowTransform: identity
     })
     const layer = mkLayer(base, { kind: 'map', colormap: 'warm', range: { lo: 0, hi: 100 } })
     const img = stub(2, 2)
@@ -212,7 +212,7 @@ describe('extractOverlayRGBA — mask scaling', () => {
       dims: [4, 2, 2],
       dtype: 'uint8',
       value: (i: number) => (i < 2 ? 0 : 3),
-      sform: identity
+      rowTransform: identity
     })
     const img = stub(4, 2)
     extractOverlayRGBA(mkLayer(base, { kind: 'mask' }), base, PLANES[0], 0, 0, img)
@@ -227,13 +227,30 @@ describe('extractOverlayRGBA — mask scaling', () => {
       value: (i: number) => i, // scaled: -2, 0, 2, 4
       slope: 2,
       inter: -2,
-      sform: identity
+      rowTransform: identity
     })
     const img = stub(4, 2)
     extractOverlayRGBA(mkLayer(base, { kind: 'mask' }), base, PLANES[0], 0, 0, img)
     expect(pixelAt(img, 0, 0)).toBe(MASK_COLOR) // scaled -2 is nonzero
     expect(pixelAt(img, 1, 0)).toBe(0) // raw 1 → scaled 0
     expect(pixelAt(img, 2, 0)).toBe(MASK_COLOR)
+  })
+
+  it.each(['mask', 'labels'] as const)('keeps non-finite %s values transparent', (kind) => {
+    const base = mkVol({
+      dims: [2, 2, 2],
+      dtype: 'float32',
+      value: () => 1,
+      rowTransform: identity
+    })
+    base.raw[0] = Number.NaN
+    base.raw[1] = Number.POSITIVE_INFINITY
+    const img = stub(2, 2)
+
+    extractOverlayRGBA(mkLayer(base, { kind }), base, PLANES[0], 0, 0, img)
+
+    expect(alphaAt(img, 0, 0)).toBe(0)
+    expect(alphaAt(img, 1, 0)).toBe(0)
   })
 })
 
@@ -261,7 +278,7 @@ describe('hidden labels', () => {
       dims: [4, 2, 2],
       dtype: 'uint8',
       value: (i: number) => i, // ids 0..3 along axis 0
-      sform: identity
+      rowTransform: identity
     })
     const layer = mkLayer(vol, { kind: 'labels', hiddenLabels: new Set([2]) })
     const img = stub(4, 2)
@@ -332,12 +349,12 @@ describe('labelInventory', () => {
 
 describe('overlayVoxelToBase', () => {
   it('maps a coarse offset overlay voxel into base coordinates', () => {
-    const base = mkVol({ dims: [8, 8, 8], dtype: 'uint8', value: () => 0, sform: identity })
+    const base = mkVol({ dims: [8, 8, 8], dtype: 'uint8', value: () => 0, rowTransform: identity })
     const overlay = mkVol({
       dims: [4, 4, 4],
       dtype: 'uint8',
       value: () => 0,
-      sform: {
+      rowTransform: {
         rows: [
           [2, 0, 0, 1],
           [0, 2, 0, 0],
@@ -409,18 +426,33 @@ describe('defaultLayerSettings', () => {
 
 describe('sampleOverlayAt / voxelMapFor', () => {
   it('reads the scaled value at an aligned coordinate', () => {
-    const base = mkVol({ dims: [4, 4, 2], dtype: 'uint8', value: () => 0, sform: identity })
+    const base = mkVol({ dims: [4, 4, 2], dtype: 'uint8', value: () => 0, rowTransform: identity })
     const overlay = mkVol({
       dims: [4, 4, 2],
       dtype: 'int16',
       value: (i: number, j: number) => i + 10 * j,
       slope: 2,
-      sform: identity
+      rowTransform: identity
     })
     const layer = mkLayer(overlay)
     expect(sampleOverlayAt(layer, base, [3, 2, 1], 0)).toBe(46)
     expect(sampleOverlayAt(layer, base, [3, 2, 5], 0)).toBeNull() // out of bounds
     // Cache returns a stable mapping for the same (base, overlay) pair.
     expect(voxelMapFor(base, overlay)).toBe(voxelMapFor(base, overlay))
+  })
+
+  it('does not report non-finite values that render transparently', () => {
+    const base = mkVol({
+      dims: [2, 2, 2],
+      dtype: 'float32',
+      value: () => 1,
+      rowTransform: identity
+    })
+    base.raw[0] = Number.NaN
+    base.raw[1] = Number.POSITIVE_INFINITY
+    const layer = mkLayer(base, { kind: 'labels' })
+
+    expect(sampleOverlayAt(layer, base, [0, 0, 0], 0)).toBeNull()
+    expect(sampleOverlayAt(layer, base, [1, 0, 0], 0)).toBeNull()
   })
 })

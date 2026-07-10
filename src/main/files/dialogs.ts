@@ -22,7 +22,7 @@ export function createFileDialogs(deps: FileDialogDependencies, reader: FileRead
       const result = await deps.showOpenDialog(window, {
         properties: ['openFile'],
         filters: [
-          { name: 'Volume files', extensions: ['nii', 'nii.gz', 'gz'] },
+          { name: 'Volume files', extensions: ['nii', 'nii.gz'] },
           { name: 'All files', extensions: ['*'] }
         ]
       })

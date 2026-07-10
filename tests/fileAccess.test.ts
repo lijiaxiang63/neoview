@@ -25,6 +25,7 @@ async function activate(
   const prepared = await access.prepareScan(request, root)
   expect(prepared).not.toBeNull()
   expect(access.activateScan(prepared!)).toBe(true)
+  expect(access.confirmScan(prepared!)).toBe(true)
 }
 
 describe('file access authorization', () => {
@@ -106,5 +107,37 @@ describe('file access authorization', () => {
     access.release(7)
     expect(access.activeRoot(7)).toBeNull()
     expect(access.activateScan(confirmedPrepared!)).toBe(false)
+  })
+
+  it('rolls overlapping unconfirmed candidates back to the last confirmed root', async () => {
+    const base = await tempDir()
+    const oldRoot = join(base, 'old')
+    const firstCandidate = join(base, 'first')
+    await Promise.all([mkdir(oldRoot), mkdir(firstCandidate)])
+    const access = new FileAccessAuthorizer({ realpath })
+    await activate(access, 31, oldRoot)
+
+    const first = access.beginScan(31)
+    const firstPrepared = await access.prepareScan(first, firstCandidate)
+    expect(access.activateScan(firstPrepared!)).toBe(true)
+    expect(access.activeRoot(31)).toBe(await realpath(firstCandidate))
+
+    access.beginScan(31)
+    access.cancelScan(31)
+
+    expect(access.activeRoot(31)).toBe(await realpath(oldRoot))
+  })
+
+  it('does not confirm a request before its candidate root has activated', async () => {
+    const base = await tempDir()
+    const oldRoot = join(base, 'old')
+    await mkdir(oldRoot)
+    const access = new FileAccessAuthorizer({ realpath })
+    await activate(access, 32, oldRoot)
+
+    const pending = access.beginScan(32)
+    expect(access.confirmScan(pending)).toBe(false)
+    access.cancelScan(32)
+    expect(access.activeRoot(32)).toBe(await realpath(oldRoot))
   })
 })

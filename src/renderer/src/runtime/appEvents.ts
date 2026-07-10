@@ -68,7 +68,7 @@ export function ipcErrorMessage(error: unknown): string {
 /** Keep the drop filter aligned with the native open dialog. */
 export function acceptsVolumeFileName(name: string): boolean {
   const lower = name.toLowerCase()
-  return lower.endsWith('.nii') || lower.endsWith('.gz')
+  return lower.endsWith('.nii') || lower.endsWith('.nii.gz')
 }
 
 /** Resolve the nearest split drop zone without depending on DOM globals. */

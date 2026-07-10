@@ -114,7 +114,6 @@ function makeDependencies(
       }
     },
     exporter: {
-      uniquePath: async (dir, name) => `${dir}/${name}`,
       write: async (request) => ({ path: `${request.dir}/${request.fileName}`, sidecarPath: null })
     },
     windowFromSender: () => ({}) as BrowserWindow,
@@ -133,6 +132,7 @@ async function activate(
   const request = access.beginScan(ownerId)
   const prepared = await access.prepareScan(request, root)
   expect(access.activateScan(prepared!)).toBe(true)
+  expect(access.confirmScan(prepared!)).toBe(true)
 }
 
 describe('file IPC registration', () => {
@@ -286,6 +286,29 @@ describe('file IPC registration', () => {
     scans[0].resolve({ root: '/first', files: [file('/first')], truncated: false })
     await expect(second).resolves.toMatchObject({ root: '/second' })
     await expect(first).resolves.toBeNull()
+    dispose()
+  })
+
+  it('rolls back an activated candidate when a streamed scan fails', async () => {
+    const ipc = new FakeIpc()
+    const access = new FileAccessAuthorizer({ realpath: async (path) => path })
+    const sender = new FakeSender(18)
+    await activate(access, sender.id, '/old')
+    const dispose = registerFileIpc(
+      makeDependencies(ipc, access, {
+        scanner: {
+          scan: async (root, onBatch) => {
+            onBatch?.([file(root)])
+            throw new Error('scan failed')
+          }
+        }
+      })
+    )
+
+    await expect(ipc.invoke('scan-folder', sender, '/candidate', 8)).rejects.toThrow('scan failed')
+    expect(access.activeRoot(sender.id)).toBe('/old')
+    ipc.emit('confirm-folder-scan', sender, 8)
+    expect(access.activeRoot(sender.id)).toBe('/old')
     dispose()
   })
 

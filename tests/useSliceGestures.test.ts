@@ -18,6 +18,7 @@ class FakeElement {
   readonly style = { cursor: '' }
   readonly listeners = new Map<string, EventListener>()
   readonly captured = new Set<number>()
+  captureFails = false
 
   addEventListener(type: string, listener: EventListener): void {
     this.listeners.set(type, listener)
@@ -32,6 +33,7 @@ class FakeElement {
   }
 
   setPointerCapture(pointerId: number): void {
+    if (this.captureFails) throw new Error('capture failed')
     this.captured.add(pointerId)
   }
 
@@ -182,6 +184,18 @@ describe('navigate gestures', () => {
     expect(h.container.captured.size).toBe(0)
   })
 
+  it('keeps a failed capture as a click instead of a lingering drag', () => {
+    const h = harness()
+    h.container.captureFails = true
+
+    h.controller.pointerDown(h.event(2, 3))
+    h.controller.pointerMove(h.event(7, 6))
+    h.scheduler.runAll()
+
+    expect(h.state.cross).toEqual([2, 3, 5])
+    expect(h.container.captured.size).toBe(0)
+  })
+
   it('steps the slice in both wheel directions and prevents scrolling', () => {
     const h = harness()
     expect(h.container.wheel(20).prevented).toBe(true)
@@ -267,9 +281,36 @@ describe('brush gestures', () => {
     expect(h.state.paintAt).not.toHaveBeenCalled()
     expect(h.container.captured.size).toBe(0)
   })
+
+  it('turns a failed brush capture into one completed stamp', () => {
+    const h = harness()
+    h.state.segTool = 'brush'
+    h.state.activeRegionId = 1
+    h.container.captureFails = true
+
+    h.controller.pointerDown(h.event(2, 3))
+    h.controller.pointerMove(h.event(5, 6))
+
+    expect(h.state.paintAt).toHaveBeenCalledTimes(1)
+    expect(h.state.paintAt).toHaveBeenCalledWith(0, [2, 3], [2, 3], false)
+    expect(h.state.endStroke).toHaveBeenCalledTimes(1)
+  })
 })
 
 describe('box gestures', () => {
+  it('does not leave a temporary box when capture fails', () => {
+    const h = harness()
+    h.state.segTool = 'box'
+    h.container.captureFails = true
+
+    h.controller.pointerDown(h.event(2, 3))
+    h.controller.pointerMove(h.event(6, 7))
+
+    expect(h.state.segBox).toBeNull()
+    expect(h.state.setSegBox).not.toHaveBeenCalled()
+    expect(h.state.finalizeBox).not.toHaveBeenCalled()
+  })
+
   it('creates from the final pointer position and applies slab depth', () => {
     const h = harness()
     h.state.segTool = 'box'

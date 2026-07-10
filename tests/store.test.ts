@@ -151,8 +151,11 @@ describe('store instances and lifecycle', () => {
     expect(loadViewPref('/data/a', storage)).toEqual({ preset: 'custom', lo: 5, hi: 50 })
     expect(controller.dispose).toHaveBeenCalledTimes(1)
     expect(removeEventListener).toHaveBeenCalledWith('pagehide', addEventListener.mock.calls[0][1])
+    const densityAtDispose = owned.getState().density
     owned.setState({ density: 0.8 })
+    owned.getState().setDensity(0.9)
     expect(subscriber).not.toHaveBeenCalled()
+    expect(owned.getState().density).toBe(densityAtDispose)
 
     // Teardown is idempotent; a StrictMode/HMR cleanup cannot release twice.
     owned.dispose()
@@ -417,6 +420,25 @@ describe('regions', () => {
       segDirty: false
     })
   }
+
+  it('makes stale buffer-mutating actions inert after dispose', () => {
+    seedRegion()
+    const stale = useStore.getState()
+    const before = stale.labelMap!.slice()
+    const revision = stale.labelMapRev
+    const undo = stale.undoStack
+
+    useStore.dispose()
+    stale.deleteRegion(1)
+    stale.setActiveRegion(1)
+    stale.paintAt(0, [0, 0], [1, 1], true)
+    stale.endStroke()
+    stale.undo()
+
+    expect(stale.labelMap).toEqual(before)
+    expect(useStore.getState().labelMapRev).toBe(revision)
+    expect(useStore.getState().undoStack).toBe(undo)
+  })
 
   it('an in-flight brush gesture blocks only its own store history', () => {
     const other = createAppStore({ storage: null, pagehideTarget: null })

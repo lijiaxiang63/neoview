@@ -184,7 +184,12 @@ export class SliceGestureController {
         last: point,
         erase: event.button === 2 || event.altKey
       }
-      this.capture(event.currentTarget, event.pointerId)
+      if (!this.capture(event.currentTarget, event.pointerId)) {
+        this.painting = null
+        state.paintAt(this.view, point, point, event.button === 2 || event.altKey)
+        state.endStroke()
+        return
+      }
       state.paintAt(this.view, point, point, this.painting.erase)
       return
     }
@@ -229,8 +234,8 @@ export class SliceGestureController {
         sliceIndex,
         dims: geometry.volume.dims
       })
+      if (!this.capture(event.currentTarget, event.pointerId)) return
       this.boxGesture = { ...gesture, pointerId: event.pointerId }
-      this.capture(event.currentTarget, event.pointerId)
       if (gesture.kind === 'resize' && handle) this.setCursor(resizeCursor(handle))
       if (gesture.kind === 'create') state.setSegBox(gesture.startBox)
       return
@@ -239,8 +244,9 @@ export class SliceGestureController {
     const point = this.point(event)
     if (!point) return
     if (this.navigationPointer !== null) return
-    this.navigationPointer = event.pointerId
-    this.capture(event.currentTarget, event.pointerId)
+    if (this.capture(event.currentTarget, event.pointerId)) {
+      this.navigationPointer = event.pointerId
+    }
     this.applyCross(point)
   }
 
@@ -468,12 +474,14 @@ export class SliceGestureController {
     } else this.setCursor('')
   }
 
-  private capture(target: HTMLElement, pointerId: number): void {
+  private capture(target: HTMLElement, pointerId: number): boolean {
     try {
       target.setPointerCapture(pointerId)
       this.captured = { target, pointerId }
+      return true
     } catch {
       this.captured = null
+      return false
     }
   }
 

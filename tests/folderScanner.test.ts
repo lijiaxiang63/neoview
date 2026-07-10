@@ -105,4 +105,60 @@ describe('folder scanner', () => {
     ])
     expect(result.truncated).toBe(false)
   })
+
+  it('stops scheduling directory reads after the caller cancels', async () => {
+    const reads: string[] = []
+    let current = true
+    const scanner = createFolderScanner(
+      {
+        readdir: async (path) => {
+          reads.push(path)
+          if (path === '/root') {
+            current = false
+            return [entry('one', 'directory'), entry('two', 'directory')]
+          }
+          return [entry('late.nii', 'file')]
+        }
+      },
+      { concurrency: 1 }
+    )
+
+    const result = await scanner.scan('/root', undefined, () => current)
+
+    expect(reads).toEqual(['/root'])
+    expect(result.files).toEqual([])
+  })
+
+  it('bounds directory traversal independently of the file limit', async () => {
+    const reads: string[] = []
+    const scanner = createFolderScanner(
+      {
+        readdir: async (path) => {
+          reads.push(path)
+          return path === '/root'
+            ? Array.from({ length: 8 }, (_, index) => entry(`d${index}`, 'directory'))
+            : []
+        }
+      },
+      { concurrency: 1, maxDirectories: 3 }
+    )
+
+    const result = await scanner.scan('/root')
+
+    expect(reads).toHaveLength(3)
+    expect(result.truncated).toBe(true)
+  })
+
+  it('rejects when a streamed batch callback throws', async () => {
+    const scanner = createFolderScanner(
+      { readdir: async () => [entry('a.nii', 'file')] },
+      { batchMs: 0 }
+    )
+
+    await expect(
+      scanner.scan('/root', () => {
+        throw new Error('send failed')
+      })
+    ).rejects.toThrow('send failed')
+  })
 })

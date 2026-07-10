@@ -24,8 +24,10 @@ export interface AuthorizedReadPath {
 interface OwnerAccess {
   requestId: number
   realRoot: string | null
-  /** Root active before this request; used if an unseen batch loses a cancel race. */
-  fallbackRoot: string | null
+  /** Last root explicitly accepted by the renderer. */
+  confirmedRoot: string | null
+  /** True only after this request activated its own candidate root. */
+  candidateActive: boolean
 }
 
 /** True only when candidate is root itself or a real descendant, not a similar prefix. */
@@ -49,7 +51,12 @@ export class FileAccessAuthorizer {
     const requestId = ++this.nextRequestId
     const current = this.owners.get(ownerId)
     const realRoot = current?.realRoot ?? null
-    this.owners.set(ownerId, { requestId, realRoot, fallbackRoot: realRoot })
+    this.owners.set(ownerId, {
+      requestId,
+      realRoot,
+      confirmedRoot: current?.confirmedRoot ?? null,
+      candidateActive: false
+    })
     return { ownerId, requestId }
   }
 
@@ -66,7 +73,8 @@ export class FileAccessAuthorizer {
     this.owners.set(prepared.ownerId, {
       requestId: prepared.requestId,
       realRoot: prepared.realRoot,
-      fallbackRoot: this.owners.get(prepared.ownerId)?.fallbackRoot ?? null
+      confirmedRoot: this.owners.get(prepared.ownerId)?.confirmedRoot ?? null,
+      candidateActive: true
     })
     return true
   }
@@ -78,19 +86,20 @@ export class FileAccessAuthorizer {
   /** The renderer accepted this scan; its root is now the only rollback target. */
   confirmScan(request: ScanAccessRequest): boolean {
     const current = this.owners.get(request.ownerId)
-    if (current?.requestId !== request.requestId) return false
-    this.owners.set(request.ownerId, { ...current, fallbackRoot: current.realRoot })
+    if (current?.requestId !== request.requestId || !current.candidateActive) return false
+    this.owners.set(request.ownerId, { ...current, confirmedRoot: current.realRoot })
     return true
   }
 
   /** Supersede an in-flight scan, rolling an unconfirmed candidate back. */
   cancelScan(ownerId: number): void {
     const current = this.owners.get(ownerId)
-    const realRoot = current?.fallbackRoot ?? current?.realRoot ?? null
+    const realRoot = current?.confirmedRoot ?? null
     this.owners.set(ownerId, {
       requestId: ++this.nextRequestId,
       realRoot,
-      fallbackRoot: realRoot
+      confirmedRoot: realRoot,
+      candidateActive: false
     })
   }
 

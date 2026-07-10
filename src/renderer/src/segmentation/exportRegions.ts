@@ -31,10 +31,9 @@ export function saveExportSettings(s: ExportSettings): void {
 /** Source name without its volume extension, for deriving output names.
  * Strips exactly ONE extension with the same alternation as folderList.ts#
  * splitDisplayName — the folder panel folds a product into its source row
- * only when the two derive the same stem (chained strips diverged on names
- * like "x.gz.nii" and marked the wrong row). */
+ * only when the two derive the same stem. */
 export function exportBaseName(volumeName: string): string {
-  return volumeName.replace(/(\.nii(\.gz)?|\.gz)$/i, '')
+  return volumeName.replace(/(\.nii\.gz|\.nii)$/i, '')
 }
 
 /** Directory of an absolute path ('' when there is none to take). Parents

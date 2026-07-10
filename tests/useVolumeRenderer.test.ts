@@ -13,6 +13,7 @@ class FakeElement {
   readonly captured = new Set<number>()
   readonly released: number[] = []
   rect = { width: 320, height: 180 }
+  captureFails = false
 
   addEventListener(type: string, listener: EventListener): void {
     this.listeners.set(type, listener)
@@ -23,6 +24,7 @@ class FakeElement {
   }
 
   setPointerCapture(pointerId: number): void {
+    if (this.captureFails) throw new Error('capture failed')
     this.captured.add(pointerId)
   }
 
@@ -167,6 +169,18 @@ describe('VolumeInteractionController', () => {
     expect(h.dragging).toHaveBeenCalledWith(true)
     h.interactions.pointerMove(h.event({ clientX: 18, clientY: 14 }))
     expect(h.controller.rotate).toHaveBeenCalledWith(8, -6)
+  })
+
+  it('does not enter a drag when pointer capture fails', () => {
+    const h = harness()
+    h.element.captureFails = true
+
+    h.interactions.pointerDown(h.event())
+    h.interactions.pointerMove(h.event({ clientX: 18, clientY: 14 }))
+
+    expect(h.controller.setDragging).not.toHaveBeenCalled()
+    expect(h.dragging).not.toHaveBeenCalled()
+    expect(h.controller.rotate).not.toHaveBeenCalled()
   })
 
   it.each(['pointerUp', 'pointerCancel', 'lostPointerCapture'] as const)(

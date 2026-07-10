@@ -215,13 +215,21 @@ export function parseVolume(name: string, buf: ArrayBuffer): Volume {
 
   const pixdim: number[] = []
   for (let i = 0; i < 8; i++) pixdim.push(dv.getFloat32(OFF_PIXDIM + i * 4, le))
+  const finiteSpacing = (value: number): number => {
+    const magnitude = Math.abs(value)
+    return Number.isFinite(magnitude) ? Math.max(magnitude, 1e-6) : 1e-6
+  }
   const spacing: [number, number, number] = [
-    Math.max(Math.abs(pixdim[1]) || 0, 1e-6),
-    Math.max(Math.abs(pixdim[2]) || 0, 1e-6),
-    Math.max(Math.abs(pixdim[3]) || 0, 1e-6)
+    finiteSpacing(pixdim[1]),
+    finiteSpacing(pixdim[2]),
+    finiteSpacing(pixdim[3])
   ]
 
-  const voxOffset = Math.max(MIN_FILE_SIZE, Math.round(dv.getFloat32(OFF_VOX_OFFSET, le)))
+  const rawOffset = dv.getFloat32(OFF_VOX_OFFSET, le)
+  if (!Number.isFinite(rawOffset)) {
+    throw new ParseError('bad-offset', 'Invalid data offset.')
+  }
+  const voxOffset = Math.max(MIN_FILE_SIZE, Math.round(rawOffset))
   const voxelCount = nx * ny * nz * nt
   const needed = voxelCount * dtype.bytes
   if (voxOffset + needed > buf.byteLength) {
@@ -257,20 +265,20 @@ export function parseVolume(name: string, buf: ArrayBuffer): Volume {
     srow[2][c] = dv.getFloat32(OFF_SROW_Z + c * 4, le)
   }
   const { m: affine, source: transformSource } = buildAffine({
-    sformCode: dv.getInt16(OFF_SFORM_CODE, le),
-    qformCode: dv.getInt16(OFF_QFORM_CODE, le),
-    srow,
-    quatern: [
+    rowTransformAvailable: dv.getInt16(OFF_SFORM_CODE, le) > 0,
+    rotationTransformAvailable: dv.getInt16(OFF_QFORM_CODE, le) > 0,
+    rows: srow,
+    rotation: [
       dv.getFloat32(OFF_QUATERN, le),
       dv.getFloat32(OFF_QUATERN + 4, le),
       dv.getFloat32(OFF_QUATERN + 8, le)
     ],
-    qoffset: [
+    translation: [
       dv.getFloat32(OFF_QOFFSET, le),
       dv.getFloat32(OFF_QOFFSET + 4, le),
       dv.getFloat32(OFF_QOFFSET + 8, le)
     ],
-    qfacRaw: pixdim[0],
+    thirdAxisSign: pixdim[0],
     spacing
   })
 

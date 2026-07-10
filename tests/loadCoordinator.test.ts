@@ -15,8 +15,8 @@ import {
 // of being found in review. Each test here simulates one interleaving of
 // async operations (reads, parses, scans) with user actions (opens, drops,
 // navigation) by resolving hand-held promises in a chosen order, and asserts
-// the two invariants: only the newest intent publishes, and whoever raised
-// the loading flag settles it exactly once.
+// the two invariants: only current generations/sessions publish data, and
+// every active feedback group settles once after its final valid operation.
 
 interface Deferred<T> {
   promise: Promise<T>
@@ -67,6 +67,8 @@ interface Harness {
   reads: { path: string; d: Deferred<OpenedBytes> }[]
   cappedReads: { path: string; maxBytes: number; d: Deferred<OpenedBytes | null> }[]
   parses: { name: string; d: Deferred<string> }[]
+  overlays: { name: string; d: Deferred<void> }[]
+  overlayCommits: string[]
   scanConfirms: number[]
   scanCancels: number[]
   setConfirm: (v: boolean) => void
@@ -96,6 +98,8 @@ function makeHarness(
   const reads: Harness['reads'] = []
   const cappedReads: Harness['cappedReads'] = []
   const parses: Harness['parses'] = []
+  const overlays: Harness['overlays'] = []
+  const overlayCommits: string[] = []
   const scanConfirms: number[] = []
   const scanCancels: number[] = []
   let confirmResult = opts.confirm ?? true
@@ -128,13 +132,19 @@ function makeHarness(
     commitBase: (volume, path) => {
       commits.push({ volume, path })
       state.sourcePath = path
-      state.loading = false
       if (state.folder && (path === null || !state.folder.files.some((f) => f.path === path))) {
         state.folder = null
         co.releasePrefetch()
       }
     },
-    parseAndAddOverlay: async () => {},
+    parseAndAddOverlay: async (name, _bytes, isCurrent) => {
+      const basePath = state.sourcePath
+      const d = deferred<void>()
+      overlays.push({ name, d })
+      await d.promise
+      if (!isCurrent() || state.sourcePath !== basePath) return
+      overlayCommits.push(name)
+    },
     confirmReplaceBase: () => confirmResult,
     raiseLoading: () => {
       state.loading = true
@@ -177,6 +187,8 @@ function makeHarness(
     reads,
     cappedReads,
     parses,
+    overlays,
+    overlayCommits,
     scanConfirms,
     scanCancels,
     setConfirm: (v) => {
@@ -184,6 +196,99 @@ function makeHarness(
     }
   }
 }
+
+describe('overlay load ownership', () => {
+  it('does not let an older overlay settle a newer base loading state', async () => {
+    const h = makeHarness()
+    void h.co.openOverlay('layer.nii', bytes())
+    await tick()
+    void h.co.openBase('base.nii', bytes(), '/x/base.nii')
+    await tick()
+
+    h.overlays[0].d.resolve()
+    await tick()
+
+    expect(h.state.loading).toBe(true)
+    h.parses[0].d.resolve('vol:base')
+    await tick()
+    expect(h.state.loading).toBe(false)
+  })
+
+  it('invalidates a slow overlay and still auto-loads a confirmed folder', async () => {
+    const h = makeHarness()
+    h.state.sourcePath = '/old/base.nii'
+    void h.co.openOverlay('layer.nii', bytes())
+    await tick()
+    const scanDone = deferred<ScanResult | null>()
+    let token = 0
+    void h.co.scanFolder((value) => {
+      token = value
+      return scanDone.promise
+    })
+
+    h.co.onScanBatch(token, '/new', [entry('/new/first.nii')])
+    h.overlays[0].d.resolve()
+    await tick()
+
+    expect(h.reads[0]?.path).toBe('/new/first.nii')
+    expect(h.overlayCommits).toEqual([])
+    scanDone.resolve(folder(['/new/first.nii'], '/new'))
+    await tick()
+  })
+
+  it('settles loading when a later overlay is discarded after the base commits', async () => {
+    const h = makeHarness()
+    h.state.sourcePath = '/old/base.nii'
+    void h.co.openBase('replacement.nii', bytes(), '/new/replacement.nii')
+    await tick()
+    void h.co.openOverlay('layer.nii', bytes())
+    await tick()
+
+    h.parses[0].d.resolve('vol:replacement')
+    await tick()
+    expect(h.state.loading).toBe(true)
+    h.overlays[0].d.resolve()
+    await tick()
+
+    expect(h.overlayCommits).toEqual([])
+    expect(h.state.loading).toBe(false)
+  })
+
+  it('reports an older same-base overlay failure after a newer layer succeeds', async () => {
+    const h = makeHarness()
+    h.state.sourcePath = '/base.nii'
+    void h.co.openOverlay('older.nii', bytes())
+    void h.co.openOverlay('newer.nii', bytes())
+    await tick()
+
+    h.overlays[1].d.resolve()
+    await tick()
+    h.overlays[0].d.reject(new Error('older failed'))
+    await tick()
+
+    expect(h.overlayCommits).toEqual(['newer.nii'])
+    expect(h.failures).toEqual(['Error: older failed'])
+    expect(h.state.loading).toBe(false)
+  })
+
+  it('keeps loading for a base after a later overlay succeeds, then reports base failure', async () => {
+    const h = makeHarness()
+    h.state.sourcePath = '/old/base.nii'
+    void h.co.openBase('replacement.nii', bytes(), '/new/replacement.nii')
+    await tick()
+    void h.co.openOverlay('layer.nii', bytes())
+    await tick()
+
+    h.overlays[0].d.resolve()
+    await tick()
+    expect(h.state.loading).toBe(true)
+    h.parses[0].d.reject(new Error('base failed'))
+    await tick()
+
+    expect(h.failures).toEqual(['Error: base failed'])
+    expect(h.state.loading).toBe(false)
+  })
+})
 
 describe('base load ownership', () => {
   it('the newest base load owns the view; the older parse discards silently', async () => {
@@ -522,6 +627,19 @@ describe('prefetch', () => {
 })
 
 describe('folder scans', () => {
+  it('cancels the main-side request when a scan rejects', async () => {
+    const h = makeHarness()
+
+    await expect(
+      h.co.scanFolder(async () => {
+        throw new Error('scan failed')
+      })
+    ).rejects.toThrow('scan failed')
+
+    expect(h.scanCancels).toEqual([1])
+    expect(h.state.scanning).toBe(false)
+  })
+
   it('a confirmed scan invalidates an in-flight base parse exactly once', async () => {
     const h = makeHarness()
     void h.co.openBase('slow.nii', bytes(), '/old/slow.nii')

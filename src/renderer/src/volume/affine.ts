@@ -1,13 +1,13 @@
 import type { TransformSource } from './types'
 
 export interface AffineInput {
-  sformCode: number
-  qformCode: number
-  srow: [Float64Array, Float64Array, Float64Array]
-  quatern: [number, number, number]
-  qoffset: [number, number, number]
-  /** Sign carrier from pixdim[0]: negative flips the third rotation column. */
-  qfacRaw: number
+  rowTransformAvailable: boolean
+  rotationTransformAvailable: boolean
+  rows: [Float64Array, Float64Array, Float64Array]
+  rotation: [number, number, number]
+  translation: [number, number, number]
+  /** A negative value flips the third rotation column. */
+  thirdAxisSign: number
   spacing: [number, number, number]
 }
 
@@ -20,19 +20,19 @@ export function buildAffine(input: AffineInput): AffineResult {
   const m = new Float64Array(16)
   m[15] = 1
 
-  if (input.sformCode > 0) {
+  if (input.rowTransformAvailable) {
     for (let r = 0; r < 3; r++) {
       for (let c = 0; c < 4; c++) {
-        m[r * 4 + c] = input.srow[r][c]
+        m[r * 4 + c] = input.rows[r][c]
       }
     }
     return { m, source: 'rows' }
   }
 
-  if (input.qformCode > 0) {
-    const [b, c, d] = input.quatern
+  if (input.rotationTransformAvailable) {
+    const [b, c, d] = input.rotation
     const a = Math.sqrt(Math.max(0, 1 - b * b - c * c - d * d))
-    const qfac = input.qfacRaw < 0 ? -1 : 1
+    const thirdAxisSign = input.thirdAxisSign < 0 ? -1 : 1
     const R = [
       a * a + b * b - c * c - d * d,
       2 * (b * c - a * d),
@@ -44,12 +44,12 @@ export function buildAffine(input: AffineInput): AffineResult {
       2 * (c * d + a * b),
       a * a + d * d - b * b - c * c
     ]
-    const colScale = [input.spacing[0], input.spacing[1], input.spacing[2] * qfac]
+    const colScale = [input.spacing[0], input.spacing[1], input.spacing[2] * thirdAxisSign]
     for (let r = 0; r < 3; r++) {
       for (let col = 0; col < 3; col++) {
         m[r * 4 + col] = R[r * 3 + col] * colScale[col]
       }
-      m[r * 4 + 3] = input.qoffset[r]
+      m[r * 4 + 3] = input.translation[r]
     }
     return { m, source: 'quaternion' }
   }

@@ -36,6 +36,7 @@ export class Raycaster {
   private tex: WebGLTexture | null = null
   private uni: Uniforms | null = null
   private contextLost = false
+  private recoverableTextureUnsupported = false
 
   private dims: [number, number, number] | null = null
   private halfExt: [number, number, number] = [0.5, 0.5, 0.5]
@@ -94,6 +95,7 @@ export class Raycaster {
     this.vao = null
     this.uni = null
     this.unsupportedReason = null
+    this.recoverableTextureUnsupported = false
     this.setup()
     this.onContextRestored?.()
   }
@@ -114,9 +116,20 @@ export class Raycaster {
       return sh
     }
     const vs = compile(gl.VERTEX_SHADER, VERT_SRC)
+    if (!vs) {
+      this.unsupportedReason = 'Could not initialize the 3D renderer.'
+      return false
+    }
     const fs = compile(gl.FRAGMENT_SHADER, FRAG_SRC)
+    if (!fs) {
+      gl.deleteShader(vs)
+      this.unsupportedReason = 'Could not initialize the 3D renderer.'
+      return false
+    }
     const prog = gl.createProgram()
-    if (!vs || !fs || !prog) {
+    if (!prog) {
+      gl.deleteShader(vs)
+      gl.deleteShader(fs)
       this.unsupportedReason = 'Could not initialize the 3D renderer.'
       return false
     }
@@ -127,11 +140,18 @@ export class Raycaster {
     gl.deleteShader(fs)
     if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) {
       console.error('program link failed:', gl.getProgramInfoLog(prog))
+      gl.deleteProgram(prog)
+      this.unsupportedReason = 'Could not initialize the 3D renderer.'
+      return false
+    }
+    const vao = gl.createVertexArray()
+    if (!vao) {
+      gl.deleteProgram(prog)
       this.unsupportedReason = 'Could not initialize the 3D renderer.'
       return false
     }
     this.program = prog
-    this.vao = gl.createVertexArray()
+    this.vao = vao
     const u = (name: string): WebGLUniformLocation | null => gl.getUniformLocation(prog, name)
     this.uni = {
       eye: u('uEye'),
@@ -163,7 +183,14 @@ export class Raycaster {
     if (!this.dims) return
     const [nx, ny, nz] = this.dims
     if (this.labTex) gl.deleteTexture(this.labTex)
-    this.labTex = gl.createTexture()
+    const texture = gl.createTexture()
+    if (!texture) {
+      this.labTex = null
+      this.unsupportedReason = 'Could not allocate a GPU texture.'
+      this.recoverableTextureUnsupported = true
+      return
+    }
+    this.labTex = texture
     gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1)
     gl.activeTexture(gl.TEXTURE1)
     gl.bindTexture(gl.TEXTURE_3D, this.labTex)
@@ -180,7 +207,15 @@ export class Raycaster {
 
   private uploadLabelLut(rgba: Uint8Array): void {
     const gl = this.gl as WebGL2RenderingContext
-    if (!this.labLutTex) this.labLutTex = gl.createTexture()
+    if (!this.labLutTex) {
+      const texture = gl.createTexture()
+      if (!texture) {
+        this.unsupportedReason = 'Could not allocate a GPU texture.'
+        this.recoverableTextureUnsupported = true
+        return
+      }
+      this.labLutTex = texture
+    }
     gl.activeTexture(gl.TEXTURE2)
     gl.bindTexture(gl.TEXTURE_2D, this.labLutTex)
     gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1)
@@ -197,10 +232,16 @@ export class Raycaster {
     const maxSize = gl.getParameter(gl.MAX_3D_TEXTURE_SIZE) as number
     if (nx > maxSize || ny > maxSize || nz > maxSize) {
       this.unsupportedReason = `Volume exceeds the GPU 3D texture limit (${maxSize}).`
+      this.recoverableTextureUnsupported = true
       return false
     }
-    if (this.tex) gl.deleteTexture(this.tex)
-    this.tex = gl.createTexture()
+    const texture = gl.createTexture()
+    if (!texture) {
+      this.unsupportedReason = 'Could not allocate a GPU texture.'
+      this.recoverableTextureUnsupported = true
+      return false
+    }
+    this.tex = texture
     gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1)
     gl.activeTexture(gl.TEXTURE0)
     gl.bindTexture(gl.TEXTURE_3D, this.tex)
@@ -217,19 +258,32 @@ export class Raycaster {
     return true
   }
 
+  /** Release textures whose grid belongs to the outgoing volume. */
+  private clearGridTextures(): void {
+    const gl = this.gl
+    if (!gl) return
+    if (this.tex) gl.deleteTexture(this.tex)
+    if (this.labTex) gl.deleteTexture(this.labTex)
+    this.tex = null
+    this.labTex = null
+  }
+
   setVolume(
     data: Uint16Array,
     dims: [number, number, number],
     spacing: [number, number, number]
   ): void {
-    if (!this.gl || this.unsupportedReason) return
+    if (!this.gl || (this.unsupportedReason && !this.recoverableTextureUnsupported)) return
+    if (this.recoverableTextureUnsupported) {
+      this.recoverableTextureUnsupported = false
+      this.unsupportedReason = null
+    }
+    if (!this.contextLost) this.clearGridTextures()
     this.dims = [...dims]
     this.halfExt = halfExtents(dims, spacing)
     const maxDim = Math.max(dims[0], dims[1], dims[2])
     this.fullSteps = Math.min(512, Math.max(128, Math.ceil(1.5 * maxDim)))
     if (!this.contextLost) this.uploadTexture(data, this.dims)
-    // A new volume means a new grid; the old label texture no longer aligns.
-    this.setLabelVolume(null)
   }
 
   /**

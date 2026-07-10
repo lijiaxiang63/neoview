@@ -204,7 +204,7 @@ export interface AppState {
   toasts: ToastItem[]
 
   startLoading: () => void
-  setVolume: (v: Volume, sourcePath?: string | null) => void
+  setVolume: (v: Volume, sourcePath?: string | null, settleLoad?: boolean) => void
   setFolder: (f: FolderState) => void
   /** Merge a streamed scan batch into the opened folder (kept sorted). */
   appendFolderFiles: (root: string, files: FolderEntry[]) => void
@@ -213,7 +213,7 @@ export interface AppState {
   toggleFilePanel: () => void
   toggleSidePanel: () => void
   setPendingFilePath: (p: string | null) => void
-  addOverlay: (v: Volume) => void
+  addOverlay: (v: Volume, settleLoad?: boolean) => void
   removeOverlay: (id: number) => void
   updateOverlay: (id: number, patch: Partial<Omit<OverlayLayer, 'id' | 'volume'>>) => void
   fail: (message: string) => void
@@ -412,10 +412,14 @@ interface StoreLifecycle {
 
 function createAppState(
   lifecycle: StoreLifecycle,
-  set: StoreApi<AppState>['setState'],
+  writeState: StoreApi<AppState>['setState'],
   get: StoreApi<AppState>['getState']
 ): AppState {
   const { prefStorage, pagehideTarget, timers, previewClient } = lifecycle
+  let disposed = false
+  const set = ((...args: unknown[]): void => {
+    if (!disposed) (writeState as (...values: unknown[]) => void)(...args)
+  }) as StoreApi<AppState>['setState']
   // Every mutable lifecycle value below belongs to exactly this instance.
   // Layer ids stay unique across base changes inside one store.
   let nextOverlayId = 1
@@ -426,7 +430,6 @@ function createAppState(
   let previewTimer: ReturnType<typeof setTimeout> | undefined
   let previewPending = false
   let previewToken = 0
-  let disposed = false
 
   function clearPrefSaveTimer(): void {
     if (prefSaveTimer === undefined) return
@@ -807,7 +810,7 @@ function createAppState(
 
     setPendingFilePath: (p) => set({ pendingFilePath: p }),
 
-    setVolume: (v, sourcePath = null) => {
+    setVolume: (v, sourcePath = null, settleLoad = true) => {
       cancelScheduledPreview()
       // A missed pointer-up must not carry stamped voxels across the base
       // change (the collector indexes into the OLD grid).
@@ -842,8 +845,8 @@ function createAppState(
           s.folder && sourcePath !== null && s.folder.files.some((f) => f.path === sourcePath)
             ? s.folder
             : null,
-        loadState: 'ready',
-        errorMessage: null,
+        loadState: settleLoad ? 'ready' : s.loadState,
+        errorMessage: settleLoad ? null : s.errorMessage,
         cross: [Math.floor(v.dims[0] / 2), Math.floor(v.dims[1] / 2), Math.floor(v.dims[2] / 2)],
         frame: 0,
         range,
@@ -873,7 +876,7 @@ function createAppState(
       }))
     },
 
-    addOverlay: (v) => {
+    addOverlay: (v, settleLoad = true) => {
       const kind = guessOverlayKind(v)
       const { range, colormap } = defaultLayerSettings(v)
       const layer: OverlayLayer = {
@@ -886,7 +889,11 @@ function createAppState(
         colormap,
         hiddenLabels: new Set()
       }
-      set((s) => ({ overlays: [...s.overlays, layer], loadState: 'ready', errorMessage: null }))
+      set((s) => ({
+        overlays: [...s.overlays, layer],
+        loadState: settleLoad ? 'ready' : s.loadState,
+        errorMessage: settleLoad ? null : s.errorMessage
+      }))
     },
 
     removeOverlay: (id) => {
@@ -1362,6 +1369,16 @@ function createAppState(
   }
   pagehideTarget?.addEventListener('pagehide', flushPrefSave)
 
+  // `set` guards ordinary Zustand writes, but region actions also mutate
+  // owned typed arrays before publishing a revision. Stable wrappers put the
+  // lifecycle gate in front of every action so stale references are inert too.
+  const actionRecord = state as unknown as Record<string, unknown>
+  for (const [key, value] of Object.entries(actionRecord)) {
+    if (typeof value !== 'function') continue
+    const action = value as (...args: unknown[]) => unknown
+    actionRecord[key] = (...args: unknown[]): unknown => (disposed ? undefined : action(...args))
+  }
+
   return state
 }
 
@@ -1386,10 +1403,14 @@ export function createAppStore(deps: AppStoreDeps = {}): AppStore {
     previewClient: deps.createPreviewController?.() ?? new PreviewClient(),
     dispose: () => undefined
   }
+  let disposed = false
   const api = createStore<AppState>((set, get) => createAppState(lifecycle, set, get))
+  const rawSetState = api.setState
+  api.setState = ((...args: unknown[]): void => {
+    if (!disposed) (rawSetState as (...values: unknown[]) => void)(...args)
+  }) as StoreApi<AppState>['setState']
   const rawSubscribe = api.subscribe
   const subscriptions = new Set<() => void>()
-  let disposed = false
   api.subscribe = (listener) => {
     if (disposed) return () => undefined
     const rawUnsubscribe = rawSubscribe(listener)

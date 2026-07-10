@@ -89,6 +89,29 @@ describe('parseVolume', () => {
     }
   })
 
+  it('rejects a non-finite data offset', () => {
+    const buf = buildVolume({ dims: [4, 4, 4], dtype: 'uint8', value: () => 0 })
+    new DataView(buf.buffer, buf.byteOffset, buf.byteLength).setFloat32(108, Number.NaN, true)
+
+    expect(() => parseVolume('t.nii', toArrayBuffer(buf))).toThrowError(ParseError)
+    try {
+      parseVolume('t.nii', toArrayBuffer(buf))
+    } catch (error) {
+      expect((error as ParseError).code).toBe('bad-offset')
+    }
+  })
+
+  it('sanitizes non-finite voxel spacing to finite positive geometry', () => {
+    const buf = buildVolume({ dims: [4, 4, 4], dtype: 'uint8', value: () => 0 })
+    const view = new DataView(buf.buffer, buf.byteOffset, buf.byteLength)
+    view.setFloat32(80, Number.POSITIVE_INFINITY, true)
+    view.setFloat32(84, Number.NEGATIVE_INFINITY, true)
+
+    const volume = parseVolume('t.nii', toArrayBuffer(buf))
+
+    expect(volume.spacing.every((value) => Number.isFinite(value) && value > 0)).toBe(true)
+  })
+
   it('rejects a broken signature', () => {
     const buf = buildVolume({ dims: [4, 4, 4], dtype: 'uint8', value: () => 0 })
     buf[344] = 0x78

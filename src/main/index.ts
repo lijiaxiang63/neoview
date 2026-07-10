@@ -27,6 +27,7 @@ import { registerFileIpc } from './files/ipc'
 import { isVolumeFileName } from './files/names'
 import { createFileReader } from './files/reader'
 import { createFolderScanner } from './files/scanner'
+import { needsCloseConfirmation, sendIfAlive } from './windowLifecycle'
 import icon from '../../resources/icon.png?asset'
 import iconLight from '../../resources/icon-light.png?asset'
 // Sample data shipped with the app so a fresh install has something to show
@@ -64,9 +65,17 @@ const folderScanner = createFolderScanner({
 })
 const exportService = createExportService({
   stat: fs.stat,
-  access: fs.access,
-  writeBytes: (path, bytes) => fs.writeFile(path, bytes),
-  writeText: (path, text) => fs.writeFile(path, text, 'utf8')
+  openExclusive: async (path) => {
+    const file = await fs.open(path, 'wx')
+    return {
+      write: (contents) =>
+        typeof contents === 'string'
+          ? file.writeFile(contents, { encoding: 'utf8' })
+          : file.writeFile(contents),
+      close: () => file.close()
+    }
+  },
+  remove: (path) => fs.rm(path, { force: true })
 })
 const fileAccess = new FileAccessAuthorizer({ realpath: fs.realpath })
 const fileDialogs = createFileDialogs(
@@ -118,12 +127,15 @@ async function sendBuiltinFile(
   name: string,
   channel: 'file-opened' | 'overlay-opened'
 ): Promise<void> {
+  let opened: Awaited<ReturnType<typeof fileReader.readNamed>>
   try {
     // Bundled assets deliberately carry an empty path so exports ask for a folder.
-    win.webContents.send(channel, await fileReader.readNamed(assetPath, name))
+    opened = await fileReader.readNamed(assetPath, name)
   } catch (err) {
-    win.webContents.send('file-open-error', (err as Error).message)
+    sendIfAlive(win, 'file-open-error', (err as Error).message)
+    return
   }
+  sendIfAlive(win, channel, opened)
 }
 
 function buildMenu(getWindow: () => BrowserWindow | null): void {
@@ -152,14 +164,17 @@ function buildMenu(getWindow: () => BrowserWindow | null): void {
   const openRecent = async (path: string): Promise<void> => {
     const win = getWindow()
     if (!win) return
+    let opened: Awaited<ReturnType<typeof fileReader.read>>
     try {
-      win.webContents.send('file-opened', await fileReader.read(path))
+      opened = await fileReader.read(path)
     } catch (err) {
-      win.webContents.send('file-open-error', (err as Error).message)
+      sendIfAlive(win, 'file-open-error', (err as Error).message)
       recentFiles = removeRecent(recentFiles, path)
       saveRecentFiles()
       buildMenu(getWindow)
+      return
     }
+    sendIfAlive(win, 'file-opened', opened)
   }
   const labels = recentLabels(recentFiles)
   const recentItems: Electron.MenuItemConstructorOptions[] =
@@ -227,9 +242,9 @@ function buildMenu(getWindow: () => BrowserWindow | null): void {
             if (!win) return
             try {
               const opened = await fileDialogs.pickAndRead(win)
-              if (opened) win.webContents.send('file-opened', opened)
+              if (opened) sendIfAlive(win, 'file-opened', opened)
             } catch (err) {
-              win.webContents.send('file-open-error', (err as Error).message)
+              sendIfAlive(win, 'file-open-error', (err as Error).message)
             }
           }
         },
@@ -373,6 +388,11 @@ function createWindow(): BrowserWindow {
     }
   })
 
+  let rendererAvailable = true
+  let allowClose = false
+  let pendingQuit = false
+  let closePending = false
+
   mainWindow.on('ready-to-show', () => {
     mainWindow.show()
   })
@@ -381,44 +401,67 @@ function createWindow(): BrowserWindow {
   // record why (reason 'oom' vs 'crashed', exit code) and tell the user
   // where the log landed. 'unresponsive' separates hangs from crashes.
   mainWindow.webContents.on('render-process-gone', (_e, details) => {
+    rendererAvailable = false
     logIncident('render-process-gone', details)
     dialog.showErrorBox(
       'Display process stopped',
       `Reason: ${details.reason} (exit code ${details.exitCode})\n` +
         `Details were appended to:\n${crashLogPath()}`
     )
+    if (closePending) {
+      allowClose = true
+      if (pendingQuit) app.quit()
+      else mainWindow.close()
+    }
   })
   mainWindow.on('unresponsive', () => logIncident('window-unresponsive', {}))
   mainWindow.on('responsive', () => logIncident('window-responsive-again', {}))
 
   // Closing goes through the renderer first so unsaved region edits can veto
   // it (the renderer replies on 'close-confirmed' once the user agrees).
-  let allowClose = false
   // Whether the intercepted close came from an app quit, so confirming it
   // resumes the quit instead of just closing the window.
-  let pendingQuit = false
   const onBeforeQuit = (): void => {
     quitRequested = true
   }
   let quitRequested = false
   app.on('before-quit', onBeforeQuit)
   mainWindow.on('close', (e) => {
-    if (allowClose || mainWindow.webContents.isDestroyed()) return
+    if (
+      !needsCloseConfirmation(allowClose, rendererAvailable, mainWindow.webContents.isDestroyed())
+    ) {
+      return
+    }
     pendingQuit = quitRequested
     quitRequested = false
+    closePending = true
     e.preventDefault()
-    mainWindow.webContents.send('close-requested')
+    if (!sendIfAlive(mainWindow, 'close-requested')) {
+      closePending = false
+      rendererAvailable = false
+      allowClose = true
+      if (pendingQuit) app.quit()
+      else mainWindow.close()
+    }
   })
   const onCloseConfirmed = (event: Electron.IpcMainEvent): void => {
     if (event.sender === mainWindow.webContents) {
+      closePending = false
       allowClose = true
       if (pendingQuit) app.quit()
       else mainWindow.close()
     }
   }
+  const onCloseCancelled = (event: Electron.IpcMainEvent): void => {
+    if (event.sender !== mainWindow.webContents) return
+    closePending = false
+    pendingQuit = false
+  }
   ipcMain.on('close-confirmed', onCloseConfirmed)
+  ipcMain.on('close-cancelled', onCloseCancelled)
   mainWindow.on('closed', () => {
     ipcMain.removeListener('close-confirmed', onCloseConfirmed)
+    ipcMain.removeListener('close-cancelled', onCloseCancelled)
     app.removeListener('before-quit', onBeforeQuit)
   })
 
@@ -444,11 +487,14 @@ if (!gotLock) {
   // page loads.
   let pendingOpenPath: string | null = null
   const openPathInto = async (win: BrowserWindow, path: string): Promise<void> => {
+    let opened: Awaited<ReturnType<typeof fileReader.read>>
     try {
-      win.webContents.send('file-opened', await fileReader.read(path))
+      opened = await fileReader.read(path)
     } catch (err) {
-      win.webContents.send('file-open-error', (err as Error).message)
+      sendIfAlive(win, 'file-open-error', (err as Error).message)
+      return
     }
+    sendIfAlive(win, 'file-opened', opened)
   }
   app.on('open-file', (e, path) => {
     e.preventDefault()

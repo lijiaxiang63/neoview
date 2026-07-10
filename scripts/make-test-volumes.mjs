@@ -6,7 +6,7 @@ import { mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 const HEADER = 348
-const VOX_OFFSET = 352
+const DATA_START = 352
 
 const DT = {
   uint8: { code: 2, bytes: 1, write: (dv, o, v, le) => dv.setUint8(o, v) },
@@ -17,7 +17,7 @@ const DT = {
 /**
  * Build a complete single-file volume buffer.
  * opts: { dims:[nx,ny,nz,(nt)], dtype, value(i,j,k,t), spacing:[sx,sy,sz],
- *         qfac, sform:{rows:3x4}|null, qform:{b,c,d,ox,oy,oz}|null,
+ *         thirdAxisSign, rowTransform:{rows:3x4}|null, rotationTransform:{b,c,d,ox,oy,oz}|null,
  *         slope, inter, littleEndian, labels:[[index, name], ...] }
  * labels embeds an "index<TAB>name" text table between the header and the
  * data (intent code 1002, extension flag zero, data offset moved past it).
@@ -33,8 +33,8 @@ export function buildVolume(opts) {
     ? new TextEncoder().encode(opts.labels.map(([i, name]) => `${i}\t${name}`).join('\n'))
     : null
   const dataOffset = table
-    ? Math.ceil((VOX_OFFSET + table.length) / 16) * 16 // keep voxel data aligned
-    : VOX_OFFSET
+    ? Math.ceil((DATA_START + table.length) / 16) * 16 // keep voxel data aligned
+    : DATA_START
   const buf = new ArrayBuffer(dataOffset + n * dt.bytes)
   const dv = new DataView(buf)
 
@@ -44,7 +44,7 @@ export function buildVolume(opts) {
   for (let i = 0; i < 7; i++) dv.setInt16(42 + i * 2, dims[i], le)
   dv.setInt16(70, dt.code, le)
   dv.setInt16(72, dt.bytes * 8, le)
-  dv.setFloat32(76, opts.qfac ?? 1, le)
+  dv.setFloat32(76, opts.thirdAxisSign ?? 1, le)
   const spacing = opts.spacing ?? [1, 1, 1]
   for (let i = 0; i < 3; i++) dv.setFloat32(80 + i * 4, spacing[i], le)
   if (nt > 1) dv.setFloat32(92, 1, le)
@@ -53,20 +53,20 @@ export function buildVolume(opts) {
   dv.setFloat32(112, opts.slope ?? 0, le)
   dv.setFloat32(116, opts.inter ?? 0, le)
 
-  if (opts.qform) {
+  if (opts.rotationTransform) {
     dv.setInt16(252, 1, le)
-    dv.setFloat32(256, opts.qform.b, le)
-    dv.setFloat32(260, opts.qform.c, le)
-    dv.setFloat32(264, opts.qform.d, le)
-    dv.setFloat32(268, opts.qform.ox, le)
-    dv.setFloat32(272, opts.qform.oy, le)
-    dv.setFloat32(276, opts.qform.oz, le)
+    dv.setFloat32(256, opts.rotationTransform.b, le)
+    dv.setFloat32(260, opts.rotationTransform.c, le)
+    dv.setFloat32(264, opts.rotationTransform.d, le)
+    dv.setFloat32(268, opts.rotationTransform.ox, le)
+    dv.setFloat32(272, opts.rotationTransform.oy, le)
+    dv.setFloat32(276, opts.rotationTransform.oz, le)
   }
-  if (opts.sform) {
+  if (opts.rowTransform) {
     dv.setInt16(254, 1, le)
     for (let r = 0; r < 3; r++) {
       for (let c = 0; c < 4; c++) {
-        dv.setFloat32(280 + r * 16 + c * 4, opts.sform.rows[r][c], le)
+        dv.setFloat32(280 + r * 16 + c * 4, opts.rowTransform.rows[r][c], le)
       }
     }
   }
@@ -76,7 +76,7 @@ export function buildVolume(opts) {
   dv.setUint8(346, 0x31) // 1
   dv.setUint8(347, 0)
 
-  if (table) new Uint8Array(buf, VOX_OFFSET, table.length).set(table)
+  if (table) new Uint8Array(buf, DATA_START, table.length).set(table)
 
   let o = dataOffset
   for (let t = 0; t < nt; t++) {
@@ -92,7 +92,7 @@ export function buildVolume(opts) {
   return Buffer.from(buf)
 }
 
-function identitySform(ox, oy, oz) {
+function identityRowTransform(ox, oy, oz) {
   return {
     rows: [
       [1, 0, 0, ox],
@@ -111,14 +111,14 @@ if (isMain) {
     console.log(`wrote ${join(outDir, name)} (${buf.length} bytes)`)
   }
 
-  // 1. Ramp along axis 0, uint8, sform identity + offset (10,20,30).
+  // 1. Ramp along axis 0, uint8, rowTransform identity + offset (10,20,30).
   save(
     'grad_u8.nii',
     buildVolume({
       dims: [64, 64, 40],
       dtype: 'uint8',
       value: (i) => (i * 4) % 256,
-      sform: identitySform(10, 20, 30)
+      rowTransform: identityRowTransform(10, 20, 30)
     })
   )
 
@@ -132,7 +132,7 @@ if (isMain) {
       spacing: [1, 1, 2.5],
       slope: 0.5,
       inter: -25,
-      qform: { b: 0, c: 0, d: 0, ox: -32, oy: -32, oz: -50 },
+      rotationTransform: { b: 0, c: 0, d: 0, ox: -32, oy: -32, oz: -50 },
       value: (i, j, k) => {
         if (i === 10 && j === 20 && k === 30) return 2000
         const dx = i - 32
@@ -163,18 +163,18 @@ if (isMain) {
       dtype: 'int16',
       littleEndian: false,
       value: (i) => (i * 4) % 256,
-      sform: identitySform(10, 20, 30)
+      rowTransform: identityRowTransform(10, 20, 30)
     })
   )
 
-  // 5. Negative qfac: world z must decrease as k increases.
+  // 5. Negative thirdAxisSign: world z must decrease as k increases.
   save(
-    'qfac_neg.nii',
+    'thirdAxisSign_neg.nii',
     buildVolume({
       dims: [16, 16, 16],
       dtype: 'uint8',
-      qfac: -1,
-      qform: { b: 0, c: 0, d: 0, ox: 0, oy: 0, oz: 0 },
+      thirdAxisSign: -1,
+      rotationTransform: { b: 0, c: 0, d: 0, ox: 0, oy: 0, oz: 0 },
       value: (_i, _j, k) => k * 16
     })
   )
@@ -185,7 +185,7 @@ if (isMain) {
   save('bad_magic.nii', bad)
 
   const ok = buildVolume({ dims: [8, 8, 8], dtype: 'uint8', value: () => 0 })
-  save('truncated.nii', ok.subarray(0, VOX_OFFSET + 100))
+  save('truncated.nii', ok.subarray(0, DATA_START + 100))
 
   // 7. Overlay fixtures over grad_u8.nii (same world region, offset (10,20,30)).
 
@@ -196,7 +196,7 @@ if (isMain) {
       dims: [32, 32, 20],
       dtype: 'uint8',
       spacing: [2, 2, 2],
-      sform: {
+      rowTransform: {
         rows: [
           [2, 0, 0, 10],
           [0, 2, 0, 20],
@@ -218,7 +218,7 @@ if (isMain) {
       buildVolume({
         dims: [64, 64, 40],
         dtype: 'float32',
-        sform: identitySform(10, 20, 30),
+        rowTransform: identityRowTransform(10, 20, 30),
         value: (i, j, k) => (i - 32) * Math.exp(-((j - 32) ** 2 + (k - 20) ** 2) / 200)
       })
     )
@@ -230,7 +230,7 @@ if (isMain) {
     buildVolume({
       dims: [64, 64, 40],
       dtype: 'uint8',
-      sform: identitySform(10, 20, 30),
+      rowTransform: identityRowTransform(10, 20, 30),
       value: (i, j, k) => {
         const dx = i - 32
         const dy = j - 32

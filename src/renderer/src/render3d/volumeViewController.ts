@@ -382,7 +382,8 @@ export class VolumeViewController {
     }
     this.labelStaging = data
     this.renderer.setLabelVolume(data)
-    this.labelTexturePresent = true
+    this.reportUnsupported()
+    this.labelTexturePresent = this.renderer.unsupportedReason === null
     this.labelDirty = false
   }
 

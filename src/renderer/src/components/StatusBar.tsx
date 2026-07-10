@@ -11,7 +11,7 @@ function fmt(v: number, digits = 1): string {
 
 /** Strip the volume extension so layer readout labels stay short. */
 function shortName(name: string): string {
-  return name.replace(/\.nii(\.gz)?$/i, '')
+  return name.replace(/(\.nii\.gz|\.nii)$/i, '')
 }
 
 function layerReadout(

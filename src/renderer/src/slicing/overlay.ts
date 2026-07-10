@@ -121,20 +121,25 @@ function hslToPacked(h: number, s: number, l: number): number {
   return packRGB(Math.round((r + m) * 255), Math.round((g + m) * 255), Math.round((b + m) * 255))
 }
 
-const labelCache = new Map<number, number>()
+// Slice extraction may see arbitrary numeric values in label mode. Cache the
+// common compact range only; overflow colors remain deterministic without
+// retaining one entry per distinct value for the renderer lifetime.
+const LABEL_COLOR_CACHE_SIZE = 4096
+const labelCache = new Uint32Array(LABEL_COLOR_CACHE_SIZE)
 
 /**
  * Deterministic distinct color per label id: golden-angle hue walk with
  * lightness alternating by parity so adjacent ids stay far apart.
  */
 export function labelColor(id: number): number {
-  let c = labelCache.get(id)
-  if (c === undefined) {
-    const hue = (id * 137.50776405003785) % 360
-    c = hslToPacked(hue, 0.72, id % 2 === 0 ? 0.62 : 0.5)
-    labelCache.set(id, c)
+  const cacheable = Number.isInteger(id) && id >= 0 && id < LABEL_COLOR_CACHE_SIZE
+  if (cacheable && labelCache[id] !== 0) return labelCache[id]
+  const hue = (((id * 137.50776405003785) % 360) + 360) % 360
+  const color = hslToPacked(hue, 0.72, id % 2 === 0 ? 0.62 : 0.5)
+  if (cacheable) {
+    labelCache[id] = color
   }
-  return c
+  return color
 }
 
 export const MASK_COLOR = packRGB(255, 80, 40)
@@ -353,13 +358,13 @@ export function extractOverlayRGBA(
         continue
       }
       const v = raw[frameOff + xi + yi * sy + zi * sz] * slope + inter
-      if (kind === 'mask') {
+      if (!Number.isFinite(v)) {
+        px[p] = 0
+      } else if (kind === 'mask') {
         px[p] = v !== 0 ? MASK_COLOR : 0
       } else if (kind === 'labels') {
         const id = Math.round(v)
         px[p] = id !== 0 && !(anyHidden && hidden.has(id)) ? labelColor(id) : 0
-      } else if (Number.isNaN(v)) {
-        px[p] = 0
       } else if (signed) {
         const a = Math.abs(v)
         if (a < lo) {
@@ -400,5 +405,6 @@ export function sampleOverlayAt(
   const [nx, ny, nz] = ov.dims
   if (xi < 0 || xi >= nx || yi < 0 || yi >= ny || zi < 0 || zi >= nz) return null
   const frameOff = Math.min(frame, ov.frames - 1) * nx * ny * nz
-  return ov.raw[frameOff + xi + yi * nx + zi * nx * ny] * ov.slope + ov.inter
+  const value = ov.raw[frameOff + xi + yi * nx + zi * nx * ny] * ov.slope + ov.inter
+  return Number.isFinite(value) ? value : null
 }

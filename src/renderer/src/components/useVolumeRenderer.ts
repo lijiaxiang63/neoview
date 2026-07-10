@@ -62,16 +62,16 @@ export class VolumeInteractionController {
 
   pointerDown(event: VolumePointerEvent): void {
     if (event.button !== 0 || this.pointerId !== null) return
+    try {
+      event.currentTarget.setPointerCapture(event.pointerId)
+    } catch {
+      return
+    }
+    this.captured = { target: event.currentTarget, pointerId: event.pointerId }
     this.pointerId = event.pointerId
     this.lastPointer = [event.clientX, event.clientY]
     this.controller.setDragging(true)
     this.onDraggingChange(true)
-    try {
-      event.currentTarget.setPointerCapture(event.pointerId)
-      this.captured = { target: event.currentTarget, pointerId: event.pointerId }
-    } catch {
-      this.captured = null
-    }
   }
 
   pointerMove(event: VolumePointerEvent): void {
