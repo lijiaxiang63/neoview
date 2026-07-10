@@ -93,7 +93,8 @@ export class LoadCoordinator<V> {
   // (the neighbor in the last direction travelled). Consuming a hit skips
   // the disk read — the slowest step on external drives.
   private prefetched: { path: string; bytes: ArrayBuffer } | null = null
-  private prefetchActive = false
+  private prefetchGen = 0
+  private prefetchActiveGen: number | null = null
   private lastDelta: 1 | -1 = 1
 
   // Scan generation, echoed by the scanner in every progress batch: anything
@@ -107,6 +108,7 @@ export class LoadCoordinator<V> {
   // Armed when a scan starts; the first non-empty view of the folder
   // consumes it, so the folder's first file loads exactly once.
   private autoLoadArmed = false
+  private disposed = false
 
   constructor(
     fx: CoordinatorEffects<V>,
@@ -128,6 +130,7 @@ export class LoadCoordinator<V> {
   /** Explicit base open (dialog, menu, drop): supersedes a running scan and
    * any load in flight. */
   async openBase(name: string, bytes: ArrayBuffer, path: string | null): Promise<void> {
+    if (this.disposed) return
     // Confirm before any side effect: declining must leave the world exactly
     // as it was — including a scan still streaming its batches.
     if (!this.fx.confirmReplaceBase()) return
@@ -139,17 +142,21 @@ export class LoadCoordinator<V> {
   /** Overlay open: never contends for the base, so no generation. The op
    * settles the loading flag itself on every path (commit or fail). */
   async openOverlay(name: string, bytes: ArrayBuffer): Promise<void> {
+    if (this.disposed) return
     this.loadingOwner = null
     this.fx.raiseLoading()
     try {
       await this.fx.parseAndAddOverlay(name, bytes)
+      if (this.disposed) return
     } catch (err) {
+      if (this.disposed) return
       this.fx.failParse(err)
     }
   }
 
   /** Move the navigation target to this folder entry. */
   requestEntry(path: string): void {
+    if (this.disposed) return
     // A pick from the CURRENT scan's list claims its view: the auto-load may
     // still be armed (it waits while the list's head entry is ambiguous), and
     // a later batch firing it would override the choice — disarm it. Confirmed
@@ -165,6 +172,7 @@ export class LoadCoordinator<V> {
 
   /** Move the navigation target to the previous/next file (no wrap). */
   navigate(delta: 1 | -1): void {
+    if (this.disposed) return
     const snap = this.fx.snapshot()
     if (!snap.folderFiles) return
     this.lastDelta = delta
@@ -176,6 +184,7 @@ export class LoadCoordinator<V> {
    * (or the picker was canceled). The list fills from streamed batches while
    * the scan runs; the resolved scan is the authoritative final state. */
   async scanFolder(scan: (token: number) => Promise<ScanResult | null>): Promise<boolean> {
+    if (this.disposed) return false
     // A directory drop may replace a scan even though the picker flow itself
     // prevents re-entry. Settle its main-side candidate before issuing the new
     // request, preserving it only if this renderer already confirmed a batch.
@@ -187,6 +196,7 @@ export class LoadCoordinator<V> {
     this.fx.setScanning(true)
     try {
       const result = await scan(gen)
+      if (this.disposed) return false
       if (gen !== this.scanGen) return true // superseded by an explicit action
       if (!result) return false
       // Covers scans that produced no batches (e.g. an empty folder).
@@ -199,7 +209,7 @@ export class LoadCoordinator<V> {
       this.maybeAutoLoad(true)
       return true
     } finally {
-      if (gen === this.scanGen) {
+      if (!this.disposed && gen === this.scanGen) {
         this.autoLoadArmed = false
         this.fx.setScanning(false)
       }
@@ -211,7 +221,7 @@ export class LoadCoordinator<V> {
    * batch of a scan always starts a FRESH list, so re-scanning the same root
    * cannot resurrect entries that no longer exist. */
   onScanBatch(token: number, root: string, files: FolderEntry[]): void {
-    if (token !== this.scanGen) return
+    if (this.disposed || token !== this.scanGen) return
     if (this.confirmScan()) {
       this.fx.setFolder({ root, files: sortEntries(files), truncated: false })
     } else {
@@ -224,6 +234,7 @@ export class LoadCoordinator<V> {
    * batches and final result are ignored rather than fighting the user's
    * choice. The scan itself just runs out harmlessly. */
   abandonScan(): void {
+    if (this.disposed) return
     const token = this.scanGen
     this.scanGen++
     this.autoLoadArmed = false
@@ -234,7 +245,32 @@ export class LoadCoordinator<V> {
   /** The folder closed (e.g. an outside file replaced it): release the
    * cached bytes instead of pinning them until the next navigation. */
   releasePrefetch(): void {
+    this.prefetchGen++
+    this.prefetchActiveGen = null
     this.prefetched = null
+  }
+
+  /** Permanently invalidate this coordinator and release every owned
+   * reference. Pending promises may still settle, but their results are
+   * ignored and can no longer reach the injected effects. */
+  dispose(): void {
+    if (this.disposed) return
+    const snapshot = this.fx.snapshot()
+    const scanToken = this.scanGen
+    const hadNavigation = this.queued !== null || this.pumpActive
+    this.disposed = true
+    this.baseGen++
+    this.scanGen++
+    this.queued = null
+    this.autoLoadArmed = false
+    this.releasePrefetch()
+    this.loadingOwner = null
+    if (snapshot.scanning) {
+      this.fx.cancelScan(scanToken)
+      this.fx.setScanning(false)
+    }
+    if (hadNavigation) this.fx.setPending(null)
+    if (snapshot.loading) this.fx.dismissLoading()
   }
 
   /** Every base load funnels through here; the generation check at commit
@@ -248,11 +284,13 @@ export class LoadCoordinator<V> {
     path: string | null,
     isStaleTarget?: () => boolean
   ): Promise<void> {
+    if (this.disposed) return
     const gen = ++this.baseGen
     this.loadingOwner = gen
     this.fx.raiseLoading()
     try {
       const volume = await this.fx.parseBase(name, bytes)
+      if (this.disposed) return
       if (gen !== this.baseGen || isStaleTarget?.()) {
         this.settleIfOwner(gen)
         return
@@ -260,6 +298,7 @@ export class LoadCoordinator<V> {
       this.loadingOwner = null
       this.fx.commitBase(volume, path)
     } catch (err) {
+      if (this.disposed) return
       if (gen !== this.baseGen || isStaleTarget?.()) {
         // A superseded target's failure (e.g. a corrupt file the user
         // already scrubbed past) is not the current view's problem.
@@ -275,7 +314,7 @@ export class LoadCoordinator<V> {
    * still owns it. A newer load owns it now → leave it raised for them; a
    * scan confirmation already settled it → nothing to do. */
   private settleIfOwner(gen: number): void {
-    if (this.loadingOwner === gen) {
+    if (!this.disposed && this.loadingOwner === gen) {
       this.loadingOwner = null
       this.fx.dismissLoading()
     }
@@ -291,6 +330,9 @@ export class LoadCoordinator<V> {
     this.confirmedScanGen = this.scanGen
     this.fx.confirmScan(this.scanGen)
     this.queued = null
+    // A confirmed scan starts a new folder session even when its root and
+    // paths match the previous one. Never carry bytes across that boundary.
+    this.releasePrefetch()
     this.baseGen++
     // The invalidated parse can never publish now, so its loading flag is
     // ownerless — settle it here rather than leaving it raised forever
@@ -303,7 +345,7 @@ export class LoadCoordinator<V> {
   }
 
   private maybeAutoLoad(final: boolean): void {
-    if (!this.autoLoadArmed) return
+    if (this.disposed || !this.autoLoadArmed) return
     const snap = this.fx.snapshot()
     if (!snap.folderRoot || !snap.folderFiles || snap.folderFiles.length === 0) return
     const src = snap.sourcePath
@@ -326,12 +368,13 @@ export class LoadCoordinator<V> {
   }
 
   private async pump(): Promise<void> {
-    if (this.pumpActive) return
+    if (this.disposed || this.pumpActive) return
     this.pumpActive = true
     try {
-      while (this.queued) {
+      while (!this.disposed && this.queued) {
         const snap = this.fx.snapshot()
         const path = this.queued
+        const folderSession = this.confirmedScanGen
         if (path === snap.sourcePath) break
         // An explicit open already parsing wins over queued navigation. This
         // sits before the prefetch branch: cached bytes skip the read (and
@@ -347,6 +390,10 @@ export class LoadCoordinator<V> {
             this.prefetched = null // the load transfers the buffer away
           } else {
             opened = await this.fx.read(path)
+            // A same-root rescan may put the identical path back into the
+            // one-slot queue. Path equality alone cannot distinguish that
+            // ABA case: bytes from the previous folder session must drop.
+            if (folderSession !== this.confirmedScanGen) continue
             // The target moved on while this file was being read: drop the
             // bytes unparsed and chase the newer target.
             if (this.queued !== path) continue
@@ -367,6 +414,7 @@ export class LoadCoordinator<V> {
           if (!this.fx.confirmReplaceBase()) break
           await this.runBaseLoad(opened.name, opened.bytes, path, () => this.queued !== path)
         } catch (err) {
+          if (folderSession !== this.confirmedScanGen) continue
           // A stale read's failure mirrors a stale read's success: when the
           // target moved on, chase it instead of reporting an error for a
           // file nobody is waiting on; when the world changed under us, an
@@ -388,26 +436,29 @@ export class LoadCoordinator<V> {
     } finally {
       this.queued = null
       this.pumpActive = false
-      this.fx.setPending(null)
-      this.schedulePrefetch()
+      if (!this.disposed) {
+        this.fx.setPending(null)
+        this.schedulePrefetch()
+      }
     }
   }
 
   /** After navigation settles, read the neighbor in the direction of travel
    * so the next key press starts from parsing instead of the disk. */
   private schedulePrefetch(): void {
-    if (this.prefetchActive) return
+    if (this.disposed || this.prefetchActiveGen === this.prefetchGen) return
     const snap = this.fx.snapshot()
     if (!snap.folderFiles || snap.sourcePath === null) return
     const idx = adjacentIndex(snap.folderFiles, snap.sourcePath, this.lastDelta)
     if (idx === null) return
     const target = snap.folderFiles[idx]
     if (this.prefetched?.path === target.path) return
-    this.prefetchActive = true
+    const gen = this.prefetchGen
+    this.prefetchActiveGen = gen
     this.fx
       .readWithin(target.path, this.prefetchMax)
       .then((opened) => {
-        if (!opened) return // over the size cap — deliberately not read
+        if (this.disposed || gen !== this.prefetchGen || !opened) return
         // Keep the bytes only if the entry still belongs to the open folder.
         const cur = this.fx.snapshot()
         if (cur.folderFiles?.some((f) => f.path === target.path)) {
@@ -418,7 +469,7 @@ export class LoadCoordinator<V> {
         // Prefetch is opportunistic; the real read will surface any error.
       })
       .finally(() => {
-        this.prefetchActive = false
+        if (this.prefetchActiveGen === gen) this.prefetchActiveGen = null
       })
   }
 }

@@ -223,6 +223,103 @@ describe('base load ownership', () => {
   })
 })
 
+describe('coordinator lifecycle', () => {
+  it('dispose is repeatable and drops a base result that settles later', async () => {
+    const h = makeHarness()
+    void h.co.openBase('a.nii', bytes(), '/x/a.nii')
+    await tick()
+    expect(h.state.loading).toBe(true)
+
+    h.co.dispose()
+    h.co.dispose()
+    expect(h.state.loading).toBe(false)
+
+    h.parses[0].d.resolve('vol:a')
+    await tick()
+    expect(h.commits).toEqual([])
+    expect(h.failures).toEqual([])
+  })
+
+  it('dispose cancels a scan and ignores its final result and late batches', async () => {
+    const h = makeHarness()
+    const scanDone = deferred<ScanResult | null>()
+    let token = 0
+    void h.co.scanFolder((value) => {
+      token = value
+      return scanDone.promise
+    })
+    expect(h.state.scanning).toBe(true)
+
+    h.co.dispose()
+    expect(h.state.scanning).toBe(false)
+    expect(h.scanCancels).toEqual([token])
+    h.co.onScanBatch(token, '/r', [entry('/r/a.nii')])
+    scanDone.resolve(folder(['/r/a.nii']))
+    await tick()
+
+    expect(h.state.folder).toBe(null)
+    expect(h.reads).toEqual([])
+  })
+
+  it('dispose prevents an in-flight prefetch from retaining its bytes', async () => {
+    const h = makeHarness()
+    h.state.folder = folder(['/r/a.nii', '/r/b.nii'])
+    h.state.sourcePath = '/r/a.nii'
+    h.co.requestEntry('/r/a.nii')
+    await tick()
+    expect(h.cappedReads[0]?.path).toBe('/r/b.nii')
+
+    h.co.dispose()
+    h.cappedReads[0].d.resolve({ name: 'b.nii', bytes: bytes(32) })
+    await tick()
+    h.co.requestEntry('/r/b.nii')
+    expect(h.reads).toEqual([])
+  })
+
+  it('folder release invalidates an in-flight prefetch before the same paths reopen', async () => {
+    const h = makeHarness()
+    h.state.folder = folder(['/r/a.nii', '/r/b.nii'])
+    h.state.sourcePath = '/r/a.nii'
+    h.co.requestEntry('/r/a.nii')
+    await tick()
+    expect(h.cappedReads[0]?.path).toBe('/r/b.nii')
+
+    h.co.releasePrefetch()
+    // The next folder session happens to expose the same absolute paths.
+    h.state.folder = folder(['/r/a.nii', '/r/b.nii'])
+    h.cappedReads[0].d.resolve({ name: 'old-b.nii', bytes: bytes(32) })
+    await tick()
+
+    h.co.requestEntry('/r/b.nii')
+    expect(h.reads[0]?.path).toBe('/r/b.nii')
+    expect(h.parses).toEqual([])
+  })
+
+  it('scan confirmation invalidates an in-flight prefetch across a same-root rescan', async () => {
+    const h = makeHarness()
+    h.state.folder = folder(['/r/a.nii', '/r/b.nii'])
+    h.state.sourcePath = '/r/a.nii'
+    h.co.requestEntry('/r/a.nii')
+    await tick()
+    expect(h.cappedReads[0]?.path).toBe('/r/b.nii')
+
+    const scanDone = deferred<ScanResult | null>()
+    let token = 0
+    void h.co.scanFolder((value) => {
+      token = value
+      return scanDone.promise
+    })
+    h.co.onScanBatch(token, '/r', [entry('/r/a.nii'), entry('/r/b.nii')])
+    h.cappedReads[0].d.resolve({ name: 'old-b.nii', bytes: bytes(32) })
+    scanDone.resolve(folder(['/r/a.nii', '/r/b.nii']))
+    await tick()
+
+    h.co.requestEntry('/r/b.nii')
+    expect(h.reads[0]?.path).toBe('/r/b.nii')
+    expect(h.parses).toEqual([])
+  })
+})
+
 describe('folder navigation', () => {
   it('holding a key coalesces: bytes read for a superseded target drop unparsed', async () => {
     const h = makeHarness()
@@ -274,6 +371,56 @@ describe('folder navigation', () => {
     h.parses[1].d.resolve('vol:c')
     await tick()
     expect(h.commits.map((c) => c.path)).toEqual(['/r/c.nii'])
+  })
+
+  it('same-root scan confirmation cannot reuse an old in-flight read of the same path', async () => {
+    const h = makeHarness()
+    h.state.folder = folder(['/r/a.nii'])
+    h.co.requestEntry('/r/a.nii')
+    expect(h.reads[0]?.path).toBe('/r/a.nii')
+
+    const scanDone = deferred<ScanResult | null>()
+    let token = 0
+    void h.co.scanFolder((value) => {
+      token = value
+      return scanDone.promise
+    })
+    h.co.onScanBatch(token, '/r', [entry('/r/a.nii')])
+    h.reads[0].d.resolve({ name: 'old-a.nii', bytes: bytes() })
+    await tick()
+
+    expect(h.parses).toEqual([])
+    expect(h.reads[1]?.path).toBe('/r/a.nii')
+    h.reads[1].d.resolve({ name: 'new-a.nii', bytes: bytes() })
+    await tick()
+    h.parses[0].d.resolve('vol:new')
+    scanDone.resolve(folder(['/r/a.nii']))
+    await tick()
+    expect(h.commits).toEqual([{ volume: 'vol:new', path: '/r/a.nii' }])
+  })
+
+  it('same-root scan confirmation suppresses an old read failure and retries the path', async () => {
+    const h = makeHarness()
+    h.state.folder = folder(['/r/a.nii'])
+    h.co.requestEntry('/r/a.nii')
+    const scanDone = deferred<ScanResult | null>()
+    let token = 0
+    void h.co.scanFolder((value) => {
+      token = value
+      return scanDone.promise
+    })
+    h.co.onScanBatch(token, '/r', [entry('/r/a.nii')])
+    h.reads[0].d.reject(new Error('old failure'))
+    await tick()
+
+    expect(h.failures).toEqual([])
+    expect(h.reads[1]?.path).toBe('/r/a.nii')
+    h.reads[1].d.resolve({ name: 'new-a.nii', bytes: bytes() })
+    await tick()
+    h.parses[0].d.resolve('vol:new')
+    scanDone.resolve(folder(['/r/a.nii']))
+    await tick()
+    expect(h.commits).toEqual([{ volume: 'vol:new', path: '/r/a.nii' }])
   })
 
   it('a failed folder read reports the error and stops the pump', async () => {
