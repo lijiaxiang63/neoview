@@ -149,8 +149,41 @@ const exportService = createExportService({
   remove: (path) => fs.rm(path, { force: true })
 })
 const fileAccess = new FileAccessAuthorizer({ realpath: fs.realpath })
+
+let lastDialogDirectory: string | undefined
+
+function dialogDirectoryPath(): string {
+  return join(app.getPath('userData'), 'dialog-directory.json')
+}
+
+async function loadDialogDirectory(): Promise<void> {
+  const raw = await fs.readFile(dialogDirectoryPath(), 'utf8').catch(() => '')
+  try {
+    const parsed: unknown = JSON.parse(raw)
+    lastDialogDirectory = typeof parsed === 'string' && parsed.length > 0 ? parsed : undefined
+  } catch {
+    lastDialogDirectory = undefined
+  }
+}
+
+let dialogDirectorySaveTail: Promise<void> = Promise.resolve()
+
+function saveDialogDirectory(directory: string): Promise<void> {
+  lastDialogDirectory = directory
+  dialogDirectorySaveTail = dialogDirectorySaveTail
+    .then(() => fs.writeFile(dialogDirectoryPath(), JSON.stringify(directory)))
+    .catch(() => {
+      // A picker choice remains valid even if its convenience history cannot be saved.
+    })
+  return dialogDirectorySaveTail
+}
+
 const fileDialogs = createFileDialogs(
-  { showOpenDialog: (window, options) => dialog.showOpenDialog(window, options) },
+  {
+    showOpenDialog: (window, options) => dialog.showOpenDialog(window, options),
+    getLastUsedDirectory: () => lastDialogDirectory,
+    saveLastUsedDirectory: saveDialogDirectory
+  },
   fileReader
 )
 const openIntents = new OpenIntentIssuer()
@@ -877,7 +910,7 @@ if (!gotLock) {
 
       // Load persisted recents before any renderer can report a newly opened
       // path, so an in-flight read can never overwrite a later addition.
-      await loadRecentFiles()
+      await Promise.all([loadRecentFiles(), loadDialogDirectory()])
 
       const disposeFileIpc = registerFileIpc({
         ipc: ipcMain,

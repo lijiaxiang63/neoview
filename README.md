@@ -70,6 +70,8 @@ No parsing, math, or rendering libraries — the whole pipeline is hand-written 
 
 ## Getting started
 
+Requires Node.js 22.12 or newer.
+
 ```bash
 npm install
 npm run dev           # start with hot reload
