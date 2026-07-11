@@ -1,3 +1,4 @@
+import { resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import {
   MODEL_AUTOMATION_VARIANTS,
@@ -18,9 +19,11 @@ describe('model reference scripts', () => {
       '/tmp/input.nii.gz'
     ])
     expect(parsed.force).toBe(true)
+    // The scripts resolve() their path arguments, so the expectation must be
+    // platform-native too (Windows maps /tmp onto the current drive).
     expect(parsed.jobs).toEqual([
       {
-        inputPath: '/tmp/input.nii.gz',
+        inputPath: resolve('/tmp/input.nii.gz'),
         variant: { id: 'aparc-104-low', groupId: 'aparc-104' }
       }
     ])
@@ -42,7 +45,7 @@ describe('model reference scripts', () => {
       '--default',
       '/tmp/input.nii.gz'
     ])
-    expect(parsed.source).toBe('/tmp/source')
+    expect(parsed.source).toBe(resolve('/tmp/source'))
     expect(parsed.jobs).toHaveLength(1)
     expect(parsed.jobs[0].variant.id).toBe('tissue-high')
   })

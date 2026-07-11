@@ -1,0 +1,10 @@
+# Checkouts must be byte-identical on every platform: the bundled model
+# resources are hash-pinned in the catalog and validated at load time, so a
+# CRLF-converting checkout (e.g. Windows CI's autocrlf) would break both the
+# pin tests and the packaged application.
+* text=auto eol=lf
+*.png -text
+*.icns -text
+*.ico -text
+*.gz -text
+*.bin -text
