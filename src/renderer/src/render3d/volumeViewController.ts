@@ -1,4 +1,4 @@
-import { OrbitCamera, FOV_Y_RAD, type CameraBasis } from './camera'
+import { cameraBasisForAffine, OrbitCamera, FOV_Y_RAD, type CameraBasis } from './camera'
 import {
   buildLabelTexData,
   buildTexData,
@@ -540,7 +540,9 @@ export class VolumeViewController {
   }
 
   private applyCamera(): void {
-    this.renderer.setCamera(this.camera.basis(), FOV_Y_RAD)
+    const basis = this.camera.basis()
+    const volume = this.state.volume
+    this.renderer.setCamera(volume ? cameraBasisForAffine(basis, volume.affine) : basis, FOV_Y_RAD)
   }
 
   private readonly handleContextRestored = (): void => {

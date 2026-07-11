@@ -108,9 +108,24 @@ describe('slice coordinate conversion', () => {
       for (let column = 0; column < vp.columns; column++) {
         const roundTrip = canvasToSliceVoxel(...sliceVoxelToCanvas(column, row, vp), vp)
         expect(roundTrip?.[0]).toBe(column)
-        expect(Math.abs((roundTrip?.[1] ?? -10) - row)).toBeLessThanOrEqual(1)
+        expect(roundTrip?.[1]).toBe(row)
       }
     }
+  })
+
+  it('maps coordinates and box bounds through reversed screen directions', () => {
+    const vp = viewport(200, 200, 10, 10)
+    const reversed = { ...PLANES[0], colDirection: -1 as const, rowDirection: -1 as const }
+    expect(canvasToSliceVoxel(vp.fit.dx, vp.fit.dy, vp, reversed)).toEqual([9, 0])
+    expect(sliceVoxelToCanvas(9, 0, vp, reversed)).toEqual([
+      vp.fit.dx + 0.5 * vp.fit.scale,
+      vp.fit.dy + 0.5 * vp.fit.scale
+    ])
+    const rect = boxCanvasRect({ min: [2, 3, 0], max: [6, 7, 0] }, reversed, vp)
+    expect(rect.x0).toBeCloseTo(vp.fit.dx + 3 * vp.fit.scale)
+    expect(rect.x1).toBeCloseTo(vp.fit.dx + 8 * vp.fit.scale)
+    expect(rect.y0).toBeCloseTo(vp.fit.dy + 3 * vp.fit.scale)
+    expect(rect.y1).toBeCloseTo(vp.fit.dy + 8 * vp.fit.scale)
   })
 
   it('converts client coordinates using device pixel ratio', () => {
@@ -150,6 +165,32 @@ describe('box viewport geometry', () => {
       [null, 'min'],
       ['min', null],
       ['max', null]
+    ])
+    expect(handles.map(resizeCursor)).toEqual([
+      'nwse-resize',
+      'nesw-resize',
+      'nesw-resize',
+      'nwse-resize',
+      'ns-resize',
+      'ns-resize',
+      'ew-resize',
+      'ew-resize'
+    ])
+  })
+
+  it('maps reversed screen handles to the raw edge under each handle', () => {
+    const rect = { x0: 20, x1: 80, y0: 30, y1: 90 }
+    const reversed = { ...PLANES[0], colDirection: -1 as const, rowDirection: -1 as const }
+    const handles = resizeHandles(rect, reversed)
+    expect(handles.map((handle) => [handle.editCol, handle.editRow])).toEqual([
+      ['max', 'min'],
+      ['min', 'min'],
+      ['max', 'max'],
+      ['min', 'max'],
+      [null, 'min'],
+      [null, 'max'],
+      ['max', null],
+      ['min', null]
     ])
     expect(handles.map(resizeCursor)).toEqual([
       'nwse-resize',

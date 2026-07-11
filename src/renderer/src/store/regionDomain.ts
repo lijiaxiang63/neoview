@@ -1,6 +1,6 @@
 import type { Volume } from '../volume/types'
 import type { OverlayLayer } from '../slicing/overlay'
-import { PLANES } from '../slicing/extract'
+import { slicePlanesForAffine } from '../slicing/directionLabels'
 import {
   AUTO_THRESHOLD_FALLBACK,
   boxHistogram,
@@ -796,7 +796,7 @@ export function createRegionDomain(deps: {
       const state = get()
       const volume = state.volume
       if (!volume || !state.labelMap || state.activeRegionId === null) return
-      const plane = PLANES[view]
+      const plane = slicePlanesForAffine(volume.affine)[view]
       if (!strokeCollector) strokeCollector = new ChangeCollector()
       const changed = paintStroke(
         state.labelMap,

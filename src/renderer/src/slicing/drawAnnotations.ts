@@ -39,7 +39,8 @@ export function drawSliceAnnotations(
     const [crossX, crossY] = sliceVoxelToCanvas(
       input.cross[plane.colAxis],
       input.cross[plane.rowAxis],
-      viewport
+      viewport,
+      plane
     )
     const gap = 8 * devicePixelRatio
     const imageX0 = viewport.fit.dx
@@ -74,7 +75,7 @@ export function drawSliceAnnotations(
       if (input.segTool === 'box' && boxInside) {
         const halfSize = 2 * devicePixelRatio
         context.fillStyle = 'rgba(255, 196, 64, 0.95)'
-        for (const handle of resizeHandles(rect)) {
+        for (const handle of resizeHandles(rect, plane)) {
           context.fillRect(handle.x - halfSize, handle.y - halfSize, halfSize * 2, halfSize * 2)
         }
       }
@@ -84,7 +85,8 @@ export function drawSliceAnnotations(
       const [brushX, brushY] = sliceVoxelToCanvas(
         input.brushHover.ijk[plane.colAxis],
         input.brushHover.ijk[plane.rowAxis],
-        viewport
+        viewport,
+        plane
       )
       context.strokeStyle =
         input.activeRegionId !== null ? 'rgba(255, 255, 255, 0.85)' : 'rgba(255, 255, 255, 0.3)'

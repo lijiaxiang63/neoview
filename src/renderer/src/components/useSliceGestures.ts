@@ -85,7 +85,7 @@ const browserScheduler: GestureScheduler = {
 
 export class SliceGestureController {
   private readonly view: View
-  private readonly plane: PlaneSpec
+  private plane: PlaneSpec
   private readonly store: GestureStore
   private readonly scheduler: GestureScheduler
   private runtime: SliceGestureRuntime
@@ -114,8 +114,9 @@ export class SliceGestureController {
     this.scheduler = scheduler
   }
 
-  updateRuntime(runtime: SliceGestureRuntime): void {
-    if (this.runtime.volume !== runtime.volume) this.cancelForVolumeChange()
+  updateRuntime(runtime: SliceGestureRuntime, plane: PlaneSpec): void {
+    if (this.runtime.volume !== runtime.volume || this.plane !== plane) this.cancelForVolumeChange()
+    this.plane = plane
     this.runtime = runtime
   }
 
@@ -223,7 +224,8 @@ export class SliceGestureController {
               boxCanvasRect(state.segBox, this.plane, geometry.viewport),
               canvasPoint[0],
               canvasPoint[1],
-              geometry.devicePixelRatio
+              geometry.devicePixelRatio,
+              this.plane
             )
           : null
       const gesture = beginBoxGesture({
@@ -348,7 +350,8 @@ export class SliceGestureController {
       event.clientY,
       container.getBoundingClientRect(),
       geometry.devicePixelRatio,
-      geometry.viewport
+      geometry.viewport,
+      this.plane
     )
   }
 
@@ -363,7 +366,8 @@ export class SliceGestureController {
       event.clientY,
       container.getBoundingClientRect(),
       geometry.devicePixelRatio,
-      geometry.viewport
+      geometry.viewport,
+      this.plane
     )
   }
 
@@ -460,7 +464,8 @@ export class SliceGestureController {
             boxCanvasRect(state.segBox, this.plane, geometry.viewport),
             canvasPoint[0],
             canvasPoint[1],
-            geometry.devicePixelRatio
+            geometry.devicePixelRatio,
+            this.plane
           )
         : null
     if (handle) this.setCursor(resizeCursor(handle))
@@ -556,12 +561,15 @@ export function useSliceGestures(input: UseSliceGesturesInput): SliceGestureHand
   )
 
   useLayoutEffect(() => {
-    controller.updateRuntime({
-      volume: input.volume,
-      viewport: input.viewport,
-      devicePixelRatio: input.devicePixelRatio
-    })
-  }, [controller, input.volume, input.viewport, input.devicePixelRatio])
+    controller.updateRuntime(
+      {
+        volume: input.volume,
+        viewport: input.viewport,
+        devicePixelRatio: input.devicePixelRatio
+      },
+      input.plane
+    )
+  }, [controller, input.volume, input.viewport, input.devicePixelRatio, input.plane])
 
   useEffect(() => {
     const container = input.containerRef.current

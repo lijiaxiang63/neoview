@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, type JSX } from 'react'
 import { useStore } from '../store'
 import { PLANES } from '../slicing/extract'
+import { slicePlanesForAffine } from '../slicing/directionLabels'
 import { drawSliceAnnotations } from '../slicing/drawAnnotations'
 import { SliceRasterRenderer } from '../slicing/sliceRasterRenderer'
 import { sharedSliceFitSize } from '../slicing/viewport'
@@ -12,8 +13,9 @@ interface Props {
 }
 
 export function SliceView({ view }: Props): JSX.Element {
-  const plane = PLANES[view]
   const volume = useStore((state) => state.volume)
+  const planes = useMemo(() => (volume ? slicePlanesForAffine(volume.affine) : PLANES), [volume])
+  const plane = planes[view]
   const sliceIndex = useStore((state) => state.cross[plane.sliceAxis])
   const cross = useStore((state) => state.cross)
   const frame = useStore((state) => state.frame)
@@ -49,8 +51,8 @@ export function SliceView({ view }: Props): JSX.Element {
   const columnSpacing = volume ? volume.spacing[plane.colAxis] : 1
   const rowSpacing = volume ? volume.spacing[plane.rowAxis] : 1
   const sharedFit = useMemo(
-    () => (volume && !maximized ? sharedSliceFitSize(volume.dims, volume.spacing) : null),
-    [volume, maximized]
+    () => (volume && !maximized ? sharedSliceFitSize(volume.dims, volume.spacing, planes) : null),
+    [volume, maximized, planes]
   )
   const { canvasSize, devicePixelRatio, viewport } = useSliceViewport(
     containerRef,

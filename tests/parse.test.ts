@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest'
 import { buildVolume } from '../scripts/make-test-volumes.mjs'
 import { parseLabelTable, parseVolume } from '../src/renderer/src/volume/parse'
 import { ParseError } from '../src/renderer/src/volume/types'
+import type { Volume } from '../src/renderer/src/volume/types'
 import { extractSliceToImageData, PLANES } from '../src/renderer/src/slicing/extract'
 
 function toArrayBuffer(buf: Buffer): ArrayBuffer {
@@ -210,5 +211,26 @@ describe('extractSliceToImageData', () => {
     extractSliceToImageData(vol, PLANES[0], 0, 0, 100, 101, img)
     expect(gray(img, 0)).toBe(0) // ramp(0)=0 below lo
     expect(gray(img, 7)).toBe(0) // ramp(7)=28 below lo
+  })
+
+  it('applies both in-plane screen directions during extraction', () => {
+    const directed = {
+      dims: [3, 2, 1],
+      frames: 1,
+      raw: new Uint8Array([0, 1, 2, 10, 11, 12]),
+      slope: 1,
+      inter: 0
+    } as Volume
+    const img = stub(3, 2)
+    extractSliceToImageData(
+      directed,
+      { ...PLANES[0], colDirection: -1, rowDirection: -1 },
+      0,
+      0,
+      0,
+      255,
+      img
+    )
+    expect(Array.from({ length: 6 }, (_, p) => gray(img, p))).toEqual([2, 1, 0, 12, 11, 10])
   })
 })

@@ -92,6 +92,24 @@ describe('extractOverlayRGBA — grid alignment', () => {
     expect(pixelAt(yz, 3, 1)).toBe(labelColor(7))
   })
 
+  it('follows both in-plane screen directions', () => {
+    const value = (i: number, j: number): number => (i === 2 && j === 3 ? 7 : 0)
+    const base = mkVol({ dims: [8, 6, 1], dtype: 'uint8', value: () => 9, rowTransform: identity })
+    const overlay = mkVol({ dims: [8, 6, 1], dtype: 'uint8', value, rowTransform: identity })
+    const img = stub(8, 6)
+    extractOverlayRGBA(
+      mkLayer(overlay, { kind: 'labels' }),
+      base,
+      { ...PLANES[0], colDirection: -1, rowDirection: -1 },
+      0,
+      0,
+      img
+    )
+    const pixels = new Uint32Array(img.data.buffer)
+    expect(pixels[3 * 8 + (8 - 1 - 2)]).toBe(labelColor(7))
+    expect(pixels.filter((pixel) => pixel >>> 24)).toHaveLength(1)
+  })
+
   it('2x-coarse overlay covers the nearest-neighbor pixel set', () => {
     const base = mkVol({ dims: [8, 8, 4], dtype: 'uint8', value: () => 0, rowTransform: identity })
     const overlay = mkVol({

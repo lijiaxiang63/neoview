@@ -279,7 +279,7 @@ export function computeRegionStats(
 }
 
 // ---------------------------------------------------------------------------
-// Slice rendering (mirrors extractOverlayRGBA's bottom-up row order)
+// Slice rendering (mirrors extractOverlayRGBA's screen directions)
 
 /**
  * Fill img (sized to the base slice grid) with region colors for one slice.
@@ -300,10 +300,14 @@ export function extractRegionsRGBA(
   const cs = stride[plane.colAxis]
   const rs = stride[plane.rowAxis]
   const base = sliceIdx * stride[plane.sliceAxis]
+  const colStart = plane.colDirection > 0 ? 0 : w - 1
+  const rowStart = plane.rowDirection > 0 ? h - 1 : 0
+  const colStep = cs * plane.colDirection
+  const rowStep = -plane.rowDirection
   let p = 0
-  for (let r = h - 1; r >= 0; r--) {
-    let idx = base + r * rs
-    for (let c = 0; c < w; c++, idx += cs, p++) {
+  for (let screenRow = 0, r = rowStart; screenRow < h; screenRow++, r += rowStep) {
+    let idx = base + r * rs + colStart * cs
+    for (let c = 0; c < w; c++, idx += colStep, p++) {
       const id = labelMap[idx]
       px[p] = id !== 0 && id < colorOf.length ? colorOf[id] : 0
     }
@@ -335,10 +339,11 @@ export function extractPreviewRGBA(
   const r0 = box.min[plane.rowAxis]
   const r1 = box.max[plane.rowAxis]
   for (let r = r0; r <= r1; r++) {
-    const rowStart = (h - 1 - r) * w
+    const screenRow = plane.rowDirection > 0 ? h - 1 - r : r
     let bidx = bbase + (r - r0) * brs
     for (let c = c0; c <= c1; c++, bidx += bcs) {
-      if (mask[bidx] !== 0) px[rowStart + c] = color
+      const screenColumn = plane.colDirection > 0 ? c : w - 1 - c
+      if (mask[bidx] !== 0) px[screenRow * w + screenColumn] = color
     }
   }
 }

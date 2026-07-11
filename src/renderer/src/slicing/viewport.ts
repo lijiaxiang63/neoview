@@ -36,18 +36,20 @@ export interface ResizeHandle {
   y: number
   editCol: BoxEdge | null
   editRow: BoxEdge | null
+  cursor: 'nwse-resize' | 'nesw-resize' | 'ew-resize' | 'ns-resize'
 }
 
 /** Common physical bounds for the three slice panels. Fitting every plane
  * against these bounds gives each panel the same physical-to-screen scale. */
 export function sharedSliceFitSize(
   dims: [number, number, number],
-  spacing: [number, number, number]
+  spacing: [number, number, number],
+  planes: readonly PlaneSpec[] = PLANES
 ): [number, number] {
   const extents = dims.map((count, axis) => count * spacing[axis])
   return [
-    Math.max(...PLANES.map((plane) => extents[plane.colAxis])),
-    Math.max(...PLANES.map((plane) => extents[plane.rowAxis]))
+    Math.max(...planes.map((plane) => extents[plane.colAxis])),
+    Math.max(...planes.map((plane) => extents[plane.rowAxis]))
   ]
 }
 
@@ -106,20 +108,23 @@ export function canvasToSlicePosition(
   return [(x - fit.dx) / (fit.scale * columnSpacing), (y - fit.dy) / (fit.scale * rowSpacing)]
 }
 
-/** Map a backing-canvas point to an in-bounds voxel, flipping the row axis. */
+/** Map a backing-canvas point to an in-bounds voxel through the plane directions. */
 export function canvasToSliceVoxel(
   x: number,
   y: number,
-  viewport: SliceViewport
+  viewport: SliceViewport,
+  plane: Pick<PlaneSpec, 'colDirection' | 'rowDirection'> = PLANES[0]
 ): [number, number] | null {
   const [columnPosition, rowPosition] = canvasToSlicePosition(x, y, viewport)
   const { columns, rows } = viewport
   if (columnPosition < 0 || columnPosition >= columns || rowPosition < 0 || rowPosition >= rows) {
     return null
   }
+  const screenColumn = Math.min(columns - 1, Math.max(0, Math.floor(columnPosition)))
+  const screenRow = Math.min(rows - 1, Math.max(0, Math.floor(rowPosition)))
   return [
-    Math.min(columns - 1, Math.max(0, Math.floor(columnPosition))),
-    Math.min(rows - 1, Math.max(0, Math.floor(rows - 1 - rowPosition)))
+    plane.colDirection > 0 ? screenColumn : columns - 1 - screenColumn,
+    plane.rowDirection > 0 ? rows - 1 - screenRow : screenRow
   ]
 }
 
@@ -127,13 +132,16 @@ export function canvasToSliceVoxel(
 export function canvasToSliceVoxelClamped(
   x: number,
   y: number,
-  viewport: SliceViewport
+  viewport: SliceViewport,
+  plane: Pick<PlaneSpec, 'colDirection' | 'rowDirection'> = PLANES[0]
 ): [number, number] {
   const [columnPosition, rowPosition] = canvasToSlicePosition(x, y, viewport)
   const { columns, rows } = viewport
+  const screenColumn = Math.min(columns - 1, Math.max(0, Math.floor(columnPosition)))
+  const screenRow = Math.min(rows - 1, Math.max(0, Math.floor(rowPosition)))
   return [
-    Math.min(columns - 1, Math.max(0, Math.floor(columnPosition))),
-    Math.min(rows - 1, Math.max(0, Math.floor(rows - 1 - rowPosition)))
+    plane.colDirection > 0 ? screenColumn : columns - 1 - screenColumn,
+    plane.rowDirection > 0 ? rows - 1 - screenRow : screenRow
   ]
 }
 
@@ -142,10 +150,11 @@ export function clientToSliceVoxel(
   clientY: number,
   rect: ClientRectLike,
   devicePixelRatio: number,
-  viewport: SliceViewport
+  viewport: SliceViewport,
+  plane: Pick<PlaneSpec, 'colDirection' | 'rowDirection'> = PLANES[0]
 ): [number, number] | null {
   const [x, y] = clientToCanvas(clientX, clientY, rect, devicePixelRatio)
-  return canvasToSliceVoxel(x, y, viewport)
+  return canvasToSliceVoxel(x, y, viewport, plane)
 }
 
 export function clientToSliceVoxelClamped(
@@ -153,22 +162,26 @@ export function clientToSliceVoxelClamped(
   clientY: number,
   rect: ClientRectLike,
   devicePixelRatio: number,
-  viewport: SliceViewport
+  viewport: SliceViewport,
+  plane: Pick<PlaneSpec, 'colDirection' | 'rowDirection'> = PLANES[0]
 ): [number, number] {
   const [x, y] = clientToCanvas(clientX, clientY, rect, devicePixelRatio)
-  return canvasToSliceVoxelClamped(x, y, viewport)
+  return canvasToSliceVoxelClamped(x, y, viewport, plane)
 }
 
 /** Canvas position of a voxel center. */
 export function sliceVoxelToCanvas(
   column: number,
   row: number,
-  viewport: SliceViewport
+  viewport: SliceViewport,
+  plane: Pick<PlaneSpec, 'colDirection' | 'rowDirection'> = PLANES[0]
 ): [number, number] {
-  const { fit, rows, columnSpacing, rowSpacing } = viewport
+  const { fit, columns, rows, columnSpacing, rowSpacing } = viewport
+  const screenColumn = plane.colDirection > 0 ? column : columns - 1 - column
+  const screenRow = plane.rowDirection > 0 ? rows - 1 - row : row
   return [
-    fit.dx + (column + 0.5) * columnSpacing * fit.scale,
-    fit.dy + (rows - 1 - row + 0.5) * rowSpacing * fit.scale
+    fit.dx + (screenColumn + 0.5) * columnSpacing * fit.scale,
+    fit.dy + (screenRow + 0.5) * rowSpacing * fit.scale
   ]
 }
 
@@ -192,34 +205,45 @@ export function slicePointInsideBox(
 /** Canvas rect of inclusive voxel bounds, using cell edges rather than centers. */
 export function boxCanvasRect(
   box: SegBox,
-  plane: Pick<PlaneSpec, 'colAxis' | 'rowAxis'>,
+  plane: Pick<PlaneSpec, 'colAxis' | 'rowAxis' | 'colDirection' | 'rowDirection'>,
   viewport: SliceViewport
 ): CanvasRect {
   const { fit, rows, columnSpacing, rowSpacing } = viewport
-  const columnMin = box.min[plane.colAxis]
-  const columnMax = box.max[plane.colAxis]
-  const rowMin = box.min[plane.rowAxis]
-  const rowMax = box.max[plane.rowAxis]
+  const rawColumnMin = box.min[plane.colAxis]
+  const rawColumnMax = box.max[plane.colAxis]
+  const rawRowMin = box.min[plane.rowAxis]
+  const rawRowMax = box.max[plane.rowAxis]
+  const columnMin = plane.colDirection > 0 ? rawColumnMin : viewport.columns - 1 - rawColumnMax
+  const columnMax = plane.colDirection > 0 ? rawColumnMax : viewport.columns - 1 - rawColumnMin
+  const rowMin = plane.rowDirection > 0 ? rows - 1 - rawRowMax : rawRowMin
+  const rowMax = plane.rowDirection > 0 ? rows - 1 - rawRowMin : rawRowMax
   return {
     x0: fit.dx + columnMin * columnSpacing * fit.scale,
     x1: fit.dx + (columnMax + 1) * columnSpacing * fit.scale,
-    y0: fit.dy + (rows - 1 - rowMax) * rowSpacing * fit.scale,
-    y1: fit.dy + (rows - rowMin) * rowSpacing * fit.scale
+    y0: fit.dy + rowMin * rowSpacing * fit.scale,
+    y1: fit.dy + (rowMax + 1) * rowSpacing * fit.scale
   }
 }
 
-export function resizeHandles(rect: CanvasRect): ResizeHandle[] {
+export function resizeHandles(
+  rect: CanvasRect,
+  plane: Pick<PlaneSpec, 'colDirection' | 'rowDirection'> = PLANES[0]
+): ResizeHandle[] {
   const middleX = (rect.x0 + rect.x1) / 2
   const middleY = (rect.y0 + rect.y1) / 2
+  const leftCol: BoxEdge = plane.colDirection > 0 ? 'min' : 'max'
+  const rightCol: BoxEdge = plane.colDirection > 0 ? 'max' : 'min'
+  const topRow: BoxEdge = plane.rowDirection > 0 ? 'max' : 'min'
+  const bottomRow: BoxEdge = plane.rowDirection > 0 ? 'min' : 'max'
   return [
-    { x: rect.x0, y: rect.y0, editCol: 'min', editRow: 'max' },
-    { x: rect.x1, y: rect.y0, editCol: 'max', editRow: 'max' },
-    { x: rect.x0, y: rect.y1, editCol: 'min', editRow: 'min' },
-    { x: rect.x1, y: rect.y1, editCol: 'max', editRow: 'min' },
-    { x: middleX, y: rect.y0, editCol: null, editRow: 'max' },
-    { x: middleX, y: rect.y1, editCol: null, editRow: 'min' },
-    { x: rect.x0, y: middleY, editCol: 'min', editRow: null },
-    { x: rect.x1, y: middleY, editCol: 'max', editRow: null }
+    { x: rect.x0, y: rect.y0, editCol: leftCol, editRow: topRow, cursor: 'nwse-resize' },
+    { x: rect.x1, y: rect.y0, editCol: rightCol, editRow: topRow, cursor: 'nesw-resize' },
+    { x: rect.x0, y: rect.y1, editCol: leftCol, editRow: bottomRow, cursor: 'nesw-resize' },
+    { x: rect.x1, y: rect.y1, editCol: rightCol, editRow: bottomRow, cursor: 'nwse-resize' },
+    { x: middleX, y: rect.y0, editCol: null, editRow: topRow, cursor: 'ns-resize' },
+    { x: middleX, y: rect.y1, editCol: null, editRow: bottomRow, cursor: 'ns-resize' },
+    { x: rect.x0, y: middleY, editCol: leftCol, editRow: null, cursor: 'ew-resize' },
+    { x: rect.x1, y: middleY, editCol: rightCol, editRow: null, cursor: 'ew-resize' }
   ]
 }
 
@@ -228,20 +252,16 @@ export function hitResizeHandle(
   x: number,
   y: number,
   devicePixelRatio: number,
+  plane: Pick<PlaneSpec, 'colDirection' | 'rowDirection'> = PLANES[0],
   toleranceCssPixels = 8
 ): ResizeHandle | null {
   const tolerance = toleranceCssPixels * devicePixelRatio
-  for (const handle of resizeHandles(rect)) {
+  for (const handle of resizeHandles(rect, plane)) {
     if (Math.abs(x - handle.x) <= tolerance && Math.abs(y - handle.y) <= tolerance) return handle
   }
   return null
 }
 
-export function resizeCursor(handle: Pick<ResizeHandle, 'editCol' | 'editRow'>): string {
-  if (handle.editCol && handle.editRow) {
-    const topLeft = handle.editCol === 'min' && handle.editRow === 'max'
-    const bottomRight = handle.editCol === 'max' && handle.editRow === 'min'
-    return topLeft || bottomRight ? 'nwse-resize' : 'nesw-resize'
-  }
-  return handle.editCol ? 'ew-resize' : 'ns-resize'
+export function resizeCursor(handle: Pick<ResizeHandle, 'cursor'>): string {
+  return handle.cursor
 }

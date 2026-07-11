@@ -95,7 +95,7 @@ function viewport(): SliceViewport {
 }
 
 function clientPoint(column: number, row: number): [number, number] {
-  return [(column + 0.5) * 10, (8.5 - row) * 10]
+  return [(column + 0.5) * 10, (9.5 - row) * 10]
 }
 
 interface Harness {
@@ -107,7 +107,7 @@ interface Harness {
   event(column: number, row: number, overrides?: Partial<GesturePointerEvent>): GesturePointerEvent
 }
 
-function harness(): Harness {
+function harness(plane = PLANES[0]): Harness {
   const vol = volume()
   const state = {
     volume: vol,
@@ -139,7 +139,7 @@ function harness(): Harness {
   const vp = viewport()
   const controller = new SliceGestureController(
     0,
-    PLANES[0],
+    plane,
     store,
     { volume: state.volume, viewport: vp, devicePixelRatio: 1 },
     scheduler
@@ -389,6 +389,20 @@ describe('box gestures', () => {
     expect(h.state.setSegBox).toHaveBeenLastCalledWith({ min: [5, 0, 4], max: [9, 2, 6] })
     expect(h.overlay.style.cursor).toBe('')
   })
+
+  it('resizes the raw edges displayed under a reversed top-left handle', () => {
+    const plane = { ...PLANES[0], colDirection: -1 as const, rowDirection: -1 as const }
+    const h = harness(plane)
+    h.state.segTool = 'box'
+    h.state.segBox = { min: [2, 2, 4], max: [5, 5, 6] }
+    const rect = boxCanvasRect(h.state.segBox, plane, viewport())
+    const down = { ...h.event(0, 0), clientX: rect.x0, clientY: rect.y0 }
+    h.controller.pointerDown(down)
+    expect(h.overlay.style.cursor).toBe('nwse-resize')
+    h.controller.pointerMove({ ...down, clientX: 55, clientY: 35 })
+    h.controller.pointerUp({ ...down, clientX: 55, clientY: 35 })
+    expect(h.state.setSegBox).toHaveBeenLastCalledWith({ min: [2, 3, 4], max: [4, 5, 6] })
+  })
 })
 
 describe('gesture cleanup', () => {
@@ -399,11 +413,29 @@ describe('gesture cleanup', () => {
     const replacement = volume()
     h.state.volume = replacement
     h.state.cross = [1, 1, 1]
-    h.controller.updateRuntime({ volume: replacement, viewport: viewport(), devicePixelRatio: 1 })
+    h.controller.updateRuntime(
+      { volume: replacement, viewport: viewport(), devicePixelRatio: 1 },
+      PLANES[0]
+    )
     expect(h.scheduler.callbacks).toHaveLength(0)
     expect(h.container.captured.size).toBe(0)
     h.scheduler.runAll()
     expect(h.state.cross).toEqual([1, 1, 1])
+  })
+
+  it('uses the replacement plane for later navigation and wheel input', () => {
+    const h = harness()
+    const replacement = volume()
+    h.state.volume = replacement
+    h.state.cross = [1, 1, 1]
+    h.controller.updateRuntime(
+      { volume: replacement, viewport: viewport(), devicePixelRatio: 1 },
+      PLANES[1]
+    )
+    h.controller.pointerDown(h.event(2, 3))
+    expect(h.state.cross).toEqual([2, 1, 3])
+    h.container.wheel(20)
+    expect(h.state.cross).toEqual([2, 2, 3])
   })
 
   it('detaches the wheel listener and cancels a pending frame', () => {

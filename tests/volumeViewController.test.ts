@@ -721,6 +721,32 @@ describe('VolumeViewController lifecycle and restoration', () => {
     expect(h.scheduler.requests).toEqual(['interactive', 'interactive', 'full'])
   })
 
+  it('maps the camera through the current volume affine after replacement', () => {
+    const first = makeVolume('first-camera')
+    first.affine = new Float64Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1])
+    const second = makeVolume('second-camera')
+    second.affine = new Float64Array([-1, 0, 0, 0, 0, 0, 1, -293, 0, -1, 0, 0, 0, 0, 0, 1])
+    const h = harness()
+
+    h.controller.updateState(state(first))
+    h.scheduler.callbacks?.render('full')
+    expect(h.renderer.setCamera).toHaveBeenLastCalledWith(BASIS, expect.any(Number))
+
+    h.controller.updateState(state(second))
+    h.scheduler.callbacks?.render('full')
+    const expected: CameraBasis = {
+      eye: [-1, -3, 2],
+      right: [-1, 0, 0],
+      up: [0, 0, 1],
+      fwd: [0, 1, 0]
+    }
+    expect(h.renderer.setCamera).toHaveBeenLastCalledWith(expected, expect.any(Number))
+
+    h.renderer.setCamera.mockClear()
+    h.renderer.onContextRestored?.()
+    expect(h.renderer.setCamera).toHaveBeenCalledWith(expected, expect.any(Number))
+  })
+
   it('disposes once and makes pending label and context callbacks no-ops', () => {
     const volume = makeVolume('dispose')
     const labels = new Uint16Array(8).fill(1)

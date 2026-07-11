@@ -410,7 +410,12 @@ describe('regions', () => {
       raw[n + i] = i + 100
     }
     const vol = fakeVolume({ dataMin: 0, dataMax: 107 })
-    Object.assign(vol, { dims: [2, 2, 2], frames: 2, raw })
+    Object.assign(vol, {
+      dims: [2, 2, 2],
+      frames: 2,
+      raw,
+      affine: new Float64Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1])
+    })
     return vol
   }
 
@@ -474,6 +479,38 @@ describe('regions', () => {
     } finally {
       other.dispose()
     }
+  })
+
+  it('paints through the world-aligned axes of a permuted volume', () => {
+    const vol = segVolume()
+    Object.assign(vol, {
+      dims: [2, 3, 4],
+      frames: 1,
+      raw: new Float32Array(24),
+      affine: new Float64Array([-1, 0, 0, 0, 0, 0, 1, 0, 0, -1, 0, 0, 0, 0, 0, 1])
+    })
+    useStore.getState().setVolume(vol)
+    useStore.setState({
+      labelMap: new Uint16Array(24),
+      regions: [
+        {
+          id: 1,
+          name: 'Region 1',
+          color: '#ff0000',
+          visible: true,
+          voxelCount: 0,
+          stats: null
+        }
+      ],
+      activeRegionId: 1,
+      nextRegionId: 2
+    })
+    useStore.getState().setBrushRadius(1)
+    useStore.getState().paintAt(0, [1, 2], [1, 2], false)
+    const labels = useStore.getState().labelMap!
+    expect(labels[1 + 1 * 2 + 2 * 2 * 3]).toBe(1)
+    expect(labels[1 + 2 * 2 + 2 * 2 * 3]).toBe(0)
+    useStore.getState().endStroke()
   })
 
   it('metadata edits mark the segmentation unsaved', () => {

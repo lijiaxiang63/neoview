@@ -251,4 +251,19 @@ describe('slice extraction', () => {
     extractPreviewRGBA(mask, box, DIMS, PLANES[0], 3, color, img)
     expect(px.every((v) => v === 0)).toBe(true)
   })
+
+  it('extracts region and preview pixels through reversed screen directions', () => {
+    const plane = { ...PLANES[0], colDirection: -1 as const, rowDirection: -1 as const }
+    const labelMap = new Uint16Array(N)
+    labelMap[1 + 2 * 4] = 1
+    const colorOf = new Uint32Array([0, packColor('#ffffff')])
+    const regionImage = stubImg(4, 4)
+    extractRegionsRGBA(labelMap, DIMS, plane, 0, colorOf, regionImage)
+    expect(new Uint32Array(regionImage.data.buffer)[2 * 4 + 2] >>> 0).toBe(colorOf[1] >>> 0)
+
+    const box: SegBox = { min: [1, 2, 0], max: [1, 2, 0] }
+    const previewImage = stubImg(4, 4)
+    extractPreviewRGBA(new Uint8Array([1]), box, DIMS, plane, 0, colorOf[1], previewImage)
+    expect(new Uint32Array(previewImage.data.buffer)[2 * 4 + 2] >>> 0).toBe(colorOf[1] >>> 0)
+  })
 })

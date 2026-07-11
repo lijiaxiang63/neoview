@@ -1,3 +1,5 @@
+import { voxelDirectionFromWorld } from '../volume/affine'
+
 export type V3 = [number, number, number]
 
 export interface CameraBasis {
@@ -5,6 +7,16 @@ export interface CameraBasis {
   right: V3
   up: V3
   fwd: V3
+}
+
+/** Express a world-space camera basis in the volume's signed voxel axes. */
+export function cameraBasisForAffine(basis: CameraBasis, affine: Float64Array): CameraBasis {
+  return {
+    eye: voxelDirectionFromWorld(affine, basis.eye),
+    right: voxelDirectionFromWorld(affine, basis.right),
+    up: voxelDirectionFromWorld(affine, basis.up),
+    fwd: voxelDirectionFromWorld(affine, basis.fwd)
+  }
 }
 
 export const FOV_Y_RAD = (35 * Math.PI) / 180
@@ -26,7 +38,7 @@ export function normalize3(v: V3): V3 {
   return [v[0] / len, v[1] / len, v[2] / len]
 }
 
-/** Orbit around the volume center (origin), with data axis 2 as world up. */
+/** Orbit around the volume center (origin), with world axis 2 as up. */
 export class OrbitCamera {
   yaw = DEFAULT_YAW
   pitch = DEFAULT_PITCH

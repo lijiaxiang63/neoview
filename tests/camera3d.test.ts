@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest'
-import { OrbitCamera, cross, normalize3, type V3 } from '../src/renderer/src/render3d/camera'
+import {
+  cameraBasisForAffine,
+  OrbitCamera,
+  cross,
+  normalize3,
+  type CameraBasis,
+  type V3
+} from '../src/renderer/src/render3d/camera'
 
 const dot = (a: V3, b: V3): number => a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 const len = (a: V3): number => Math.hypot(a[0], a[1], a[2])
@@ -64,5 +71,24 @@ describe('vec3 helpers', () => {
   it('normalize3 handles the zero vector without NaN', () => {
     const v = normalize3([0, 0, 0])
     for (const c of v) expect(Number.isFinite(c)).toBe(true)
+  })
+})
+
+describe('camera affine mapping', () => {
+  const basis: CameraBasis = {
+    eye: [1, 2, 3],
+    right: [1, 0, 0],
+    up: [0, 1, 0],
+    fwd: [0, 0, -1]
+  }
+
+  it('maps the complete basis through signed permuted axes', () => {
+    const affine = new Float64Array([-1, 0, 0, 0, 0, 0, 1, -293, 0, -1, 0, 0, 0, 0, 0, 1])
+    expect(cameraBasisForAffine(basis, affine)).toEqual({
+      eye: [-1, -3, 2],
+      right: [-1, 0, 0],
+      up: [0, 0, 1],
+      fwd: [0, 1, 0]
+    })
   })
 })

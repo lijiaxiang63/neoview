@@ -5,6 +5,8 @@ import {
   composeVoxelMap,
   invertAffine,
   multiplyAffine,
+  voxelDirectionFromWorld,
+  worldAxesForVoxelAxes,
   type AffineInput
 } from '../src/renderer/src/volume/affine'
 
@@ -153,5 +155,18 @@ describe('composeVoxelMap', () => {
     const overlay = new Float64Array(IDENTITY)
     overlay[5] = 0
     expect(composeVoxelMap(IDENTITY, overlay)).toBeNull()
+  })
+})
+
+describe('world and voxel axis mapping', () => {
+  it('maps directions through a signed axis permutation', () => {
+    const affine = new Float64Array([-1, 0, 0, 0, 0, 0, 1, -293, 0, -1, 0, 0, 0, 0, 0, 1])
+    expect(worldAxesForVoxelAxes(affine)).toEqual([0, 2, 1])
+    expect(voxelDirectionFromWorld(affine, [1, 2, 3])).toEqual([-1, -3, 2])
+  })
+
+  it('preserves directions for aligned positive axes', () => {
+    expect(worldAxesForVoxelAxes(IDENTITY)).toEqual([0, 1, 2])
+    expect(voxelDirectionFromWorld(IDENTITY, [1, 2, 3])).toEqual([1, 2, 3])
   })
 })

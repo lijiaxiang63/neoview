@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest'
-import { sliceDirectionLabels } from '../src/renderer/src/slicing/directionLabels'
+import {
+  sliceDirectionLabels,
+  slicePlanesForAffine
+} from '../src/renderer/src/slicing/directionLabels'
 import { PLANES } from '../src/renderer/src/slicing/extract'
 
 function affine(values: readonly number[]): Float64Array {
@@ -54,5 +57,41 @@ describe('slice direction labels', () => {
       top: 'S',
       bottom: 'I'
     })
+  })
+
+  it('maps permuted columns into world-aligned planes and screen directions', () => {
+    const transform = affine([-1, 0, 0, 0, 0, 1, 0, -1, 0])
+    const planes = slicePlanesForAffine(transform)
+    expect(planes).toEqual([
+      {
+        sliceAxis: 1,
+        colAxis: 0,
+        rowAxis: 2,
+        colDirection: 1,
+        rowDirection: 1,
+        label: 'Plane XY'
+      },
+      {
+        sliceAxis: 2,
+        colAxis: 0,
+        rowAxis: 1,
+        colDirection: 1,
+        rowDirection: -1,
+        label: 'Plane XZ'
+      },
+      {
+        sliceAxis: 0,
+        colAxis: 2,
+        rowAxis: 1,
+        colDirection: 1,
+        rowDirection: -1,
+        label: 'Plane YZ'
+      }
+    ])
+    expect(planes.map((plane) => sliceDirectionLabels(transform, plane))).toEqual([
+      { left: 'R', right: 'L', top: 'A', bottom: 'P' },
+      { left: 'R', right: 'L', top: 'S', bottom: 'I' },
+      { left: 'P', right: 'A', top: 'S', bottom: 'I' }
+    ])
   })
 })

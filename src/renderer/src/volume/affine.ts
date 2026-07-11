@@ -1,5 +1,53 @@
 import type { TransformSource } from './types'
 
+export type SpatialAxis = 0 | 1 | 2
+
+const AXIS_PERMUTATIONS: readonly (readonly [SpatialAxis, SpatialAxis, SpatialAxis])[] = [
+  [0, 1, 2],
+  [0, 2, 1],
+  [1, 0, 2],
+  [1, 2, 0],
+  [2, 0, 1],
+  [2, 1, 0]
+]
+
+/** Assign each voxel axis to one distinct world axis, choosing the mapping
+ * with the strongest affine-column alignment. */
+export function worldAxesForVoxelAxes(
+  affine: Float64Array
+): readonly [SpatialAxis, SpatialAxis, SpatialAxis] {
+  const columnLengths = [0, 1, 2].map((voxelAxis) =>
+    Math.hypot(affine[voxelAxis], affine[4 + voxelAxis], affine[8 + voxelAxis])
+  )
+  let best = AXIS_PERMUTATIONS[0]
+  let bestScore = -1
+  for (const candidate of AXIS_PERMUTATIONS) {
+    const score = candidate.reduce<number>(
+      (sum, worldAxis, voxelAxis) =>
+        sum + Math.abs(affine[worldAxis * 4 + voxelAxis]) / (columnLengths[voxelAxis] || 1),
+      0
+    )
+    if (score > bestScore) {
+      best = candidate
+      bestScore = score
+    }
+  }
+  return best
+}
+
+/** Map a direction from world axes into the nearest signed voxel axes. */
+export function voxelDirectionFromWorld(
+  affine: Float64Array,
+  direction: readonly [number, number, number]
+): [number, number, number] {
+  const worldAxes = worldAxesForVoxelAxes(affine)
+  return worldAxes.map((worldAxis, voxelAxis) => {
+    const component = affine[worldAxis * 4 + voxelAxis]
+    const value = component >= 0 ? direction[worldAxis] : -direction[worldAxis]
+    return value === 0 ? 0 : value
+  }) as [number, number, number]
+}
+
 export interface AffineInput {
   rowTransformAvailable: boolean
   rotationTransformAvailable: boolean

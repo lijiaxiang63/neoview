@@ -297,9 +297,9 @@ export function defaultLayerSettings(vol: Volume): LayerSettings {
 /**
  * Fill img (sized to the base slice grid) with the layer's RGBA for one base
  * slice. Alpha 0 for: out of overlay bounds, map value outside the display
- * window, label 0, mask 0, NaN. Rows are written bottom-up, matching
- * extractSliceToImageData. The shared frame index is clamped to the overlay's
- * own frame count.
+ * window, label 0, mask 0, NaN. Pixels follow the plane's screen directions,
+ * matching extractSliceToImageData. The shared frame index is clamped to the
+ * overlay's own frame count.
  */
 export function extractOverlayRGBA(
   layer: OverlayLayer,
@@ -324,17 +324,20 @@ export function extractOverlayRGBA(
   const { raw, slope, inter } = ov
   const frameOff = Math.min(frame, ov.frames - 1) * nx * ny * nz
 
-  // Overlay-space coordinate of base pixel (c=0, r=0) plus the per-column and
-  // per-row step vectors (columns of M) — 3 adds per pixel, no matrix multiply.
+  // Overlay-space coordinate of the first displayed base pixel plus the
+  // screen-column and screen-row step vectors — 3 adds per pixel, no matrix multiply.
   const p0: [number, number, number] = [0, 0, 0]
   p0[plane.sliceAxis] = sliceIdx
+  p0[plane.colAxis] = plane.colDirection > 0 ? 0 : w - 1
+  p0[plane.rowAxis] = plane.rowDirection > 0 ? h - 1 : 0
   const [ox, oy, oz] = applyAffine(m, p0[0], p0[1], p0[2])
-  const cx = m[plane.colAxis]
-  const cy = m[4 + plane.colAxis]
-  const cz = m[8 + plane.colAxis]
-  const rx = m[plane.rowAxis]
-  const ry = m[4 + plane.rowAxis]
-  const rz = m[8 + plane.rowAxis]
+  const cx = m[plane.colAxis] * plane.colDirection
+  const cy = m[4 + plane.colAxis] * plane.colDirection
+  const cz = m[8 + plane.colAxis] * plane.colDirection
+  const screenRowDirection = -plane.rowDirection
+  const rx = m[plane.rowAxis] * screenRowDirection
+  const ry = m[4 + plane.rowAxis] * screenRowDirection
+  const rz = m[8 + plane.rowAxis] * screenRowDirection
 
   const { kind, hiddenLabels: hidden } = layer
   const { lo, hi } = layer.range
@@ -344,11 +347,11 @@ export function extractOverlayRGBA(
   const anyHidden = hidden.size > 0
 
   let p = 0
-  for (let r = h - 1; r >= 0; r--) {
+  for (let screenRow = 0; screenRow < h; screenRow++) {
     // Fresh row start (no drift accumulation across rows).
-    let x = ox + r * rx
-    let y = oy + r * ry
-    let z = oz + r * rz
+    let x = ox + screenRow * rx
+    let y = oy + screenRow * ry
+    let z = oz + screenRow * rz
     for (let c = 0; c < w; c++, p++, x += cx, y += cy, z += cz) {
       const xi = Math.round(x)
       const yi = Math.round(y)

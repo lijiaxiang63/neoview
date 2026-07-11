@@ -1,4 +1,5 @@
 import type { PlaneSpec } from './extract'
+import { worldAxesForVoxelAxes, type SpatialAxis } from '../volume/affine'
 
 export type DirectionLabel = 'L' | 'R' | 'A' | 'P' | 'S' | 'I'
 
@@ -11,35 +12,60 @@ export interface SliceDirectionLabels {
 
 const POSITIVE: readonly DirectionLabel[] = ['R', 'A', 'S']
 const NEGATIVE: readonly DirectionLabel[] = ['L', 'P', 'I']
-const PERMUTATIONS: readonly (readonly [number, number, number])[] = [
-  [0, 1, 2],
-  [0, 2, 1],
-  [1, 0, 2],
-  [1, 2, 0],
-  [2, 0, 1],
-  [2, 1, 0]
+interface ViewAxes {
+  sliceWorldAxis: SpatialAxis
+  colWorldAxis: SpatialAxis
+  rowWorldAxis: SpatialAxis
+  colWorldDirection: 1 | -1
+  label: string
+}
+
+const VIEW_AXES: readonly ViewAxes[] = [
+  { sliceWorldAxis: 2, colWorldAxis: 0, rowWorldAxis: 1, colWorldDirection: -1, label: 'Plane XY' },
+  { sliceWorldAxis: 1, colWorldAxis: 0, rowWorldAxis: 2, colWorldDirection: -1, label: 'Plane XZ' },
+  { sliceWorldAxis: 0, colWorldAxis: 1, rowWorldAxis: 2, colWorldDirection: 1, label: 'Plane YZ' }
 ]
 
-/** Assign each voxel axis to one distinct world axis, choosing the mapping
- * with the strongest affine-column alignment. */
-function worldAxesForVoxelAxes(affine: Float64Array): readonly [number, number, number] {
-  const columnLengths = [0, 1, 2].map((voxelAxis) =>
-    Math.hypot(affine[voxelAxis], affine[4 + voxelAxis], affine[8 + voxelAxis])
-  )
-  let best = PERMUTATIONS[0]
-  let bestScore = -1
-  for (const candidate of PERMUTATIONS) {
-    const score = candidate.reduce(
-      (sum, worldAxis, voxelAxis) =>
-        sum + Math.abs(affine[worldAxis * 4 + voxelAxis]) / (columnLengths[voxelAxis] || 1),
-      0
-    )
-    if (score > bestScore) {
-      best = candidate
-      bestScore = score
+function rawDirectionForWorldDirection(
+  affine: Float64Array,
+  voxelAxis: SpatialAxis,
+  worldAxis: SpatialAxis,
+  worldDirection: 1 | -1
+): 1 | -1 {
+  return (affine[worldAxis * 4 + voxelAxis] >= 0 ? worldDirection : -worldDirection) as 1 | -1
+}
+
+/** Build three world-aligned plane specifications without copying the volume. */
+export function slicePlanesForAffine(
+  affine: Float64Array
+): readonly [PlaneSpec, PlaneSpec, PlaneSpec] {
+  const worldForVoxel = worldAxesForVoxelAxes(affine)
+  const voxelForWorld = [0, 0, 0] as [SpatialAxis, SpatialAxis, SpatialAxis]
+  for (
+    let voxelAxis = 0 as SpatialAxis;
+    voxelAxis < 3;
+    voxelAxis = (voxelAxis + 1) as SpatialAxis
+  ) {
+    voxelForWorld[worldForVoxel[voxelAxis]] = voxelAxis
+  }
+  const planeFor = (view: ViewAxes): PlaneSpec => {
+    const colAxis = voxelForWorld[view.colWorldAxis]
+    const rowAxis = voxelForWorld[view.rowWorldAxis]
+    return {
+      sliceAxis: voxelForWorld[view.sliceWorldAxis],
+      colAxis,
+      rowAxis,
+      colDirection: rawDirectionForWorldDirection(
+        affine,
+        colAxis,
+        view.colWorldAxis,
+        view.colWorldDirection
+      ),
+      rowDirection: rawDirectionForWorldDirection(affine, rowAxis, view.rowWorldAxis, 1),
+      label: view.label
     }
   }
-  return best
+  return [planeFor(VIEW_AXES[0]), planeFor(VIEW_AXES[1]), planeFor(VIEW_AXES[2])]
 }
 
 function labelForVoxelDirection(
@@ -56,13 +82,13 @@ function labelForVoxelDirection(
 
 export function sliceDirectionLabels(
   affine: Float64Array,
-  plane: Pick<PlaneSpec, 'colAxis' | 'rowAxis'>
+  plane: Pick<PlaneSpec, 'colAxis' | 'rowAxis' | 'colDirection' | 'rowDirection'>
 ): SliceDirectionLabels {
   const worldAxes = worldAxesForVoxelAxes(affine)
   return {
-    left: labelForVoxelDirection(affine, plane.colAxis, false, worldAxes),
-    right: labelForVoxelDirection(affine, plane.colAxis, true, worldAxes),
-    top: labelForVoxelDirection(affine, plane.rowAxis, true, worldAxes),
-    bottom: labelForVoxelDirection(affine, plane.rowAxis, false, worldAxes)
+    left: labelForVoxelDirection(affine, plane.colAxis, plane.colDirection < 0, worldAxes),
+    right: labelForVoxelDirection(affine, plane.colAxis, plane.colDirection > 0, worldAxes),
+    top: labelForVoxelDirection(affine, plane.rowAxis, plane.rowDirection > 0, worldAxes),
+    bottom: labelForVoxelDirection(affine, plane.rowAxis, plane.rowDirection < 0, worldAxes)
   }
 }
