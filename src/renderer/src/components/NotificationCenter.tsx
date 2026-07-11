@@ -2,6 +2,7 @@ import { type JSX } from 'react'
 import { useStore } from '../store'
 import { ToastNotif } from './Toast'
 import { UpdateNotif } from './UpdateNotif'
+import type { UpdatePresenter } from '../runtime/updatePresenter'
 
 /**
  * One bottom-right stack for every transient message: the load error (store
@@ -9,7 +10,13 @@ import { UpdateNotif } from './UpdateNotif'
  * lifecycle. UpdateNotif owns its own visibility, so the stack stays mounted
  * even when it looks empty (an empty stack is invisible and click-through).
  */
-export function NotificationCenter(): JSX.Element {
+export function NotificationCenter({
+  updates,
+  revealInFolder
+}: {
+  updates: UpdatePresenter
+  revealInFolder(path: string): void
+}): JSX.Element {
   const toasts = useStore((s) => s.toasts)
   const errorMessage = useStore((s) => s.errorMessage)
   const dismissError = useStore((s) => s.dismissError)
@@ -27,9 +34,9 @@ export function NotificationCenter(): JSX.Element {
         </div>
       )}
       {toasts.map((t) => (
-        <ToastNotif key={t.id} item={t} />
+        <ToastNotif key={t.id} item={t} revealInFolder={revealInFolder} />
       ))}
-      <UpdateNotif />
+      <UpdateNotif presenter={updates} />
     </div>
   )
 }

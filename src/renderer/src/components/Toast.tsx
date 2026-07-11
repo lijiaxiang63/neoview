@@ -5,7 +5,13 @@ const TOAST_MS = 6000
 
 /** One store toast rendered as a notification card. Each item owns its own
  * auto-dismiss timer so entries in the stack expire independently. */
-export function ToastNotif({ item }: { item: ToastItem }): JSX.Element {
+export function ToastNotif({
+  item,
+  revealInFolder
+}: {
+  item: ToastItem
+  revealInFolder(path: string): void
+}): JSX.Element {
   const dismissToast = useStore((s) => s.dismissToast)
   const undo = useStore((s) => s.undo)
 
@@ -18,7 +24,7 @@ export function ToastNotif({ item }: { item: ToastItem }): JSX.Element {
     const action = item.action
     if (!action) return
     if (action.kind === 'undo') undo()
-    else window.neoview.revealInFolder(action.path)
+    else revealInFolder(action.path)
     dismissToast(item.id)
   }
 

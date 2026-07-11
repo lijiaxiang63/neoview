@@ -10,7 +10,7 @@ import {
   protocol,
   systemPreferences
 } from 'electron'
-import { join, resolve } from 'path'
+import { join } from 'path'
 import { pathToFileURL } from 'url'
 import { promises as fs } from 'fs'
 import { electronApp, optimizer } from '@electron-toolkit/utils'
@@ -28,29 +28,21 @@ import { FileAccessAuthorizer } from './files/access'
 import { createFileDialogs } from './files/dialogs'
 import { createExportService } from './files/exports'
 import { registerFileIpc } from './files/ipc'
-import { isVolumeFileName } from './files/names'
 import { createFileReader } from './files/reader'
 import { createFolderScanner } from './files/scanner'
 import { OpenJobCoordinator, type OpenJobScope } from './openJobs'
-import {
-  CloseResponderLeaseState,
-  needsCloseConfirmation,
-  sendIfAlive,
-  windowContentsIfAlive,
-  WindowCloseCoordinator,
-  type CloseResolution
-} from './windowLifecycle'
+import { sendIfAlive, windowContentsIfAlive } from './windowLifecycle'
+import { createApplicationWindow } from './applicationWindow'
 import { OpenIntentIssuer } from '../shared/openIntents'
 import { shouldCreateWindowOnActivate, shouldQuitAfterAllWindowsClosed } from './appLifecycle'
+import { createApplicationMenuTemplate } from './menu'
+import { installLaunchFileRouting } from './launchFiles'
 import {
   createRendererMainFrameGate,
-  externalWebUrl,
   isolatedRendererResponse,
-  RENDERER_ORIGIN,
   RENDERER_SCHEME,
   rendererRequestPath,
-  rendererServerUrl,
-  rendererUrlIsTrusted
+  rendererServerUrl
 } from './rendererProtocol'
 import {
   PERSISTED_STORAGE_KEYS,
@@ -394,13 +386,10 @@ async function sendBuiltinFile(
 }
 
 function buildMenu(getWindow: () => BrowserWindow | null): void {
-  const isMac = process.platform === 'darwin'
   const sendToWindow = (channel: string): void => {
-    const win = getWindow()
-    if (win) sendIfAlive(win, channel)
+    const window = getWindow()
+    if (window) sendIfAlive(window, channel)
   }
-  // Feeds the 'about' role on every platform (macOS ignores iconPath and
-  // uses the app icon; Windows/Linux show the Electron-drawn panel).
   app.setAboutPanelOptions({
     applicationName: app.name,
     applicationVersion: app.getVersion(),
@@ -409,229 +398,90 @@ function buildMenu(getWindow: () => BrowserWindow | null): void {
     website: HOMEPAGE_URL,
     iconPath: icon
   })
-  const linkItems: Electron.MenuItemConstructorOptions[] = [
-    { label: 'Website', click: () => void shell.openExternal(HOMEPAGE_URL) },
-    { label: 'GitHub Repository', click: () => void shell.openExternal(REPO_URL) }
-  ]
-  const shortcutsItem: Electron.MenuItemConstructorOptions = {
-    label: 'Keyboard Shortcuts',
-    click: () => sendToWindow('show-shortcuts')
-  }
-
-  // A recent entry that fails to read (moved/deleted file) reports the error
-  // the same way a picked file would, and drops out of the list.
   const openRecent = async (path: string): Promise<void> => {
-    const win = getWindow()
-    if (!win) return
-    const scope = captureWindowOpenScope(win)
+    const window = getWindow()
+    if (!window) return
+    const scope = captureWindowOpenScope(window)
     if (!scope) return
     const intent = openIntents.issue()
-    const result = await deliverBaseOpen(win, intent, scope, (signal) =>
+    const result = await deliverBaseOpen(window, intent, scope, (signal) =>
       fileReader.read(path, path, signal)
     )
-    if (result === 'error') {
-      recentFiles = removeRecent(recentFiles, path)
-      saveRecentFiles()
-      buildMenu(getWindow)
-    }
+    if (result !== 'error') return
+    recentFiles = removeRecent(recentFiles, path)
+    saveRecentFiles()
+    buildMenu(getWindow)
   }
   const labels = recentLabels(recentFiles)
-  const recentItems: Electron.MenuItemConstructorOptions[] =
-    recentFiles.length === 0
-      ? [{ label: 'No Recent Files', enabled: false }]
-      : [
-          ...recentFiles.map((p, i) => ({
-            label: labels[i],
-            click: () => void openRecent(p)
-          })),
-          { type: 'separator' as const },
-          {
-            label: 'Clear Menu',
-            click: () => {
-              recentFiles = []
-              saveRecentFiles()
-              app.clearRecentDocuments()
-              buildMenu(getWindow)
-            }
+  const template = createApplicationMenuTemplate({
+    isMac: process.platform === 'darwin',
+    appName: app.name,
+    viewState: lastViewState,
+    recentItems: recentFiles.map((path, index) => ({ path, label: labels[index] })),
+    autoCheckEnabled: updateService?.autoCheckEnabled() ?? true,
+    actions: {
+      openFile: () => {
+        void (async () => {
+          const window = getWindow()
+          if (!window) return
+          const scope = captureWindowOpenScope(window)
+          if (!scope) return
+          const intent = openIntents.issue()
+          let path: string | null
+          try {
+            path = await fileDialogs.pickFilePath(window)
+          } catch (error) {
+            deliverBaseOpenError(window, intent, scope, error)
+            return
           }
-        ]
-  const updateItems: Electron.MenuItemConstructorOptions[] = [
-    {
-      label: 'Check for Updates…',
-      click: () => void updateService?.checkForUpdates(true)
-    },
-    {
-      label: 'Check for Updates Automatically',
-      type: 'checkbox',
-      checked: updateService?.autoCheckEnabled() ?? true,
-      click: (item) => updateService?.setAutoCheck(item.checked)
+          if (path === null || !openJobs.scopeIsCurrent(scope)) return
+          await deliverBaseOpen(window, intent, scope, (signal) =>
+            fileReader.read(path, path, signal)
+          )
+        })()
+      },
+      openFolder: () => sendToWindow('open-folder-request'),
+      openRecent: (path) => void openRecent(path),
+      clearRecent: () => {
+        recentFiles = []
+        saveRecentFiles()
+        app.clearRecentDocuments()
+        buildMenu(getWindow)
+      },
+      openBuiltinBase: () => {
+        const window = getWindow()
+        if (window) {
+          void sendBuiltinFile(
+            window,
+            builtinVolume,
+            'builtin-volume.nii.gz',
+            'file-opened',
+            openIntents.issue()
+          )
+        }
+      },
+      openBuiltinOverlay: () => {
+        const window = getWindow()
+        if (window) {
+          void sendBuiltinFile(window, builtinOverlay, 'builtin-overlay.nii.gz', 'overlay-opened')
+        }
+      },
+      showShortcuts: () => sendToWindow('show-shortcuts'),
+      undo: () => sendToWindow('menu-undo'),
+      redo: () => sendToWindow('menu-redo'),
+      toggleFilePanel: () => sendToWindow('toggle-file-panel'),
+      toggleSidePanel: () => sendToWindow('toggle-side-panel'),
+      openHomepage: () => void shell.openExternal(HOMEPAGE_URL),
+      openRepository: () => void shell.openExternal(REPO_URL),
+      checkForUpdates: () => void updateService?.checkForUpdates(true),
+      setAutoCheck: (enabled) => updateService?.setAutoCheck(enabled)
     }
-  ]
-  // The default appMenu role has no room for custom items, so spell it out
-  // to slot the update entries in the conventional place.
-  const macAppMenu: Electron.MenuItemConstructorOptions = {
-    label: app.name,
-    submenu: [
-      { role: 'about' },
-      { type: 'separator' },
-      ...updateItems,
-      { type: 'separator' },
-      { role: 'services' },
-      { type: 'separator' },
-      { role: 'hide' },
-      { role: 'hideOthers' },
-      { role: 'unhide' },
-      { type: 'separator' },
-      { role: 'quit' }
-    ]
-  }
-  const template: Electron.MenuItemConstructorOptions[] = [
-    ...(isMac ? [macAppMenu] : []),
-    {
-      label: 'File',
-      submenu: [
-        {
-          label: 'Open…',
-          accelerator: 'CmdOrCtrl+O',
-          click: async () => {
-            const win = getWindow()
-            if (!win) return
-            const scope = captureWindowOpenScope(win)
-            if (!scope) return
-            const intent = openIntents.issue()
-            let path: string | null
-            try {
-              path = await fileDialogs.pickFilePath(win)
-            } catch (err) {
-              deliverBaseOpenError(win, intent, scope, err)
-              return
-            }
-            if (path === null || !openJobs.scopeIsCurrent(scope)) return
-            await deliverBaseOpen(win, intent, scope, (signal) =>
-              fileReader.read(path, path, signal)
-            )
-          }
-        },
-        {
-          label: 'Open Folder…',
-          accelerator: 'CmdOrCtrl+Shift+O',
-          // The renderer owns the whole flow (picker, scan, loading feedback),
-          // so the menu only asks it to start.
-          click: () => sendToWindow('open-folder-request')
-        },
-        { label: 'Open Recent', submenu: recentItems },
-        { type: 'separator' },
-        {
-          label: 'Open Built-in Volume',
-          click: () => {
-            const win = getWindow()
-            if (win)
-              void sendBuiltinFile(
-                win,
-                builtinVolume,
-                'builtin-volume.nii.gz',
-                'file-opened',
-                openIntents.issue()
-              )
-          }
-        },
-        {
-          // Routes to an overlay layer; the renderer shows a hint if no base
-          // volume is loaded yet.
-          label: 'Open Built-in Overlay',
-          click: () => {
-            const win = getWindow()
-            if (win)
-              void sendBuiltinFile(win, builtinOverlay, 'builtin-overlay.nii.gz', 'overlay-opened')
-          }
-        },
-        { type: 'separator' },
-        isMac ? { role: 'close' } : { role: 'quit' }
-      ]
-    },
-    // Edit/Window only on macOS (clipboard shortcuts in text fields need the
-    // menu roles there); on Windows/Linux they would just widen the menu bar.
-    // Undo/Redo are custom: their accelerators must reach the renderer, which
-    // routes them to region-edit history (or a text field's own undo).
-    ...(isMac
-      ? [
-          {
-            label: 'Edit',
-            submenu: [
-              {
-                label: 'Undo',
-                accelerator: 'CmdOrCtrl+Z',
-                click: () => sendToWindow('menu-undo')
-              },
-              {
-                label: 'Redo',
-                accelerator: 'Shift+CmdOrCtrl+Z',
-                click: () => sendToWindow('menu-redo')
-              },
-              { type: 'separator' as const },
-              { role: 'cut' as const },
-              { role: 'copy' as const },
-              { role: 'paste' as const },
-              { role: 'selectAll' as const }
-            ]
-          }
-        ]
-      : []),
-    {
-      label: 'View',
-      submenu: [
-        {
-          id: 'view-file-list',
-          label: 'File List',
-          type: 'checkbox',
-          checked: lastViewState.folderOpen && lastViewState.fileList,
-          enabled: lastViewState.folderOpen,
-          accelerator: 'CmdOrCtrl+Shift+B',
-          click: () => sendToWindow('toggle-file-panel')
-        },
-        {
-          id: 'view-side-panel',
-          label: 'Side Panel',
-          type: 'checkbox',
-          checked: lastViewState.sidePanel,
-          accelerator: 'CmdOrCtrl+B',
-          click: () => sendToWindow('toggle-side-panel')
-        },
-        { type: 'separator' },
-        { role: 'togglefullscreen' },
-        { type: 'separator' },
-        { role: 'toggleDevTools' }
-      ]
-    },
-    ...(isMac ? [{ role: 'windowMenu' as const }] : []),
-    // macOS keeps updates/About in the app menu, so Help only carries links;
-    // the 'help' role also gives it the system search field.
-    isMac
-      ? {
-          role: 'help' as const,
-          submenu: [shortcutsItem, { type: 'separator' as const }, ...linkItems]
-        }
-      : {
-          label: 'Help',
-          submenu: [
-            shortcutsItem,
-            { type: 'separator' as const },
-            ...linkItems,
-            { type: 'separator' as const },
-            ...updateItems,
-            { type: 'separator' as const },
-            { role: 'about' as const }
-          ]
-        }
-  ]
+  })
   Menu.setApplicationMenu(Menu.buildFromTemplate(template))
 }
 
-// macOS can't switch the installed (Finder/Launchpad) icon by appearance, but
-// the running app's Dock icon can follow the system theme: the light artwork in
-// Light Mode, the dark artwork (same as the shipped .icns) in Dark Mode.
-// nativeTheme is forced to 'dark' app-wide, so the OS setting has to be read
-// directly (shouldUseDarkColors would always report dark).
+// macOS can't switch the installed icon by appearance, but the running app's
+// Dock icon can follow the system theme. Read the OS preference directly.
 function macSystemDark(): boolean {
   return systemPreferences.getUserDefault('AppleInterfaceStyle', 'string') === 'Dark'
 }
@@ -642,254 +492,29 @@ function syncDockIcon(): void {
 }
 
 function createWindow(): BrowserWindow {
-  const mainWindow = new BrowserWindow({
-    width: 1280,
-    height: 840,
-    minWidth: 960,
-    minHeight: 640,
-    show: false,
-    backgroundColor: nativeTheme.shouldUseDarkColors ? '#0b0d10' : '#e7e9ee',
-    ...(process.platform === 'linux' ? { icon } : {}),
-    webPreferences: {
-      preload: join(__dirname, '../preload/index.js'),
-      sandbox: true,
-      contextIsolation: true,
-      nodeIntegration: false
-    }
+  return createApplicationWindow({
+    icon,
+    developmentRendererUrl,
+    isTrustedMainFrame: rendererMainFrameIsTrusted,
+    invalidateOpenOwner: (contents) => openJobs.invalidateOwner(contents),
+    logIncident,
+    crashLogPath,
+    closeCancelled: () => updateService?.closeCancelled()
   })
-  // BrowserWindow.webContents throws once the native window is destroyed.
-  // Capture its identity while alive so the `closed` cleanup can use it only
-  // as an ownership key without touching the destroyed BrowserWindow wrapper.
-  const mainContents = mainWindow.webContents
-
-  const closeResponder = new CloseResponderLeaseState()
-  const closeCoordinator = new WindowCloseCoordinator()
-
-  const finishClose = (resolution: CloseResolution | null): void => {
-    if (resolution === 'quit-app') app.quit()
-    else if (resolution === 'close-window') mainWindow.close()
-  }
-
-  mainWindow.on('ready-to-show', () => {
-    mainWindow.show()
-  })
-
-  // A gone renderer paints the window solid white with no other symptom;
-  // record why (reason 'oom' vs 'crashed', exit code) and tell the user
-  // where the log landed. 'unresponsive' separates hangs from crashes.
-  mainContents.on('render-process-gone', (_e, details) => {
-    openJobs.invalidateOwner(mainContents)
-    closeResponder.rendererLost()
-    logIncident('render-process-gone', details)
-    dialog.showErrorBox(
-      'Display process stopped',
-      `Reason: ${details.reason} (exit code ${details.exitCode})\n` +
-        `Details were appended to:\n${crashLogPath()}`
-    )
-    finishClose(closeCoordinator.rendererLost())
-  })
-  mainContents.on('did-navigate', () => {
-    // A provisional, blocked or failed navigation can leave the original
-    // document alive. Ownership changes only after a new document commits.
-    openJobs.invalidateOwner(mainContents)
-    closeResponder.navigationCommitted()
-    if (closeCoordinator.isAwaiting()) finishClose(closeCoordinator.rendererLost())
-  })
-  const preventUntrustedNavigation = (event: Electron.Event, url: string): void => {
-    if (rendererUrlIsTrusted(url, developmentRendererUrl)) return
-    event.preventDefault()
-    const external = externalWebUrl(url)
-    if (external) void shell.openExternal(external)
-  }
-  mainContents.on('will-navigate', (event) => {
-    preventUntrustedNavigation(event, event.url)
-  })
-  mainContents.on('will-redirect', (event) => {
-    preventUntrustedNavigation(event, event.url)
-  })
-  mainWindow.on('unresponsive', () => logIncident('window-unresponsive', {}))
-  mainWindow.on('responsive', () => logIncident('window-responsive-again', {}))
-
-  // Closing goes through the renderer first so unsaved region edits can veto
-  // it (the renderer replies on 'close-confirmed' once the user agrees).
-  // Whether the intercepted close came from an app quit, so confirming it
-  // resumes the quit instead of just closing the window.
-  const onBeforeQuit = (): void => {
-    quitRequested = true
-  }
-  let quitRequested = false
-  app.on('before-quit', onBeforeQuit)
-  mainWindow.on('close', (e) => {
-    if (
-      !needsCloseConfirmation(
-        closeCoordinator.isAllowed(),
-        closeResponder.isReady(),
-        mainContents.isDestroyed()
-      )
-    ) {
-      return
-    }
-    const request = closeCoordinator.request(quitRequested)
-    quitRequested = false
-    if (request.kind === 'allow') return
-    e.preventDefault()
-    if (request.kind === 'waiting') return
-    const responderLease = closeResponder.activeLeaseId()
-    if (
-      responderLease === null ||
-      !sendIfAlive(mainWindow, 'close-requested', request.requestId, responderLease)
-    ) {
-      closeResponder.rendererLost()
-      finishClose(closeCoordinator.rendererLost())
-      return
-    }
-  })
-  const isCurrentMainFrame = (
-    event: Electron.IpcMainEvent | Electron.IpcMainInvokeEvent
-  ): boolean => event.sender === mainContents && rendererMainFrameIsTrusted(event)
-  const ownsCloseResponder = (event: Electron.IpcMainEvent, lease: unknown): boolean =>
-    isCurrentMainFrame(event) && closeResponder.owns(lease)
-  const onCloseConfirmed = (
-    event: Electron.IpcMainEvent,
-    requestId: unknown,
-    lease: unknown
-  ): void => {
-    if (ownsCloseResponder(event, lease)) {
-      const resolution = closeCoordinator.confirm(requestId)
-      finishClose(resolution)
-    }
-  }
-  const onCloseCancelled = (
-    event: Electron.IpcMainEvent,
-    requestId: unknown,
-    lease: unknown
-  ): void => {
-    if (!ownsCloseResponder(event, lease)) return
-    if (closeCoordinator.cancel(requestId)) {
-      updateService?.closeCancelled()
-    }
-  }
-  const onCloseResponderClaim = (event: Electron.IpcMainInvokeEvent): number => {
-    if (!isCurrentMainFrame(event)) throw new Error('Close responder is unavailable.')
-    return closeResponder.claim()
-  }
-  const onCloseResponderActivate = (event: Electron.IpcMainEvent, lease: unknown): void => {
-    if (!isCurrentMainFrame(event) || !closeResponder.activate(lease)) return
-    const requestId = closeCoordinator.pendingRequestId()
-    const responderLease = closeResponder.activeLeaseId()
-    if (
-      requestId !== null &&
-      (responderLease === null ||
-        !sendIfAlive(mainWindow, 'close-requested', requestId, responderLease))
-    ) {
-      closeResponder.rendererLost()
-      finishClose(closeCoordinator.rendererLost())
-    }
-  }
-  const onCloseResponderRelease = (event: Electron.IpcMainEvent, lease: unknown): void => {
-    if (!isCurrentMainFrame(event)) return
-    if (closeResponder.release(lease) && closeCoordinator.isAwaiting()) {
-      finishClose(closeCoordinator.rendererLost())
-    }
-  }
-  ipcMain.handle('close-responder-claim', onCloseResponderClaim)
-  ipcMain.on('close-responder-activate', onCloseResponderActivate)
-  ipcMain.on('close-confirmed', onCloseConfirmed)
-  ipcMain.on('close-cancelled', onCloseCancelled)
-  ipcMain.on('close-responder-release', onCloseResponderRelease)
-  mainWindow.on('closed', () => {
-    openJobs.invalidateOwner(mainContents)
-    ipcMain.removeHandler('close-responder-claim')
-    ipcMain.removeListener('close-responder-activate', onCloseResponderActivate)
-    ipcMain.removeListener('close-confirmed', onCloseConfirmed)
-    ipcMain.removeListener('close-cancelled', onCloseCancelled)
-    ipcMain.removeListener('close-responder-release', onCloseResponderRelease)
-    app.removeListener('before-quit', onBeforeQuit)
-  })
-
-  mainContents.setWindowOpenHandler((details) => {
-    const external = externalWebUrl(details.url)
-    if (external) void shell.openExternal(external)
-    return { action: 'deny' }
-  })
-
-  if (developmentRendererUrl) {
-    mainWindow.loadURL(developmentRendererUrl)
-  } else {
-    mainWindow.loadURL(`${RENDERER_ORIGIN}/index.html`)
-  }
-  return mainWindow
 }
 
-const gotLock = app.requestSingleInstanceLock()
-if (!gotLock) {
-  app.quit()
-} else {
-  // macOS delivers system recent-documents (and Finder) opens here. A path
-  // arriving before the renderer is listening is held and flushed after the
-  // page loads.
-  let pendingOpen: { path: string; intent: number } | null = null
-  const openPathInto = async (
-    win: BrowserWindow,
-    path: string,
-    intent: number,
-    scope: OpenJobScope<Electron.WebContents>
-  ): Promise<void> => {
-    await deliverBaseOpen(win, intent, scope, (signal) => fileReader.read(path, path, signal))
-  }
-  app.on('open-file', (e, path) => {
-    e.preventDefault()
-    if (!isVolumeFileName(path)) return
-    const intent = openIntents.issue()
-    const win = applicationWindow()
-    const scope = captureWindowOpenScope(win, true)
-    if (win && scope) void openPathInto(win, path, intent, scope)
-    else pendingOpen = { path, intent }
-  })
-  /** Windows and Linux deliver document opens (recent-documents list, file
-   * association) as a plain path argument instead of an open-file event:
-   * the last argv entry naming a volume file, resolved against `cwd`. */
-  const volumePathFromArgv = (args: readonly string[], cwd: string): string | null => {
-    for (let i = args.length - 1; i >= 0; i--) {
-      const a = args[i]
-      if (!a.startsWith('-') && isVolumeFileName(a)) return resolve(cwd, a)
-    }
-    return null
-  }
-  // A cold start may carry the document path in argv (argv[0] is the binary).
-  const startupPath = volumePathFromArgv(process.argv.slice(1), process.cwd())
-  pendingOpen = startupPath ? { path: startupPath, intent: openIntents.issue() } : null
-  app.on('browser-window-created', (_e, win) => {
-    const contents = windowContentsIfAlive(win)
-    if (!contents) return
-    const contentsId = contents.id
-    contents.on('did-finish-load', () => {
-      if (storageMigrationWindowIds.has(contentsId)) return
-      if (!pendingOpen) return
-      const { path, intent } = pendingOpen
-      pendingOpen = null
-      const scope = openJobs.capture(contents)
-      // A short delay lets the renderer register its listeners first.
-      setTimeout(() => void openPathInto(win, path, intent, scope), 250)
-    })
-  })
+const gotLock = installLaunchFileRouting({
+  getWindow: applicationWindow,
+  issueIntent: () => openIntents.issue(),
+  captureWindow: (window, requireLoaded) => captureWindowOpenScope(window, requireLoaded),
+  captureContents: (contents) => openJobs.capture(contents),
+  open: async (window, path, intent, scope) => {
+    await deliverBaseOpen(window, intent, scope, (signal) => fileReader.read(path, path, signal))
+  },
+  isExcludedContents: (contentsId) => storageMigrationWindowIds.has(contentsId)
+})
 
-  app.on('second-instance', (_e, argv, workingDirectory) => {
-    const win = applicationWindow()
-    if (win) {
-      if (win.isMinimized()) win.restore()
-      win.focus()
-    }
-    // The second launch may have been an OS document open; route its path
-    // exactly like an open-file event.
-    const path = volumePathFromArgv(argv.slice(1), workingDirectory)
-    if (!path) return
-    const intent = openIntents.issue()
-    const scope = captureWindowOpenScope(win, true)
-    if (win && scope) void openPathInto(win, path, intent, scope)
-    else pendingOpen = { path, intent }
-  })
-
+if (gotLock) {
   void app
     .whenReady()
     .then(async () => {

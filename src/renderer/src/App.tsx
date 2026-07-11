@@ -9,13 +9,23 @@ import { EmptyState } from './components/EmptyState'
 import { FilePanel } from './components/FilePanel'
 import { NotificationCenter } from './components/NotificationCenter'
 import { ShortcutsOverlay } from './components/ShortcutsOverlay'
+import type { RegionExportController } from './runtime/regionExportController'
+import type { UpdatePresenter } from './runtime/updatePresenter'
 
 interface Props {
   runtime: RendererRuntime
+  regionExports: RegionExportController
+  updates: UpdatePresenter
+  revealInFolder(path: string): void
 }
 
 /** Renderer state selection and layout. Global resources belong to runtime. */
-export default function App({ runtime }: Props): JSX.Element {
+export default function App({
+  runtime,
+  regionExports,
+  updates,
+  revealInFolder
+}: Props): JSX.Element {
   const loadState = useStore((state) => state.loadState)
   const hasVolume = useStore((state) => state.volume !== null)
   const hasMaximized = useStore((state) => state.maximizedView !== null)
@@ -46,14 +56,14 @@ export default function App({ runtime }: Props): JSX.Element {
             <SliceView view={1} />
             <SliceView view={2} />
             <VolumeView />
-            <SidePanel onAddOverlay={runtime.addOverlayDialog} />
+            <SidePanel onAddOverlay={runtime.addOverlayDialog} regionExports={regionExports} />
           </>
         ) : (
           <EmptyState onOpen={runtime.openFileDialog} onOpenFolder={runtime.openFolderDialog} />
         )}
       </main>
       <StatusBar />
-      <NotificationCenter />
+      <NotificationCenter updates={updates} revealInFolder={revealInFolder} />
       {shortcutsOpen && (
         <ShortcutsOverlay
           isMac={runtime.platform === 'darwin'}

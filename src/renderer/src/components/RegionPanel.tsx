@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type JSX } from 'react'
+import { useEffect, useRef, useState, useSyncExternalStore, type JSX } from 'react'
 import {
   BRUSH_RADIUS_MAX,
   BRUSH_RADIUS_MIN,
@@ -8,14 +8,7 @@ import {
 } from '../store'
 import { fmt } from '../format'
 import { NumberField } from './NumberField'
-import {
-  buildLabelMapExport,
-  buildMaskExport,
-  dirOfPath,
-  loadExportSettings,
-  saveExportSettings,
-  type ExportSettings
-} from '../segmentation/exportRegions'
+import type { RegionExportController } from '../runtime/regionExportController'
 import {
   boxExtent,
   GROW_BOUNDARY_RANGE,
@@ -534,64 +527,22 @@ function RegionRow({
   )
 }
 
-function ExportSection(): JSX.Element {
-  const volume = useStore((s) => s.volume)!
-  const sourcePath = useStore((s) => s.sourcePath)
+function ExportSection({ controller }: { controller: RegionExportController }): JSX.Element {
   const labelMap = useStore((s) => s.labelMap)
   const regions = useStore((s) => s.regions)
   const segDirty = useStore((s) => s.segDirty)
-  const markExported = useStore((s) => s.markExported)
-  const pushToast = useStore((s) => s.pushToast)
-  const fail = useStore((s) => s.fail)
-
-  const [settings, setSettings] = useState<ExportSettings>(loadExportSettings)
+  const { settings, busy } = useSyncExternalStore(
+    controller.subscribe,
+    controller.getSnapshot,
+    controller.getSnapshot
+  )
   const [showSettings, setShowSettings] = useState(false)
-  const [busy, setBusy] = useState(false)
 
-  const patchSettings = (patch: Partial<ExportSettings>): void => {
-    const next = { ...settings, ...patch }
-    setSettings(next)
-    saveExportSettings(next)
-  }
-
-  const visibleRegions = regions.filter((r) => r.visible)
+  const patchSettings = controller.patchSettings.bind(controller)
 
   const doExport = async (kind: 'labels' | 'mask'): Promise<void> => {
     if (!labelMap || busy) return
-    // Captured here: the write below is async, and the user may navigate to
-    // another file before it resolves — the mark must go to THIS source.
-    const exportedVolume = volume
-    const exportedPath = sourcePath
-    const exportedRevision = useStore.getState().segRevision
-    const dir = settings.dir || (sourcePath ? dirOfPath(sourcePath) : '')
-    if (!dir) {
-      fail('The source folder is unknown — pick an export folder in the export settings.')
-      setShowSettings(true)
-      return
-    }
-    setBusy(true)
-    try {
-      const payload =
-        kind === 'labels'
-          ? await buildLabelMapExport(volume, labelMap, regions, settings.format)
-          : await buildMaskExport(volume, labelMap, visibleRegions, settings.format)
-      const result = await window.neoview.exportFile({
-        dir,
-        fileName: payload.fileName,
-        bytes: payload.bytes,
-        sidecar: payload.sidecar
-      })
-      markExported(exportedVolume, exportedPath, exportedRevision)
-      pushToast({
-        text: `Saved ${result.path.split(/[\\/]/).pop()}${result.sidecarPath ? ' + color table' : ''}`,
-        variant: 'success',
-        action: { label: 'Show in file manager', kind: 'reveal', path: result.path }
-      })
-    } catch (err) {
-      fail(err instanceof Error ? err.message : 'Export failed.')
-    } finally {
-      setBusy(false)
-    }
+    if (!(await controller.export(kind))) setShowSettings(true)
   }
 
   return (
@@ -631,7 +582,7 @@ function ExportSection(): JSX.Element {
                 <button
                   key={f}
                   className={`preset-btn${settings.format === f ? ' active' : ''}`}
-                  onClick={() => patchSettings({ format: f })}
+                  onClick={() => controller.patchSettings({ format: f })}
                 >
                   .{f}
                 </button>
@@ -648,14 +599,7 @@ function ExportSection(): JSX.Element {
             </span>
           </div>
           <div className="preset-row" style={{ marginTop: 4 }}>
-            <button
-              className="preset-btn"
-              onClick={() =>
-                void window.neoview.pickDirectory().then((dir) => {
-                  if (dir) patchSettings({ dir })
-                })
-              }
-            >
+            <button className="preset-btn" onClick={() => void controller.pickDirectory()}>
               Choose…
             </button>
             <button
@@ -677,7 +621,7 @@ function ExportSection(): JSX.Element {
   )
 }
 
-export function RegionPanel(): JSX.Element | null {
+export function RegionPanel({ exports }: { exports: RegionExportController }): JSX.Element | null {
   const volume = useStore((s) => s.volume)
   const segTool = useStore((s) => s.segTool)
   const segBox = useStore((s) => s.segBox)
@@ -773,7 +717,7 @@ export function RegionPanel(): JSX.Element | null {
         </div>
       )}
 
-      <ExportSection />
+      <ExportSection controller={exports} />
     </div>
   )
 }

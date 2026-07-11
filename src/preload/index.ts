@@ -8,6 +8,7 @@ import type {
   FolderScanProgress,
   OpenedFile
 } from '../shared/files'
+import { FILE_CHANNELS } from '../shared/files'
 import type { UpdateInstallResult, UpdateSnapshot } from '../shared/updates'
 import { applyStorageOriginMigration, storageMigrationStep } from '../shared/storageMigration'
 
@@ -41,12 +42,12 @@ if (window.location.protocol === 'app:') {
 
 const api = {
   openDialog: (baseIntent: number): Promise<OpenedFile | null> =>
-    ipcRenderer.invoke('open-dialog', baseIntent),
+    ipcRenderer.invoke(FILE_CHANNELS.openDialog, baseIntent),
   /** Overlay picker/read owned by a renderer request id. Base replacement,
    * runtime disposal, or document teardown can cancel it through the same
    * read-cancellation channel used by folder navigation. */
   openOverlayDialog: (requestId: number): Promise<OpenedFile | null> =>
-    ipcRenderer.invoke('open-overlay-dialog', requestId),
+    ipcRenderer.invoke(FILE_CHANNELS.openOverlayDialog, requestId),
   /** Reserve ordering before renderer-side path probes or reads begin. */
   beginBaseIntent: (): Promise<number> => ipcRenderer.invoke('begin-base-intent'),
   /** Promote a provisional token once its operation has a real result. Main
@@ -86,9 +87,10 @@ const api = {
    * token is echoed in every progress batch so the caller can drop batches
    * from superseded scans. */
   openFolderScan: (token: number): Promise<FolderScan | null> =>
-    ipcRenderer.invoke('open-folder-scan', token),
+    ipcRenderer.invoke(FILE_CHANNELS.openFolderScan, token),
   /** Whether a path names a directory (read-only probe, registers nothing). */
-  isDirectory: (path: string): Promise<boolean> => ipcRenderer.invoke('is-directory', path),
+  isDirectory: (path: string): Promise<boolean> =>
+    ipcRenderer.invoke(FILE_CHANNELS.isDirectory, path),
   /**
    * Scan a dropped directory for volume files; null when the drop is not a
    * directory. The path is derived here from the File object itself — page
@@ -103,7 +105,7 @@ const api = {
       return Promise.resolve(null)
     }
     if (!path) return Promise.resolve(null)
-    return ipcRenderer.invoke('scan-folder', path, token)
+    return ipcRenderer.invoke(FILE_CHANNELS.scanFolder, path, token)
   },
   /** Batches of files found while a scan-folder call is still running. */
   onScanFolderProgress: (
@@ -111,8 +113,8 @@ const api = {
   ): (() => void) => {
     const listener = (_e: Electron.IpcRendererEvent, msg: FolderScanProgress): void =>
       cb(msg.token, msg.root, msg.files)
-    ipcRenderer.on('scan-folder-progress', listener)
-    return () => ipcRenderer.removeListener('scan-folder-progress', listener)
+    ipcRenderer.on(FILE_CHANNELS.scanFolderProgress, listener)
+    return () => ipcRenderer.removeListener(FILE_CHANNELS.scanFolderProgress, listener)
   },
   /** File > Open Folder… was chosen; the renderer runs the picker + scan flow. */
   onOpenFolderRequest: (cb: () => void): (() => void) => {
@@ -139,7 +141,7 @@ const api = {
     return () => ipcRenderer.removeListener('menu-redo', listener)
   },
   /** A base volume from this path was opened; feeds the Open Recent menu. */
-  noteFileOpened: (path: string): void => ipcRenderer.send('note-file-opened', path),
+  noteFileOpened: (path: string): void => ipcRenderer.send(FILE_CHANNELS.noteFileOpened, path),
   /** View > File List was chosen in the menu. */
   onToggleFilePanel: (cb: () => void): (() => void) => {
     const listener = (): void => cb()
@@ -156,19 +158,22 @@ const api = {
   sendViewState: (state: FilePanelState): void => ipcRenderer.send('view-state', state),
   /** Read one file from inside a previously opened folder. */
   readFile: (path: string, requestId: number): Promise<OpenedFile> =>
-    ipcRenderer.invoke('read-file', path, requestId),
+    ipcRenderer.invoke(FILE_CHANNELS.readFile, path, requestId),
   /** Read a folder file only when its size is within maxBytes; null otherwise
    * (the size gate runs main-side, before any bytes cross the boundary). */
   readFileWithin: (path: string, maxBytes: number, requestId: number): Promise<OpenedFile | null> =>
-    ipcRenderer.invoke('read-file-limited', path, maxBytes, requestId),
+    ipcRenderer.invoke(FILE_CHANNELS.readFileLimited, path, maxBytes, requestId),
   /** Stop an obsolete folder read without waiting for its bytes to finish. */
-  cancelFileRead: (requestId: number): void => ipcRenderer.send('cancel-file-read', requestId),
+  cancelFileRead: (requestId: number): void =>
+    ipcRenderer.send(FILE_CHANNELS.cancelFileRead, requestId),
   /** Confirm that this scan's root has become the renderer's current folder. */
-  confirmFolderScan: (token: number): void => ipcRenderer.send('confirm-folder-scan', token),
+  confirmFolderScan: (token: number): void =>
+    ipcRenderer.send(FILE_CHANNELS.confirmFolderScan, token),
   /** Invalidate the matching scan; late cancellation of an older token is ignored. */
-  cancelFolderScan: (token: number): void => ipcRenderer.send('cancel-folder-scan', token),
+  cancelFolderScan: (token: number): void =>
+    ipcRenderer.send(FILE_CHANNELS.cancelFolderScan, token),
   /** The displayed folder closed; its read authorization is no longer needed. */
-  releaseFolderAccess: (): void => ipcRenderer.send('release-folder-access'),
+  releaseFolderAccess: (): void => ipcRenderer.send(FILE_CHANNELS.releaseFolderAccess),
   /** Absolute path of a dropped File ('' when unavailable). */
   pathForFile: (file: File): string => {
     try {
@@ -177,9 +182,10 @@ const api = {
       return ''
     }
   },
-  exportFile: (req: ExportRequest): Promise<ExportResult> => ipcRenderer.invoke('export-file', req),
-  pickDirectory: (): Promise<string | null> => ipcRenderer.invoke('pick-directory'),
-  revealInFolder: (path: string): void => ipcRenderer.send('reveal-in-folder', path),
+  exportFile: (req: ExportRequest): Promise<ExportResult> =>
+    ipcRenderer.invoke(FILE_CHANNELS.exportFile, req),
+  pickDirectory: (): Promise<string | null> => ipcRenderer.invoke(FILE_CHANNELS.pickDirectory),
+  revealInFolder: (path: string): void => ipcRenderer.send(FILE_CHANNELS.revealInFolder, path),
   /**
    * Window close was requested; reply with confirmClose() to let it through,
    * or cancelClose() when the user declines so the main process can stand down.

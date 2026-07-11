@@ -16,17 +16,32 @@ export interface ExportSettings {
 const FORMAT_KEY = PERSISTED_STORAGE_KEYS[1]
 const DIR_KEY = PERSISTED_STORAGE_KEYS[2]
 
-export function loadExportSettings(): ExportSettings {
-  const format = localStorage.getItem(FORMAT_KEY)
-  return {
-    format: format === 'nii' ? 'nii' : 'nii.gz',
-    dir: localStorage.getItem(DIR_KEY) ?? ''
+type ExportStorage = Pick<Storage, 'getItem' | 'setItem'>
+
+export function loadExportSettings(
+  storage: Pick<ExportStorage, 'getItem'> = localStorage
+): ExportSettings {
+  try {
+    const format = storage.getItem(FORMAT_KEY)
+    return {
+      format: format === 'nii' ? 'nii' : 'nii.gz',
+      dir: storage.getItem(DIR_KEY) ?? ''
+    }
+  } catch {
+    return { format: 'nii.gz', dir: '' }
   }
 }
 
-export function saveExportSettings(s: ExportSettings): void {
-  localStorage.setItem(FORMAT_KEY, s.format)
-  localStorage.setItem(DIR_KEY, s.dir)
+export function saveExportSettings(
+  settings: ExportSettings,
+  storage: Pick<ExportStorage, 'setItem'> = localStorage
+): void {
+  try {
+    storage.setItem(FORMAT_KEY, settings.format)
+    storage.setItem(DIR_KEY, settings.dir)
+  } catch {
+    // Preference persistence is best-effort; exporting remains available.
+  }
 }
 
 /** Source name without its volume extension, for deriving output names.
@@ -48,6 +63,7 @@ export function dirOfPath(path: string): string {
 }
 
 export type ExportPayload = Omit<ExportRequest, 'dir'>
+export type ExportVolume = Pick<Volume, 'name' | 'dims' | 'spacing' | 'affine'>
 
 async function finishBytes(raw: ArrayBuffer, format: ExportFormat): Promise<ArrayBuffer> {
   return format === 'nii.gz' ? gzip(raw) : raw
@@ -55,7 +71,7 @@ async function finishBytes(raw: ArrayBuffer, format: ExportFormat): Promise<Arra
 
 /** Multi-value label map (one value per region) + color table text. */
 export async function buildLabelMapExport(
-  base: Volume,
+  base: ExportVolume,
   labelMap: Uint16Array,
   regions: Region[],
   format: ExportFormat
@@ -78,7 +94,7 @@ export async function buildLabelMapExport(
 
 /** Single-value mask: 1 wherever any of the given regions has a voxel. */
 export async function buildMaskExport(
-  base: Volume,
+  base: ExportVolume,
   labelMap: Uint16Array,
   regions: Region[],
   format: ExportFormat

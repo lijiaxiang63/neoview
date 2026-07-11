@@ -1,6 +1,7 @@
 import { adjacentIndex, isUnderRoot, sortEntries, type FolderEntry } from './folderList'
 import type { FolderScan, OpenedFile } from '../../../shared/files'
 import { OpenIntentGate } from '../../../shared/openIntents'
+import { LoadFeedbackGroup, PrefetchSlot } from './loadOwnership'
 
 // All load/scan orchestration lives in this one pure module so its
 // interleavings are unit-testable (tests/loadCoordinator.test.ts): every
@@ -103,9 +104,7 @@ export class LoadCoordinator<V> {
   private baseGen = 0
   // Base and same-session overlays can be valid concurrently. The shared
   // feedback settles only after every still-current operation finishes.
-  private nextLoadId = 0
-  private readonly activeLoads = new Set<number>()
-  private loadFailures: unknown[] = []
+  private readonly loadFeedback = new LoadFeedbackGroup()
   // Base replacement/folder confirmation invalidates overlays parsing
   // against the prior base without making concurrent same-base layers race.
   private overlaySessionGen = 0
@@ -139,10 +138,7 @@ export class LoadCoordinator<V> {
   // One-slot byte cache for the file the next key press most likely wants
   // (the neighbor in the last direction travelled). Consuming a hit skips
   // the disk read — the slowest step on external drives.
-  private prefetched: { path: string; bytes: ArrayBuffer } | null = null
-  private prefetchGen = 0
-  private prefetchActiveGen: number | null = null
-  private prefetchAbort: AbortController | null = null
+  private readonly prefetch = new PrefetchSlot()
   private lastDelta: 1 | -1 = 1
 
   // Scan generation, echoed by the scanner in every progress batch: anything
@@ -407,11 +403,7 @@ export class LoadCoordinator<V> {
   /** The folder closed (e.g. an outside file replaced it): release the
    * cached bytes instead of pinning them until the next navigation. */
   releasePrefetch(): void {
-    this.prefetchGen++
-    this.prefetchAbort?.abort()
-    this.prefetchAbort = null
-    this.prefetchActiveGen = null
-    this.prefetched = null
+    this.prefetch.release()
   }
 
   /** Permanently invalidate this coordinator and release every owned
@@ -480,7 +472,7 @@ export class LoadCoordinator<V> {
       // is obsolete: terminate any still-running workers and discard failures
       // that completed while the base kept the shared group open.
       this.invalidateOverlaySession()
-      this.loadFailures = []
+      this.loadFeedback.forgetFailures()
       this.fx.commitBase(volume, path)
       this.finishLoad(loadId, false)
       return 'settled'
@@ -504,30 +496,25 @@ export class LoadCoordinator<V> {
   }
 
   private beginLoading(): number {
-    const loadId = ++this.nextLoadId
-    this.activeLoads.add(loadId)
+    const loadId = this.loadFeedback.begin()
     this.fx.raiseLoading()
     return loadId
   }
 
   private finishLoad(loadId: number, failedThisOperation: boolean, error?: unknown): void {
-    if (!this.activeLoads.delete(loadId)) return
-    if (failedThisOperation) this.loadFailures.push(error)
-    if (this.activeLoads.size > 0) return
-    const failure = this.loadFailures.at(-1)
-    const failed = this.loadFailures.length > 0
-    this.loadFailures = []
+    const settlement = this.loadFeedback.finish(loadId, failedThisOperation, error)
+    if (!settlement) return
     // A direct bridge error can settle feedback without going through this
     // coordinator. Never overwrite or dismiss that newer non-loading state.
     if (this.disposed || !this.fx.snapshot().loading) return
-    if (failed) this.fx.failParse(failure)
+    if (settlement.failed) this.fx.failParse(settlement.failure)
     else this.fx.dismissLoading()
   }
 
   private invalidateOverlaySession(): void {
     this.overlaySessionGen++
     for (const [abort, loadId] of this.overlayParses) {
-      this.activeLoads.delete(loadId)
+      this.loadFeedback.drop(loadId)
       abort.abort()
     }
     this.overlayParses.clear()
@@ -535,8 +522,7 @@ export class LoadCoordinator<V> {
 
   private invalidateLoadGroup(): void {
     this.activeBaseParse?.abort.abort()
-    this.activeLoads.clear()
-    this.loadFailures = []
+    this.loadFeedback.clear()
   }
 
   private abortStaleNavigationParse(path: string): void {
@@ -554,11 +540,7 @@ export class LoadCoordinator<V> {
   }
 
   private cancelPrefetchRead(): void {
-    if (!this.prefetchAbort) return
-    this.prefetchGen++
-    this.prefetchAbort.abort()
-    this.prefetchAbort = null
-    this.prefetchActiveGen = null
+    this.prefetch.cancelActive()
   }
 
   private hasActiveExplicitBaseParse(): boolean {
@@ -664,9 +646,9 @@ export class LoadCoordinator<V> {
         let readSignal: AbortSignal | null = null
         try {
           let opened: OpenedBytes
-          if (this.prefetched?.path === path) {
-            opened = { name: entry.name, bytes: this.prefetched.bytes }
-            this.prefetched = null // the load transfers the buffer away
+          const prefetched = this.prefetch.take(path)
+          if (prefetched) {
+            opened = { name: entry.name, bytes: prefetched }
           } else {
             // A navigation read owns the target now; do not let an older
             // opportunistic read keep allocating the same or another file.
@@ -749,33 +731,29 @@ export class LoadCoordinator<V> {
   /** After navigation settles, read the neighbor in the direction of travel
    * so the next key press starts from parsing instead of the disk. */
   private schedulePrefetch(): void {
-    if (this.disposed || this.prefetchActiveGen === this.prefetchGen) return
+    if (this.disposed || this.prefetch.hasActiveGeneration()) return
     const snap = this.fx.snapshot()
     if (!snap.folderFiles || snap.sourcePath === null) return
     const idx = adjacentIndex(snap.folderFiles, snap.sourcePath, this.lastDelta)
     if (idx === null) return
     const target = snap.folderFiles[idx]
-    if (this.prefetched?.path === target.path) return
-    const gen = this.prefetchGen
-    this.prefetchActiveGen = gen
-    const abort = new AbortController()
-    this.prefetchAbort = abort
+    if (this.prefetch.has(target.path)) return
+    const operation = this.prefetch.begin()
     this.fx
-      .readWithin(target.path, this.prefetchMax, abort.signal)
+      .readWithin(target.path, this.prefetchMax, operation.abort.signal)
       .then((opened) => {
-        if (this.disposed || gen !== this.prefetchGen || !opened) return
+        if (this.disposed || !this.prefetch.owns(operation) || !opened) return
         // Keep the bytes only if the entry still belongs to the open folder.
         const cur = this.fx.snapshot()
         if (cur.folderFiles?.some((f) => f.path === target.path)) {
-          this.prefetched = { path: target.path, bytes: opened.bytes }
+          this.prefetch.store(operation, target.path, opened.bytes)
         }
       })
       .catch(() => {
         // Prefetch is opportunistic; the real read will surface any error.
       })
       .finally(() => {
-        if (this.prefetchAbort === abort) this.prefetchAbort = null
-        if (this.prefetchActiveGen === gen) this.prefetchActiveGen = null
+        this.prefetch.finish(operation)
       })
   }
 }

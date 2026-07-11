@@ -4,12 +4,19 @@ import { OverlayPanel } from './OverlayPanel'
 import { RegionPanel } from './RegionPanel'
 import { RenderPanel } from './RenderPanel'
 import { InfoPanel } from './InfoPanel'
+import type { RegionExportController } from '../runtime/regionExportController'
 
-export function SidePanel({ onAddOverlay }: { onAddOverlay: () => void }): JSX.Element {
+export function SidePanel({
+  onAddOverlay,
+  regionExports
+}: {
+  onAddOverlay: () => void
+  regionExports: RegionExportController
+}): JSX.Element {
   return (
     <aside className="side-panel">
       <ControlPanel />
-      <RegionPanel />
+      <RegionPanel exports={regionExports} />
       <OverlayPanel onAdd={onAddOverlay} />
       <RenderPanel />
       <InfoPanel />

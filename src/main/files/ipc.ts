@@ -5,7 +5,12 @@ import type {
   IpcMainInvokeEvent,
   WebContents
 } from 'electron'
-import type { ExportRequest, FolderScan, FolderScanProgress } from '../../shared/files'
+import {
+  FILE_CHANNELS,
+  parseExportRequest,
+  type FolderScan,
+  type FolderScanProgress
+} from '../../shared/files'
 import type { FileAccessAuthorizer, ScanAccessRequest } from './access'
 import type { FileDialogs } from './dialogs'
 import type { ExportService } from './exports'
@@ -14,6 +19,7 @@ import type { FileReader } from './reader'
 import type { FolderScanner } from './scanner'
 import type { OpenJobCoordinator } from '../openJobs'
 import type { RendererMainFrameGate } from '../rendererProtocol'
+import { FileSenderSessionRegistry } from './sessionRegistry'
 
 export interface FileIpcDependencies {
   ipc: Pick<IpcMain, 'handle' | 'removeHandler' | 'on' | 'removeListener'>
@@ -32,20 +38,6 @@ export interface FileIpcDependencies {
 
 type InvokeHandler = (event: IpcMainInvokeEvent, ...args: unknown[]) => unknown
 type EventHandler = (event: IpcMainEvent, ...args: unknown[]) => void
-interface TrackedSender {
-  sender: WebContents
-  onDestroyed: () => void
-  onDidNavigate: () => void
-  onRenderProcessGone: () => void
-}
-
-interface PendingScan {
-  token: number
-  request: ScanAccessRequest
-  confirmed: boolean
-  completed: boolean
-}
-
 /**
  * Register every file-related channel as one disposable unit. Dependencies
  * are explicit, and a failed/duplicate registration rolls back prior work.
@@ -53,9 +45,7 @@ interface PendingScan {
 export function registerFileIpc(deps: FileIpcDependencies): () => void {
   const handleChannels: string[] = []
   const eventHandlers: Array<{ channel: string; handler: EventHandler }> = []
-  const tracked = new Map<number, TrackedSender>()
-  const pendingScans = new Map<number, PendingScan>()
-  const pendingReads = new Map<number, Map<number, AbortController>>()
+  const sessions = new FileSenderSessionRegistry(deps.access)
   let disposed = false
 
   const isCurrentMainFrame = (event: IpcMainEvent | IpcMainInvokeEvent): boolean =>
@@ -65,67 +55,12 @@ export function registerFileIpc(deps: FileIpcDependencies): () => void {
     if (!isCurrentMainFrame(event)) throw new Error('File operation is unavailable.')
   }
 
-  const removeSenderListeners = (entry: TrackedSender): void => {
-    entry.sender.removeListener('destroyed', entry.onDestroyed)
-    entry.sender.removeListener('did-navigate', entry.onDidNavigate)
-    entry.sender.removeListener('render-process-gone', entry.onRenderProcessGone)
-  }
-
-  const abortOwnerReads = (ownerId: number): void => {
-    const reads = pendingReads.get(ownerId)
-    if (!reads) return
-    pendingReads.delete(ownerId)
-    for (const abort of reads.values()) abort.abort()
-  }
-
-  const releaseOwner = (ownerId: number): void => {
-    pendingScans.delete(ownerId)
-    abortOwnerReads(ownerId)
-    deps.access.release(ownerId)
-  }
-
-  const trackSender = (sender: WebContents): void => {
-    const existing = tracked.get(sender.id)
-    if (existing?.sender === sender) return
-    if (existing) {
-      removeSenderListeners(existing)
-      // Never let a new WebContents object inherit access solely through an id reuse.
-      releaseOwner(sender.id)
-    }
-    // Provisional, blocked and failed navigations leave the current document
-    // alive. Revoke its access only after a new main document commits.
-    const onDidNavigate = (): void => releaseOwner(sender.id)
-    const onRenderProcessGone = (): void => releaseOwner(sender.id)
-    const onDestroyed = (): void => {
-      const current = tracked.get(sender.id)
-      if (current?.sender !== sender) return
-      tracked.delete(sender.id)
-      removeSenderListeners(current)
-      releaseOwner(sender.id)
-    }
-    tracked.set(sender.id, {
-      sender,
-      onDestroyed,
-      onDidNavigate,
-      onRenderProcessGone
-    })
-    sender.once('destroyed', onDestroyed)
-    sender.on('did-navigate', onDidNavigate)
-    sender.on('render-process-gone', onRenderProcessGone)
-  }
-
   const removeInstalled = (): void => {
     for (const channel of handleChannels) deps.ipc.removeHandler(channel)
     handleChannels.length = 0
     for (const { channel, handler } of eventHandlers) deps.ipc.removeListener(channel, handler)
     eventHandlers.length = 0
-    for (const [ownerId, entry] of tracked) {
-      removeSenderListeners(entry)
-      releaseOwner(ownerId)
-    }
-    tracked.clear()
-    pendingScans.clear()
-    pendingReads.clear()
+    sessions.dispose()
   }
 
   const addHandle = (channel: string, handler: InvokeHandler): void => {
@@ -166,16 +101,16 @@ export function registerFileIpc(deps: FileIpcDependencies): () => void {
         // path the renderer can display is readable immediately.
         if (!activateCurrent()) return
         if (sender.isDestroyed()) {
-          releaseOwner(sender.id)
+          sessions.releaseOwner(sender.id)
           return
         }
         const progress: FolderScanProgress = { token, root: path, files }
-        sender.send('scan-folder-progress', progress)
+        sender.send(FILE_CHANNELS.scanFolderProgress, progress)
       },
       () => !disposed && !sender.isDestroyed() && deps.access.isCurrent(prepared)
     )
     if (!activateCurrent() || sender.isDestroyed()) {
-      if (sender.isDestroyed()) releaseOwner(sender.id)
+      if (sender.isDestroyed()) sessions.releaseOwner(sender.id)
       return null
     }
     return scan
@@ -188,47 +123,8 @@ export function registerFileIpc(deps: FileIpcDependencies): () => void {
     throw new Error('Invalid file read request.')
   }
 
-  const beginRead = (ownerId: number, requestId: number): AbortController => {
-    const reads = pendingReads.get(ownerId) ?? new Map<number, AbortController>()
-    const prior = reads.get(requestId)
-    prior?.abort()
-    const abort = new AbortController()
-    reads.set(requestId, abort)
-    pendingReads.set(ownerId, reads)
-    return abort
-  }
-
-  const finishRead = (ownerId: number, requestId: number, abort: AbortController): void => {
-    const reads = pendingReads.get(ownerId)
-    if (reads?.get(requestId) !== abort) return
-    reads.delete(requestId)
-    if (reads.size === 0) pendingReads.delete(ownerId)
-  }
-
-  const beginScan = (sender: WebContents, token: number): ScanAccessRequest => {
-    const request = deps.access.beginScan(sender.id)
-    pendingScans.set(sender.id, { token, request, confirmed: false, completed: false })
-    return request
-  }
-
-  const finishScan = (
-    ownerId: number,
-    request: ScanAccessRequest,
-    result: FolderScan | null
-  ): void => {
-    const pending = pendingScans.get(ownerId)
-    if (pending?.request !== request) return
-    if (result === null) {
-      pendingScans.delete(ownerId)
-      if (deps.access.isCurrent(request)) deps.access.cancelScan(ownerId)
-    } else {
-      pending.completed = true
-      if (pending.confirmed) pendingScans.delete(ownerId)
-    }
-  }
-
   try {
-    addHandle('open-dialog', async (event, intentValue: unknown) => {
+    addHandle(FILE_CHANNELS.openDialog, async (event, intentValue: unknown) => {
       requireCurrentMainFrame(event)
       const window = deps.windowFromSender(event.sender)
       if (!window) return null
@@ -268,13 +164,13 @@ export function registerFileIpc(deps: FileIpcDependencies): () => void {
       }
     })
 
-    addHandle('open-overlay-dialog', async (event, requestIdValue: unknown) => {
+    addHandle(FILE_CHANNELS.openOverlayDialog, async (event, requestIdValue: unknown) => {
       requireCurrentMainFrame(event)
       const window = deps.windowFromSender(event.sender)
       if (!window) return null
-      trackSender(event.sender)
+      sessions.track(event.sender)
       const requestId = readIdOf(requestIdValue)
-      const abort = beginRead(event.sender.id, requestId)
+      const abort = sessions.beginRead(event.sender.id, requestId)
       try {
         const opened = await deps.dialogs.pickAndRead(window, abort.signal)
         return !abort.signal.aborted && isCurrentMainFrame(event) ? opened : null
@@ -282,74 +178,74 @@ export function registerFileIpc(deps: FileIpcDependencies): () => void {
         if (abort.signal.aborted || !isCurrentMainFrame(event)) return null
         throw error
       } finally {
-        finishRead(event.sender.id, requestId, abort)
+        sessions.finishRead(event.sender.id, requestId, abort)
       }
     })
 
-    addHandle('open-folder-scan', async (event, token: unknown) => {
+    addHandle(FILE_CHANNELS.openFolderScan, async (event, token: unknown) => {
       requireCurrentMainFrame(event)
       const window = deps.windowFromSender(event.sender)
       if (!window) return null
-      trackSender(event.sender)
+      sessions.track(event.sender)
       const scanToken = tokenOf(token)
-      const request = beginScan(event.sender, scanToken)
+      const request = sessions.beginScan(event.sender, scanToken)
       try {
         const path = await deps.dialogs.pickScanRoot(window)
         if (path === null) {
-          finishScan(event.sender.id, request, null)
+          sessions.finishScan(event.sender.id, request, false)
           return null
         }
         const result = await scanAndStream(event.sender, path, scanToken, request)
-        finishScan(event.sender.id, request, result)
+        sessions.finishScan(event.sender.id, request, result !== null)
         return result
       } catch (error) {
-        finishScan(event.sender.id, request, null)
+        sessions.finishScan(event.sender.id, request, false)
         throw error
       }
     })
 
     // Read-only metadata probe; it changes no authorization state.
-    addHandle('is-directory', async (_event, path: unknown) => {
+    addHandle(FILE_CHANNELS.isDirectory, async (_event, path: unknown) => {
       requireCurrentMainFrame(_event)
       return typeof path === 'string' && path !== '' ? deps.isDirectory(path) : false
     })
 
-    addHandle('scan-folder', async (event, path: unknown, token: unknown) => {
+    addHandle(FILE_CHANNELS.scanFolder, async (event, path: unknown, token: unknown) => {
       requireCurrentMainFrame(event)
       if (typeof path !== 'string' || path === '') return null
-      trackSender(event.sender)
+      sessions.track(event.sender)
       const scanToken = tokenOf(token)
-      const request = beginScan(event.sender, scanToken)
+      const request = sessions.beginScan(event.sender, scanToken)
       try {
         const result = await scanAndStream(event.sender, path, scanToken, request)
-        finishScan(event.sender.id, request, result)
+        sessions.finishScan(event.sender.id, request, result !== null)
         return result
       } catch (error) {
-        finishScan(event.sender.id, request, null)
+        sessions.finishScan(event.sender.id, request, false)
         throw error
       }
     })
 
-    addHandle('read-file', async (event, path: unknown, requestIdValue: unknown) => {
+    addHandle(FILE_CHANNELS.readFile, async (event, path: unknown, requestIdValue: unknown) => {
       requireCurrentMainFrame(event)
-      trackSender(event.sender)
+      sessions.track(event.sender)
       const requestId = readIdOf(requestIdValue)
-      const abort = beginRead(event.sender.id, requestId)
+      const abort = sessions.beginRead(event.sender.id, requestId)
       try {
         const authorized = await deps.access.authorizeRead(event.sender.id, path)
         return await deps.reader.read(authorized.realPath, authorized.requestedPath, abort.signal)
       } finally {
-        finishRead(event.sender.id, requestId, abort)
+        sessions.finishRead(event.sender.id, requestId, abort)
       }
     })
 
     addHandle(
-      'read-file-limited',
+      FILE_CHANNELS.readFileLimited,
       async (event, path: unknown, maxBytes: unknown, requestIdValue: unknown) => {
         requireCurrentMainFrame(event)
-        trackSender(event.sender)
+        sessions.track(event.sender)
         const requestId = readIdOf(requestIdValue)
-        const abort = beginRead(event.sender.id, requestId)
+        const abort = sessions.beginRead(event.sender.id, requestId)
         try {
           const authorized = await deps.access.authorizeRead(event.sender.id, path)
           return await deps.reader.readWithin(
@@ -359,50 +255,43 @@ export function registerFileIpc(deps: FileIpcDependencies): () => void {
             abort.signal
           )
         } finally {
-          finishRead(event.sender.id, requestId, abort)
+          sessions.finishRead(event.sender.id, requestId, abort)
         }
       }
     )
 
-    addHandle('export-file', async (event, request: unknown) => {
+    addHandle(FILE_CHANNELS.exportFile, async (event, request: unknown) => {
       requireCurrentMainFrame(event)
-      return deps.exporter.write(request as ExportRequest)
+      return deps.exporter.write(parseExportRequest(request))
     })
 
-    addHandle('pick-directory', async (event) => {
+    addHandle(FILE_CHANNELS.pickDirectory, async (event) => {
       requireCurrentMainFrame(event)
       const window = deps.windowFromSender(event.sender)
       return window ? deps.dialogs.pickExportDirectory(window) : null
     })
 
-    addListener('confirm-folder-scan', (event, token: unknown) => {
+    addListener(FILE_CHANNELS.confirmFolderScan, (event, token: unknown) => {
       if (!isCurrentMainFrame(event)) return
-      trackSender(event.sender)
-      const pending = pendingScans.get(event.sender.id)
-      if (typeof token !== 'number' || pending?.token !== token) return
-      if (!deps.access.confirmScan(pending.request)) return
-      pending.confirmed = true
-      if (pending.completed) pendingScans.delete(event.sender.id)
+      sessions.track(event.sender)
+      sessions.confirmScan(event.sender.id, token)
     })
 
-    addListener('cancel-folder-scan', (event, token: unknown) => {
+    addListener(FILE_CHANNELS.cancelFolderScan, (event, token: unknown) => {
       if (!isCurrentMainFrame(event)) return
-      trackSender(event.sender)
-      const pending = pendingScans.get(event.sender.id)
-      if (typeof token !== 'number' || pending?.token !== token) return
-      pendingScans.delete(event.sender.id)
-      deps.access.cancelScan(event.sender.id)
+      sessions.track(event.sender)
+      sessions.cancelScan(event.sender.id, token)
     })
 
-    addListener('release-folder-access', (event) => {
+    addListener(FILE_CHANNELS.releaseFolderAccess, (event) => {
       if (!isCurrentMainFrame(event)) return
-      trackSender(event.sender)
-      releaseOwner(event.sender.id)
+      sessions.track(event.sender)
+      sessions.releaseOwner(event.sender.id)
     })
 
-    addListener('cancel-file-read', (event, requestIdValue: unknown) => {
+    addListener(FILE_CHANNELS.cancelFileRead, (event, requestIdValue: unknown) => {
       if (!isCurrentMainFrame(event)) return
-      trackSender(event.sender)
+      sessions.track(event.sender)
       if (
         typeof requestIdValue !== 'number' ||
         !Number.isSafeInteger(requestIdValue) ||
@@ -410,15 +299,15 @@ export function registerFileIpc(deps: FileIpcDependencies): () => void {
       ) {
         return
       }
-      pendingReads.get(event.sender.id)?.get(requestIdValue)?.abort()
+      sessions.cancelRead(event.sender.id, requestIdValue)
     })
 
-    addListener('reveal-in-folder', (event, path: unknown) => {
+    addListener(FILE_CHANNELS.revealInFolder, (event, path: unknown) => {
       if (!isCurrentMainFrame(event)) return
       if (typeof path === 'string' && path !== '') deps.revealInFolder(path)
     })
 
-    addListener('note-file-opened', (event, path: unknown) => {
+    addListener(FILE_CHANNELS.noteFileOpened, (event, path: unknown) => {
       if (!isCurrentMainFrame(event)) return
       if (typeof path === 'string' && path !== '' && isVolumeFileName(path)) {
         deps.noteFileOpened(path)
