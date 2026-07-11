@@ -225,18 +225,44 @@ function spatialChannelNormalization(input: tf.Tensor): tf.Tensor {
   return input.sub(mean).mul(tf.rsqrt(variance.add(1e-5)))
 }
 
+export function highFinalNeedsStreaming(
+  spatialDims: readonly number[],
+  outputClasses: number,
+  maxTextureSize: number
+): boolean {
+  if (!(maxTextureSize > 0) || !Number.isFinite(maxTextureSize)) return false
+  const outputElements = spatialDims.reduce((product, size) => product * size, outputClasses)
+  return outputElements > maxTextureSize * maxTextureSize
+}
+
+function currentMaxTextureSize(): number {
+  try {
+    return tf.env().getNumber('WEBGL_MAX_TEXTURE_SIZE')
+  } catch {
+    return Number.POSITIVE_INFINITY
+  }
+}
+
 export async function runModelHigh(
   model: tf.LayersModel,
   input: Uint8Array,
   dims: [number, number, number],
   inputMin = 0,
   inputScale = 1,
-  onStep?: (completed: number, total: number) => void
+  onStep?: (completed: number, total: number) => void,
+  maxTextureSize = currentMaxTextureSize()
 ): Promise<Uint8Array> {
   let current = inputTensor(input, dims, inputMin, inputScale)
   try {
-    const total = model.layers.length - 1
-    for (let index = 1; index < model.layers.length; index++) {
+    const finalIndex = model.layers.length - 1
+    const finalLayer = model.layers[finalIndex] as ConvLayerLike
+    const config = finalLayer.getConfig() as { filters?: number }
+    if (!config.filters) throw new Error('run-failed')
+    const streamFinal = highFinalNeedsStreaming(dims, config.filters, maxTextureSize)
+    const standardEnd = streamFinal ? finalIndex : model.layers.length
+    const total = standardEnd - 1 + (streamFinal ? config.filters : 0)
+    let completed = 0
+    for (let index = 1; index < standardEnd; index++) {
       const previous = current
       current = tf.tidy(() => {
         const applied = model.layers[index].apply(previous) as tf.Tensor | tf.Tensor[]
@@ -247,7 +273,14 @@ export async function runModelHigh(
       })
       previous.dispose()
       await syncTensor(current)
-      onStep?.(index, total)
+      onStep?.(++completed, total)
+    }
+    if (streamFinal) {
+      const inputChannels = current.shape[4]
+      if (inputChannels === undefined) throw new Error('run-failed')
+      return await sequentialArgMax(current, finalLayer, inputChannels, () =>
+        onStep?.(++completed, total)
+      )
     }
     return await labelsOf(current)
   } finally {

@@ -2,6 +2,7 @@ import { readFile } from 'node:fs/promises'
 import * as tf from '@tensorflow/tfjs'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import {
+  highFinalNeedsStreaming,
   initializeModelBackend,
   lowFinalInputChunkSize,
   runModelHigh,
@@ -94,10 +95,29 @@ describe('fixed model core', () => {
       const beforeHigh = tf.memory().numTensors
       const high = await runModelHigh(model, values, [2, 2, 2], 0, 1 / 255)
       expect(tf.memory().numTensors).toBe(beforeHigh)
+      const streamedProgress: Array<[number, number]> = []
+      const streamed = await runModelHigh(
+        model,
+        values,
+        [2, 2, 2],
+        0,
+        1 / 255,
+        (completed, total) => streamedProgress.push([completed, total]),
+        1
+      )
+      expect(tf.memory().numTensors).toBe(beforeHigh)
       const beforeLow = tf.memory().numTensors
       const low = await runModelLow(model, values, [2, 2, 2], 0, 1 / 255)
       expect(tf.memory().numTensors).toBe(beforeLow)
       expect(low).toEqual(high)
+      expect(streamed).toEqual(high)
+      expect(streamedProgress).toEqual([
+        [1, 5],
+        [2, 5],
+        [3, 5],
+        [4, 5],
+        [5, 5]
+      ])
     } finally {
       model.dispose()
     }
@@ -107,6 +127,13 @@ describe('fixed model core', () => {
     expect(lowFinalInputChunkSize(3)).toBe(3)
     expect(lowFinalInputChunkSize(18)).toBe(10)
     expect(lowFinalInputChunkSize(104)).toBe(10)
+  })
+
+  it('streams a high-memory final layer only when its output exceeds the texture limit', () => {
+    expect(highFinalNeedsStreaming([4, 4, 4], 4, 16)).toBe(false)
+    expect(highFinalNeedsStreaming([4, 4, 4], 5, 16)).toBe(true)
+    expect(highFinalNeedsStreaming([176, 144, 128], 104, 16_384)).toBe(true)
+    expect(highFinalNeedsStreaming([176, 144, 128], 104, Number.POSITIVE_INFINITY)).toBe(false)
   })
 
   it('applies spatial channel normalization in both execution modes', async () => {
