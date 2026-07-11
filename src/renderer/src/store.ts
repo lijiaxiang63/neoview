@@ -72,6 +72,10 @@ export interface AppState extends RegionState, RegionActions {
   filePanelOpen: boolean
   /** Side panel visibility (a viewing pref — survives file changes). */
   sidePanelOpen: boolean
+  /** Primary direction labels drawn at the left and top panel edges of every slice. */
+  directionLabelsVisible: boolean
+  /** Shared slice crosshair visibility. */
+  crosshairVisible: boolean
   /** Navigation target still being read/loaded (arrow-key scrubbing). */
   pendingFilePath: string | null
   loadState: 'empty' | 'loading' | 'ready' | 'error'
@@ -103,6 +107,8 @@ export interface AppState extends RegionState, RegionActions {
   setFolderLoading: (b: boolean) => void
   toggleFilePanel: () => void
   toggleSidePanel: () => void
+  toggleDirectionLabels: () => void
+  toggleCrosshair: () => void
   setPendingFilePath: (p: string | null) => void
   addOverlay: (v: Volume, settleLoad?: boolean) => void
   removeOverlay: (id: number) => void
@@ -261,6 +267,8 @@ function createAppState(
     folderLoading: false,
     filePanelOpen: true,
     sidePanelOpen: true,
+    directionLabelsVisible: true,
+    crosshairVisible: true,
     pendingFilePath: null,
     loadState: 'empty',
     errorMessage: null,
@@ -308,6 +316,11 @@ function createAppState(
     toggleFilePanel: () => set((s) => ({ filePanelOpen: !s.filePanelOpen })),
 
     toggleSidePanel: () => set((s) => ({ sidePanelOpen: !s.sidePanelOpen })),
+
+    toggleDirectionLabels: () =>
+      set((s) => ({ directionLabelsVisible: !s.directionLabelsVisible })),
+
+    toggleCrosshair: () => set((s) => ({ crosshairVisible: !s.crosshairVisible })),
 
     setPendingFilePath: (p) => set({ pendingFilePath: p }),
 

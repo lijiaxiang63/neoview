@@ -16,6 +16,17 @@ class FakeContext {
   readonly ellipses: [number, number, number, number][] = []
   readonly dashes: number[][] = []
   readonly strokeStyles: string[] = []
+  readonly texts: Array<{
+    text: string
+    x: number
+    y: number
+    kind: 'stroke' | 'fill'
+    align: CanvasTextAlign
+    baseline: CanvasTextBaseline
+  }> = []
+  font = 'original-font'
+  textAlign: CanvasTextAlign = 'start'
+  textBaseline: CanvasTextBaseline = 'alphabetic'
   clearCount = 0
   private path: [string, ...number[]][] = []
   private dash: number[] = [11]
@@ -59,6 +70,28 @@ class FakeContext {
     this.fills.push([x, y, width, height])
   }
 
+  strokeText(text: string, x: number, y: number): void {
+    this.texts.push({
+      text,
+      x,
+      y,
+      kind: 'stroke',
+      align: this.textAlign,
+      baseline: this.textBaseline
+    })
+  }
+
+  fillText(text: string, x: number, y: number): void {
+    this.texts.push({
+      text,
+      x,
+      y,
+      kind: 'fill',
+      align: this.textAlign,
+      baseline: this.textBaseline
+    })
+  }
+
   ellipse(x: number, y: number, rx: number, ry: number): void {
     this.ellipses.push([x, y, rx, ry])
   }
@@ -73,10 +106,26 @@ class FakeContext {
   }
 }
 
-function viewport(): SliceViewport {
-  const fit = fitSliceViewport(240, 180, 10, 8, 2, 1)
+function viewport(
+  canvasWidth = 240,
+  canvasHeight = 180,
+  columns = 10,
+  rows = 8,
+  columnSpacing = 2,
+  rowSpacing = 1,
+  fill?: number
+): SliceViewport {
+  const fit = fitSliceViewport(
+    canvasWidth,
+    canvasHeight,
+    columns,
+    rows,
+    columnSpacing,
+    rowSpacing,
+    fill
+  )
   if (!fit) throw new Error('expected a fit')
-  return { fit, columns: 10, rows: 8, columnSpacing: 2, rowSpacing: 1 }
+  return { fit, columns, rows, columnSpacing, rowSpacing }
 }
 
 function input(overrides: Partial<SliceAnnotationInput> = {}): SliceAnnotationInput {
@@ -91,6 +140,9 @@ function input(overrides: Partial<SliceAnnotationInput> = {}): SliceAnnotationIn
     brushHover: null,
     brushRadius: 4,
     activeRegionId: 1,
+    affine: new Float64Array([-1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]),
+    directionLabelsVisible: true,
+    crosshairVisible: true,
     devicePixelRatio: 2,
     ...overrides
   }
@@ -130,6 +182,77 @@ describe('slice annotation drawing', () => {
     const crossY = values.viewport.fit.dy + 3.5 * values.viewport.fit.scale
     expect(context.paths[0][0]).toEqual(['move', crossX, values.viewport.fit.dy])
     expect(context.paths[0][4]).toEqual(['move', values.viewport.fit.dx, crossY])
+  })
+
+  it('can hide the crosshair without hiding direction labels', () => {
+    const context = new FakeContext()
+    drawSliceAnnotations(
+      context as unknown as CanvasRenderingContext2D,
+      input({ crosshairVisible: false })
+    )
+    expect(context.paths).toHaveLength(0)
+    expect(
+      context.texts.filter((entry) => entry.kind === 'fill').map((entry) => entry.text)
+    ).toEqual(['R', 'A'])
+  })
+
+  it('can hide direction labels without hiding the crosshair', () => {
+    const context = new FakeContext()
+    drawSliceAnnotations(
+      context as unknown as CanvasRenderingContext2D,
+      input({ directionLabelsVisible: false })
+    )
+    expect(context.paths).toHaveLength(1)
+    expect(context.texts).toHaveLength(0)
+  })
+
+  it('pins the two primary labels to the panel edges regardless of image fit', () => {
+    const viewports = [viewport(240, 180, 10, 8, 2, 1, 0.6), viewport(240, 180, 10, 10, 1, 1)]
+    for (const fittedViewport of viewports) {
+      const context = new FakeContext()
+      drawSliceAnnotations(
+        context as unknown as CanvasRenderingContext2D,
+        input({
+          viewport: fittedViewport,
+          crosshairVisible: false
+        })
+      )
+      expect(context.texts.filter((entry) => entry.kind === 'fill')).toEqual([
+        {
+          text: 'R',
+          x: 16,
+          y: 90,
+          kind: 'fill',
+          align: 'left',
+          baseline: 'middle'
+        },
+        {
+          text: 'A',
+          x: 120,
+          y: 16,
+          kind: 'fill',
+          align: 'center',
+          baseline: 'top'
+        }
+      ])
+    }
+  })
+
+  it('scales the panel inset with the device pixel ratio', () => {
+    const context = new FakeContext()
+    drawSliceAnnotations(
+      context as unknown as CanvasRenderingContext2D,
+      input({
+        canvasSize: [120, 90],
+        viewport: viewport(120, 90),
+        devicePixelRatio: 1,
+        crosshairVisible: false
+      })
+    )
+    expect(context.texts.filter((entry) => entry.kind === 'fill')).toMatchObject([
+      { text: 'R', x: 8, y: 45, align: 'left', baseline: 'middle' },
+      { text: 'A', x: 60, y: 8, align: 'center', baseline: 'top' }
+    ])
   })
 
   it('draws solid box and all eight handles inside the slab', () => {

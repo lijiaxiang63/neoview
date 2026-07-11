@@ -261,12 +261,16 @@ describe('render settings', () => {
   it('survives loading a new volume (viewing preference, not data)', () => {
     useStore.getState().setRenderMode('composite')
     useStore.getState().setDensity(0.7)
+    useStore.getState().toggleDirectionLabels()
+    useStore.getState().toggleCrosshair()
     const vol = fakeVolume({ dataMin: 0, dataMax: 100, p2: 5, p98: 95 })
     // Minimal fields setVolume touches beyond stats:
     ;(vol as { dims: number[] }).dims = [4, 4, 4]
     useStore.getState().setVolume(vol)
     expect(useStore.getState().renderMode).toBe('composite')
     expect(useStore.getState().density).toBe(0.7)
+    expect(useStore.getState().directionLabelsVisible).toBe(false)
+    expect(useStore.getState().crosshairVisible).toBe(false)
   })
 })
 

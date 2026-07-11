@@ -151,6 +151,8 @@ function bridgeHarness(): BridgeHarness {
     onCloseRequested: (callback) => listen('close', callback as Callback),
     onToggleFilePanel: (callback) => listen('toggle-files', callback as Callback),
     onToggleSidePanel: (callback) => listen('toggle-side', callback as Callback),
+    onToggleDirectionLabels: (callback) => listen('toggle-labels', callback as Callback),
+    onToggleCrosshair: (callback) => listen('toggle-crosshair', callback as Callback),
     openFolderScan,
     scanDroppedFolder,
     isDirectory,
@@ -349,7 +351,7 @@ describe('renderer runtime lifecycle', () => {
 
     expect(h.coordinatorFactory).toHaveBeenCalledTimes(1)
     expect(h.coordinatorFactory.mock.calls[0][1].intentGate).toBe(h.store.openIntentGate)
-    expect(h.bridge.unsubscribes).toHaveLength(13)
+    expect(h.bridge.unsubscribes).toHaveLength(15)
     expect(h.window.add).toHaveBeenCalledTimes(5)
     expect(h.bridge.claimCloseResponder).toHaveBeenCalledTimes(1)
     expect(h.bridge.activateCloseResponder).toHaveBeenCalledWith(1)
@@ -458,9 +460,27 @@ describe('renderer runtime lifecycle', () => {
     expect(h.bridge.sendViewState).toHaveBeenLastCalledWith({
       fileList: false,
       sidePanel: true,
-      folderOpen: false
+      folderOpen: false,
+      directionLabels: true,
+      crosshair: true
     })
     expect(h.bridge.sendViewState).toHaveBeenCalledTimes(2)
+    h.bridge.emit('toggle-labels')
+    expect(h.bridge.sendViewState).toHaveBeenLastCalledWith({
+      fileList: false,
+      sidePanel: true,
+      folderOpen: false,
+      directionLabels: false,
+      crosshair: true
+    })
+    h.bridge.emit('toggle-crosshair')
+    expect(h.bridge.sendViewState).toHaveBeenLastCalledWith({
+      fileList: false,
+      sidePanel: true,
+      folderOpen: false,
+      directionLabels: false,
+      crosshair: false
+    })
   })
 })
 

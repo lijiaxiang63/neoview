@@ -6,7 +6,13 @@ function options(isMac: boolean): ApplicationMenuOptions {
   return {
     isMac,
     appName: 'neoview',
-    viewState: { fileList: true, sidePanel: false, folderOpen: true },
+    viewState: {
+      fileList: true,
+      sidePanel: false,
+      folderOpen: true,
+      directionLabels: true,
+      crosshair: false
+    },
     recentItems: [{ path: '/a.nii', label: 'a.nii' }],
     autoCheckEnabled: false,
     actions: {
@@ -21,6 +27,8 @@ function options(isMac: boolean): ApplicationMenuOptions {
       redo: action,
       toggleFilePanel: action,
       toggleSidePanel: action,
+      toggleDirectionLabels: action,
+      toggleCrosshair: action,
       openHomepage: action,
       openRepository: action,
       checkForUpdates: action,
@@ -48,6 +56,13 @@ describe('application menu template', () => {
     expect(viewItems.find((item) => item.id === 'view-side-panel')).toMatchObject({
       checked: false
     })
+    expect(viewItems.find((item) => item.id === 'view-direction-labels')).toMatchObject({
+      checked: true
+    })
+    expect(viewItems.find((item) => item.id === 'view-crosshair')).toMatchObject({
+      checked: false
+    })
+    expect(viewItems.filter((item) => item.role === 'togglefullscreen')).toHaveLength(1)
     recentItems[0].click?.({} as never, {} as never, {} as never)
     expect(input.actions.openRecent).toHaveBeenCalledWith('/a.nii')
   })
@@ -56,5 +71,9 @@ describe('application menu template', () => {
     const template = createApplicationMenuTemplate(options(true))
     expect(template[0].label).toBe('neoview')
     expect(template.some((item) => item.label === 'Edit')).toBe(true)
+    const view = template.find((item) => item.label === 'View')!
+    const viewItems = view.submenu as Electron.MenuItemConstructorOptions[]
+    expect(viewItems.filter((item) => item.role === 'togglefullscreen')).toHaveLength(0)
+    expect(template.some((item) => item.role === 'windowMenu')).toBe(true)
   })
 })

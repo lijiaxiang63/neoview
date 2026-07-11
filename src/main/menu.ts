@@ -1,10 +1,10 @@
 import type { MenuItemConstructorOptions } from 'electron'
-import type { FilePanelState } from '../shared/files'
+import type { ViewMenuState } from '../shared/files'
 
 export interface ApplicationMenuOptions {
   isMac: boolean
   appName: string
-  viewState: FilePanelState
+  viewState: ViewMenuState
   recentItems: Array<{ path: string; label: string }>
   autoCheckEnabled: boolean
   actions: {
@@ -19,6 +19,8 @@ export interface ApplicationMenuOptions {
     redo(): void
     toggleFilePanel(): void
     toggleSidePanel(): void
+    toggleDirectionLabels(): void
+    toggleCrosshair(): void
     openHomepage(): void
     openRepository(): void
     checkForUpdates(): void
@@ -134,7 +136,26 @@ export function createApplicationMenuTemplate(
           click: actions.toggleSidePanel
         },
         { type: 'separator' },
-        { role: 'togglefullscreen' },
+        {
+          id: 'view-direction-labels',
+          label: 'Direction Labels',
+          type: 'checkbox',
+          checked: viewState.directionLabels,
+          click: actions.toggleDirectionLabels
+        },
+        {
+          id: 'view-crosshair',
+          label: 'Crosshair',
+          type: 'checkbox',
+          checked: viewState.crosshair,
+          click: actions.toggleCrosshair
+        },
+        ...(isMac
+          ? []
+          : ([
+              { type: 'separator' },
+              { role: 'togglefullscreen' }
+            ] as MenuItemConstructorOptions[])),
         { type: 'separator' },
         { role: 'toggleDevTools' }
       ]

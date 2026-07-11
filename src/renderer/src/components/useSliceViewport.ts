@@ -12,7 +12,8 @@ export function useSliceViewport(
   columns: number,
   rows: number,
   columnSpacing: number,
-  rowSpacing: number
+  rowSpacing: number,
+  sharedFitSize: readonly [number, number] | null = null
 ): SliceViewportState {
   const [measurement, setMeasurement] = useState<{
     canvasSize: [number, number]
@@ -54,10 +55,12 @@ export function useSliceViewport(
       columns,
       rows,
       columnSpacing,
-      rowSpacing
+      rowSpacing,
+      0.96,
+      sharedFitSize
     )
     return fit ? { fit, columns, rows, columnSpacing, rowSpacing } : null
-  }, [measurement.canvasSize, columns, rows, columnSpacing, rowSpacing])
+  }, [measurement.canvasSize, columns, rows, columnSpacing, rowSpacing, sharedFitSize])
 
   return { ...measurement, viewport }
 }

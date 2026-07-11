@@ -1,8 +1,9 @@
-import { useEffect, useRef, type JSX } from 'react'
+import { useEffect, useMemo, useRef, type JSX } from 'react'
 import { useStore } from '../store'
-import { AXIS_NAMES, PLANES } from '../slicing/extract'
+import { PLANES } from '../slicing/extract'
 import { drawSliceAnnotations } from '../slicing/drawAnnotations'
 import { SliceRasterRenderer } from '../slicing/sliceRasterRenderer'
+import { sharedSliceFitSize } from '../slicing/viewport'
 import { useSliceGestures } from './useSliceGestures'
 import { useSliceViewport } from './useSliceViewport'
 
@@ -35,6 +36,8 @@ export function SliceView({ view }: Props): JSX.Element {
   const activeRegionId = useStore((state) => state.activeRegionId)
   const editRegionId = useStore((state) => state.editRegionId)
   const maximized = useStore((state) => state.maximizedView === view)
+  const directionLabelsVisible = useStore((state) => state.directionLabelsVisible)
+  const crosshairVisible = useStore((state) => state.crosshairVisible)
 
   const containerRef = useRef<HTMLDivElement>(null)
   const baseRef = useRef<HTMLCanvasElement>(null)
@@ -45,12 +48,17 @@ export function SliceView({ view }: Props): JSX.Element {
   const rows = volume ? volume.dims[plane.rowAxis] : 0
   const columnSpacing = volume ? volume.spacing[plane.colAxis] : 1
   const rowSpacing = volume ? volume.spacing[plane.rowAxis] : 1
+  const sharedFit = useMemo(
+    () => (volume && !maximized ? sharedSliceFitSize(volume.dims, volume.spacing) : null),
+    [volume, maximized]
+  )
   const { canvasSize, devicePixelRatio, viewport } = useSliceViewport(
     containerRef,
     columns,
     rows,
     columnSpacing,
-    rowSpacing
+    rowSpacing,
+    sharedFit
   )
 
   const gestures = useSliceGestures({
@@ -137,6 +145,9 @@ export function SliceView({ view }: Props): JSX.Element {
       brushHover,
       brushRadius,
       activeRegionId,
+      affine: volume.affine,
+      directionLabelsVisible,
+      crosshairVisible,
       devicePixelRatio
     })
   }, [
@@ -151,10 +162,11 @@ export function SliceView({ view }: Props): JSX.Element {
     brushHover,
     brushRadius,
     activeRegionId,
+    directionLabelsVisible,
+    crosshairVisible,
     devicePixelRatio
   ])
 
-  const axisName = AXIS_NAMES[plane.sliceAxis]
   const maxSlice = volume ? volume.dims[plane.sliceAxis] - 1 : 0
   const cursorClass = segTool === 'box' ? ' box-tool' : segTool === 'brush' ? ' brush-tool' : ''
 
@@ -176,7 +188,7 @@ export function SliceView({ view }: Props): JSX.Element {
       <div className="chip">
         <span className="plane-name">{plane.label}</span>
         <span className="mono">
-          {axisName} {sliceIndex}/{maxSlice}
+          axis {plane.sliceAxis} {sliceIndex}/{maxSlice}
         </span>
       </div>
     </div>

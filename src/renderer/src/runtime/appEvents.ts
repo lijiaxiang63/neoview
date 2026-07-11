@@ -1,4 +1,4 @@
-import type { FilePanelState } from '../../../shared/files'
+import type { ViewMenuState } from '../../../shared/files'
 import type { AppState } from '../store'
 
 /** 'auto' follows the loaded-state snapshot captured when a drop happens. */
@@ -115,21 +115,28 @@ export function menuHistoryTarget(
 }
 
 export function viewMenuSnapshot(
-  state: Pick<AppState, 'filePanelOpen' | 'sidePanelOpen' | 'folder'>
-): FilePanelState {
+  state: Pick<
+    AppState,
+    'filePanelOpen' | 'sidePanelOpen' | 'folder' | 'directionLabelsVisible' | 'crosshairVisible'
+  >
+): ViewMenuState {
   return {
     fileList: state.filePanelOpen,
     sidePanel: state.sidePanelOpen,
-    folderOpen: state.folder !== null
+    folderOpen: state.folder !== null,
+    directionLabels: state.directionLabelsVisible,
+    crosshair: state.crosshairVisible
   }
 }
 
-export function sameViewMenuSnapshot(a: FilePanelState | null, b: FilePanelState): boolean {
+export function sameViewMenuSnapshot(a: ViewMenuState | null, b: ViewMenuState): boolean {
   return (
     a !== null &&
     a.fileList === b.fileList &&
     a.sidePanel === b.sidePanel &&
-    a.folderOpen === b.folderOpen
+    a.folderOpen === b.folderOpen &&
+    a.directionLabels === b.directionLabels &&
+    a.crosshair === b.crosshair
   )
 }
 

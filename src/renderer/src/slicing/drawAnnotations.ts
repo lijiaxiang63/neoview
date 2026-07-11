@@ -1,6 +1,7 @@
 import type { HoverInfo, SegTool } from '../store'
 import type { SegBox } from '../segmentation/segment'
 import type { PlaneSpec } from './extract'
+import { sliceDirectionLabels } from './directionLabels'
 import {
   boxCanvasRect,
   resizeHandles,
@@ -20,6 +21,9 @@ export interface SliceAnnotationInput {
   brushHover: HoverInfo | null
   brushRadius: number
   activeRegionId: number | null
+  affine: Float64Array
+  directionLabelsVisible: boolean
+  crosshairVisible: boolean
   devicePixelRatio: number
 }
 
@@ -43,18 +47,20 @@ export function drawSliceAnnotations(
     const imageY0 = viewport.fit.dy
     const imageY1 = viewport.fit.dy + viewport.fit.dh
 
-    context.strokeStyle = 'rgba(79, 163, 255, 0.55)'
-    context.lineWidth = devicePixelRatio
-    context.beginPath()
-    context.moveTo(crossX, imageY0)
-    context.lineTo(crossX, crossY - gap)
-    context.moveTo(crossX, crossY + gap)
-    context.lineTo(crossX, imageY1)
-    context.moveTo(imageX0, crossY)
-    context.lineTo(crossX - gap, crossY)
-    context.moveTo(crossX + gap, crossY)
-    context.lineTo(imageX1, crossY)
-    context.stroke()
+    if (input.crosshairVisible) {
+      context.strokeStyle = 'rgba(79, 163, 255, 0.55)'
+      context.lineWidth = devicePixelRatio
+      context.beginPath()
+      context.moveTo(crossX, imageY0)
+      context.lineTo(crossX, crossY - gap)
+      context.moveTo(crossX, crossY + gap)
+      context.lineTo(crossX, imageY1)
+      context.moveTo(imageX0, crossY)
+      context.lineTo(crossX - gap, crossY)
+      context.moveTo(crossX + gap, crossY)
+      context.lineTo(imageX1, crossY)
+      context.stroke()
+    }
 
     const boxInside =
       input.segBox !== null && sliceCutsBox(input.segBox, plane.sliceAxis, input.sliceIndex)
@@ -94,6 +100,31 @@ export function drawSliceAnnotations(
         7
       )
       context.stroke()
+    }
+
+    if (input.directionLabelsVisible) {
+      const labels = sliceDirectionLabels(input.affine, plane)
+      const inset = 8 * devicePixelRatio
+      const fontSize = 12 * devicePixelRatio
+      context.font = `600 ${fontSize}px system-ui, sans-serif`
+      context.lineWidth = 1.5 * devicePixelRatio
+      context.strokeStyle = 'rgba(0, 0, 0, 0.8)'
+      context.fillStyle = 'rgba(255, 255, 255, 0.95)'
+
+      const drawLabel = (
+        label: string,
+        x: number,
+        y: number,
+        align: CanvasTextAlign,
+        baseline: CanvasTextBaseline
+      ): void => {
+        context.textAlign = align
+        context.textBaseline = baseline
+        context.strokeText(label, x, y)
+        context.fillText(label, x, y)
+      }
+      drawLabel(labels.left, inset, canvasHeight / 2, 'left', 'middle')
+      drawLabel(labels.top, canvasWidth / 2, inset, 'center', 'top')
     }
   } finally {
     context.setLineDash([])

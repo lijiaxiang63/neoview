@@ -98,10 +98,24 @@ describe('application event decisions', () => {
   })
 
   it('creates comparable View menu snapshots', () => {
-    const first = viewMenuSnapshot({ filePanelOpen: true, sidePanelOpen: false, folder: null })
-    expect(first).toEqual({ fileList: true, sidePanel: false, folderOpen: false })
+    const first = viewMenuSnapshot({
+      filePanelOpen: true,
+      sidePanelOpen: false,
+      folder: null,
+      directionLabelsVisible: true,
+      crosshairVisible: false
+    })
+    expect(first).toEqual({
+      fileList: true,
+      sidePanel: false,
+      folderOpen: false,
+      directionLabels: true,
+      crosshair: false
+    })
     expect(sameViewMenuSnapshot(first, { ...first })).toBe(true)
     expect(sameViewMenuSnapshot(first, { ...first, folderOpen: true })).toBe(false)
+    expect(sameViewMenuSnapshot(first, { ...first, directionLabels: false })).toBe(false)
+    expect(sameViewMenuSnapshot(first, { ...first, crosshair: true })).toBe(false)
     expect(sameViewMenuSnapshot(null, first)).toBe(false)
   })
 

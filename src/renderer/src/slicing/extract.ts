@@ -13,8 +13,6 @@ export const PLANES: readonly PlaneSpec[] = [
   { sliceAxis: 0, colAxis: 1, rowAxis: 2, label: 'Plane YZ' }
 ]
 
-export const AXIS_NAMES = ['i', 'j', 'k'] as const
-
 export function strides(dims: [number, number, number]): [number, number, number] {
   return [1, dims[0], dims[0] * dims[1]]
 }

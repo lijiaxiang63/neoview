@@ -10,6 +10,7 @@ import {
   hitResizeHandle,
   resizeCursor,
   resizeHandles,
+  sharedSliceFitSize,
   sliceCutsBox,
   sliceVoxelToCanvas,
   type SliceViewport
@@ -55,6 +56,23 @@ describe('slice viewport fit', () => {
     expect(fit.dw).toBeCloseTo(192)
     expect(fit.dh).toBeCloseTo(96)
     expect(fit.dy).toBeCloseTo(52)
+  })
+
+  it('uses one physical scale for all three slice panels when shared bounds are supplied', () => {
+    const dims: [number, number, number] = [512, 512, 221]
+    const spacing: [number, number, number] = [0.4091, 0.4091, 0.7]
+    const shared = sharedSliceFitSize(dims, spacing)
+    expect(shared[0]).toBeCloseTo(512 * 0.4091)
+    expect(shared[1]).toBeCloseTo(512 * 0.4091)
+
+    const xy = fitSliceViewport(688, 538, 512, 512, spacing[0], spacing[1], 0.96, shared)!
+    const xz = fitSliceViewport(688, 538, 512, 221, spacing[0], spacing[2], 0.96, shared)!
+    expect(xy.scale).toBeCloseTo(xz.scale)
+    expect(xy.dw).toBeCloseTo(xz.dw)
+    expect(xz.dh).toBeLessThan(xy.dh)
+
+    const maximized = fitSliceViewport(1377, 1077, 512, 221, spacing[0], spacing[2])!
+    expect(maximized.scale).toBeGreaterThan(xz.scale)
   })
 })
 

@@ -98,8 +98,10 @@ export interface ExportResult {
   sidecarPath: string | null
 }
 
-export interface FilePanelState {
+export interface ViewMenuState {
   fileList: boolean
   sidePanel: boolean
   folderOpen: boolean
+  directionLabels: boolean
+  crosshair: boolean
 }

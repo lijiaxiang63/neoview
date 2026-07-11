@@ -2,11 +2,11 @@ import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import type {
   ExportRequest,
   ExportResult,
-  FilePanelState,
   FolderEntry,
   FolderScan,
   FolderScanProgress,
-  OpenedFile
+  OpenedFile,
+  ViewMenuState
 } from '../shared/files'
 import { FILE_CHANNELS } from '../shared/files'
 import type { UpdateInstallResult, UpdateSnapshot } from '../shared/updates'
@@ -15,11 +15,11 @@ import { applyStorageOriginMigration, storageMigrationStep } from '../shared/sto
 export type {
   ExportRequest,
   ExportResult,
-  FilePanelState,
   FolderEntry,
   FolderScan,
   FolderScanProgress,
-  OpenedFile
+  OpenedFile,
+  ViewMenuState
 } from '../shared/files'
 export type { UpdateInstallResult, UpdateSnapshot } from '../shared/updates'
 
@@ -154,8 +154,20 @@ const api = {
     ipcRenderer.on('toggle-side-panel', listener)
     return () => ipcRenderer.removeListener('toggle-side-panel', listener)
   },
-  /** Mirror panel visibility to the View menu's checkbox items. */
-  sendViewState: (state: FilePanelState): void => ipcRenderer.send('view-state', state),
+  /** View > Direction Labels was chosen in the menu. */
+  onToggleDirectionLabels: (cb: () => void): (() => void) => {
+    const listener = (): void => cb()
+    ipcRenderer.on('toggle-direction-labels', listener)
+    return () => ipcRenderer.removeListener('toggle-direction-labels', listener)
+  },
+  /** View > Crosshair was chosen in the menu. */
+  onToggleCrosshair: (cb: () => void): (() => void) => {
+    const listener = (): void => cb()
+    ipcRenderer.on('toggle-crosshair', listener)
+    return () => ipcRenderer.removeListener('toggle-crosshair', listener)
+  },
+  /** Mirror visibility state to the View menu's checkbox items. */
+  sendViewState: (state: ViewMenuState): void => ipcRenderer.send('view-state', state),
   /** Read one file from inside a previously opened folder. */
   readFile: (path: string, requestId: number): Promise<OpenedFile> =>
     ipcRenderer.invoke(FILE_CHANNELS.readFile, path, requestId),

@@ -1,5 +1,5 @@
 import type { SegBox } from '../segmentation/segment'
-import type { PlaneSpec } from './extract'
+import { PLANES, type PlaneSpec } from './extract'
 
 export interface ViewportFit {
   dx: number
@@ -38,6 +38,19 @@ export interface ResizeHandle {
   editRow: BoxEdge | null
 }
 
+/** Common physical bounds for the three slice panels. Fitting every plane
+ * against these bounds gives each panel the same physical-to-screen scale. */
+export function sharedSliceFitSize(
+  dims: [number, number, number],
+  spacing: [number, number, number]
+): [number, number] {
+  const extents = dims.map((count, axis) => count * spacing[axis])
+  return [
+    Math.max(...PLANES.map((plane) => extents[plane.colAxis])),
+    Math.max(...PLANES.map((plane) => extents[plane.rowAxis]))
+  ]
+}
+
 /** Fit the spacing-corrected slice inside the backing canvas. */
 export function fitSliceViewport(
   canvasWidth: number,
@@ -46,7 +59,8 @@ export function fitSliceViewport(
   rows: number,
   columnSpacing: number,
   rowSpacing: number,
-  fill = 0.96
+  fill = 0.96,
+  sharedFitSize: readonly [number, number] | null = null
 ): ViewportFit | null {
   if (
     canvasWidth <= 0 ||
@@ -60,7 +74,9 @@ export function fitSliceViewport(
   }
   const physicalWidth = columns * columnSpacing
   const physicalHeight = rows * rowSpacing
-  const scale = Math.min(canvasWidth / physicalWidth, canvasHeight / physicalHeight) * fill
+  const fitWidth = Math.max(physicalWidth, sharedFitSize?.[0] ?? physicalWidth)
+  const fitHeight = Math.max(physicalHeight, sharedFitSize?.[1] ?? physicalHeight)
+  const scale = Math.min(canvasWidth / fitWidth, canvasHeight / fitHeight) * fill
   const dw = physicalWidth * scale
   const dh = physicalHeight * scale
   return {

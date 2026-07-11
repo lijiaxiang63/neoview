@@ -1,4 +1,4 @@
-import type { FilePanelState, FolderEntry, FolderScan, OpenedFile } from '../../../shared/files'
+import type { FolderEntry, FolderScan, OpenedFile, ViewMenuState } from '../../../shared/files'
 import type { OpenIntentGate } from '../../../shared/openIntents'
 import type { AppState, AppStore } from '../store'
 import { MAX_BYTES } from '../volume/gunzip'
@@ -39,6 +39,8 @@ export interface RendererBridge {
   onCloseRequested(callback: (requestId: number, responderLease: number) => void): () => void
   onToggleFilePanel(callback: () => void): () => void
   onToggleSidePanel(callback: () => void): () => void
+  onToggleDirectionLabels(callback: () => void): () => void
+  onToggleCrosshair(callback: () => void): () => void
   openFolderScan(token: number): Promise<FolderScan | null>
   scanDroppedFolder(file: File, token: number): Promise<FolderScan | null>
   isDirectory(path: string): Promise<boolean>
@@ -47,7 +49,7 @@ export interface RendererBridge {
   readFileWithin(path: string, maxBytes: number, requestId: number): Promise<OpenedFile | null>
   cancelFileRead(requestId: number): void
   noteFileOpened(path: string): void
-  sendViewState(state: FilePanelState): void
+  sendViewState(state: ViewMenuState): void
   confirmFolderScan(token: number): void
   cancelFolderScan(token: number): void
   releaseFolderAccess(): void
@@ -145,7 +147,7 @@ class OwnedRendererRuntime implements RendererRuntime {
   private readonly ipcUnsubscribes: Array<() => void> = []
   private readonly windowListeners: Array<[type: string, listener: EventListener]> = []
   private storeUnsubscribe: (() => void) | null = null
-  private lastViewState: FilePanelState | null = null
+  private lastViewState: ViewMenuState | null = null
   private lastTitle: string | null = null
   private closeResponderLease: number | null = null
   private closeResponderClaim: Promise<number> | null = null
@@ -420,6 +422,16 @@ class OwnedRendererRuntime implements RendererRuntime {
     keep(
       bridge.onToggleSidePanel(() => {
         if (this.active) store.getState().toggleSidePanel()
+      })
+    )
+    keep(
+      bridge.onToggleDirectionLabels(() => {
+        if (this.active) store.getState().toggleDirectionLabels()
+      })
+    )
+    keep(
+      bridge.onToggleCrosshair(() => {
+        if (this.active) store.getState().toggleCrosshair()
       })
     )
     keep(

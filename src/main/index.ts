@@ -23,7 +23,7 @@ import {
   removeRecent,
   serializeRecentPayload
 } from './recentFiles'
-import type { FilePanelState } from '../shared/files'
+import type { ViewMenuState } from '../shared/files'
 import { FileAccessAuthorizer } from './files/access'
 import { createFileDialogs } from './files/dialogs'
 import { createExportService } from './files/exports'
@@ -351,7 +351,13 @@ function saveRecentFiles(): void {
 
 // The View menu's checkbox state survives menu rebuilds (recents changing)
 // by re-applying the last state the renderer reported.
-let lastViewState = { fileList: true, sidePanel: true, folderOpen: false }
+let lastViewState: ViewMenuState = {
+  fileList: true,
+  sidePanel: true,
+  folderOpen: false,
+  directionLabels: true,
+  crosshair: true
+}
 
 /** Load a bundled sample into the window over `channel` ('file-opened' for the
  * base volume, 'overlay-opened' for a layer), reporting failures the same way
@@ -471,6 +477,8 @@ function buildMenu(getWindow: () => BrowserWindow | null): void {
       redo: () => sendToWindow('menu-redo'),
       toggleFilePanel: () => sendToWindow('toggle-file-panel'),
       toggleSidePanel: () => sendToWindow('toggle-side-panel'),
+      toggleDirectionLabels: () => sendToWindow('toggle-direction-labels'),
+      toggleCrosshair: () => sendToWindow('toggle-crosshair'),
       openHomepage: () => void shell.openExternal(HOMEPAGE_URL),
       openRepository: () => void shell.openExternal(REPO_URL),
       checkForUpdates: () => void updateService?.checkForUpdates(true),
@@ -572,12 +580,14 @@ if (gotLock) {
 
       // The renderer owns panel visibility; it mirrors every change here so the
       // View menu's checkboxes track it (including toggles it makes itself).
-      const onViewState = (event: Electron.IpcMainEvent, state: FilePanelState): void => {
+      const onViewState = (event: Electron.IpcMainEvent, state: ViewMenuState): void => {
         if (!rendererMainFrameIsTrusted(event) || !state || typeof state !== 'object') return
         lastViewState = {
           fileList: Boolean(state.fileList),
           sidePanel: Boolean(state.sidePanel),
-          folderOpen: Boolean(state.folderOpen)
+          folderOpen: Boolean(state.folderOpen),
+          directionLabels: Boolean(state.directionLabels),
+          crosshair: Boolean(state.crosshair)
         }
         const menu = Menu.getApplicationMenu()
         const fileList = menu?.getMenuItemById('view-file-list')
@@ -587,6 +597,10 @@ if (gotLock) {
         }
         const sidePanel = menu?.getMenuItemById('view-side-panel')
         if (sidePanel) sidePanel.checked = Boolean(state.sidePanel)
+        const directionLabels = menu?.getMenuItemById('view-direction-labels')
+        if (directionLabels) directionLabels.checked = Boolean(state.directionLabels)
+        const crosshair = menu?.getMenuItemById('view-crosshair')
+        if (crosshair) crosshair.checked = Boolean(state.crosshair)
       }
       ipcMain.on('view-state', onViewState)
       app.once('will-quit', () => {
