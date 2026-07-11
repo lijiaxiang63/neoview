@@ -17,5 +17,5 @@ Tips:
 - The page background is warm white; dark app screenshots sit inside rounded
   frames with a soft shadow, so edge-to-edge dark UI looks best.
 - To use a shot, replace the mock block in `index.html` with, e.g.:
-  `<img class="shot" src="assets/hero.png" alt="neoview main window" />`
+  `<img class="shot" src="assets/hero.png" alt="Neoview main window" />`
 - 2× (Retina) captures keep the frames crisp.

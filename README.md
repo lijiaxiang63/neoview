@@ -1,8 +1,8 @@
 <div align="center">
 
-<img src="docs/assets/icon.svg" alt="neoview app icon" width="96" height="96" />
+<img src="docs/assets/icon.svg" alt="Neoview app icon" width="96" height="96" />
 
-# neoview
+# Neoview
 
 **See inside volumetric data.**
 
@@ -21,7 +21,7 @@ GPU raycast rendering, and interactive region segmentation, in one quiet, fast w
 </div>
 
 <p align="center">
-  <img src="docs/assets/hero.svg" alt="neoview — three synchronized slice views (planes XY, XZ, YZ) and a 3D raycast render, with a status-bar readout" width="840" />
+  <img src="docs/assets/hero.svg" alt="Neoview — three synchronized slice views (planes XY, XZ, YZ) and a 3D raycast render, with a status-bar readout" width="840" />
 </p>
 
 ---

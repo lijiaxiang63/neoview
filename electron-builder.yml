@@ -1,5 +1,5 @@
 appId: com.neoview.app
-productName: neoview
+productName: Neoview
 directories:
   buildResources: build
 # Whitelist, not blacklist: stray workspace files (editor/agent dirs, docs)
@@ -25,9 +25,9 @@ fileAssociations:
     name: Volume file
     role: Viewer
 win:
-  executableName: neoview
+  executableName: Neoview
 nsis:
-  artifactName: ${name}-${version}-setup.${ext}
+  artifactName: ${productName}-${version}-setup.${ext}
   shortcutName: ${productName}
   uninstallDisplayName: ${productName}
   createDesktopShortcut: always
@@ -44,7 +44,7 @@ mac:
 # Arch in the name so the in-app updater never offers an arm64 dmg to an Intel
 # Mac (or vice versa); the checker keys off the arch token in the asset name.
 dmg:
-  artifactName: ${name}-${version}-${arch}.${ext}
+  artifactName: ${productName}-${version}-${arch}.${ext}
 # Recompresses dmgs to LZMA; the format enum above `compression` tops out at
 # bzip2 (~17% larger).
 afterAllArtifactBuild: ./scripts/dmg-lzma.mjs
@@ -52,8 +52,10 @@ linux:
   target:
     - AppImage
     - deb
-  maintainer: neoview
+  maintainer: Neoview
   category: Utility
 appImage:
-  artifactName: ${name}-${version}.${ext}
+  artifactName: ${productName}-${version}.${ext}
+deb:
+  artifactName: ${productName}_${version}_${arch}.${ext}
 npmRebuild: false

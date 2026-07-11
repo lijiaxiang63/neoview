@@ -356,7 +356,9 @@ describe('renderer runtime lifecycle', () => {
     expect(h.bridge.claimCloseResponder).toHaveBeenCalledTimes(1)
     expect(h.bridge.activateCloseResponder).toHaveBeenCalledWith(1)
     expect(h.bridge.sendViewState).toHaveBeenCalledTimes(1)
-    expect(h.document.title).toBe('neoview')
+    expect(h.document.title).toBe('Neoview')
+    h.store.setState({ volume: volume() })
+    expect(h.document.title).toBe('base.nii — Neoview')
 
     h.runtime.dispose()
     h.runtime.dispose()

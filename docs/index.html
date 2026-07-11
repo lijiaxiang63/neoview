@@ -3,10 +3,10 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>neoview — a desktop viewer for volumetric data</title>
+<title>Neoview — a desktop viewer for volumetric data</title>
 <meta name="description" content="A cross-platform desktop viewer for .nii / .nii.gz volumes — tri-planar slicing, GPU 3D raycast rendering, and interactive region segmentation. Built from scratch with Electron, React, and TypeScript." />
 
-<meta property="og:title" content="neoview" />
+<meta property="og:title" content="Neoview" />
 <meta property="og:description" content="See inside volumetric data. Tri-planar slicing, GPU raycasting, and interactive segmentation — in one desktop app." />
 <meta property="og:type" content="website" />
 <meta property="og:image" content="https://lijiaxiang63.github.io/neoview/assets/icon.png" />
@@ -390,7 +390,7 @@ footer{border-top:1px solid var(--line);padding:44px 0}
 
 <nav class="nav" id="nav">
   <div class="nav-in">
-    <a class="brand" href="#top"><span class="dot"></span><b>neoview</b></a>
+    <a class="brand" href="#top"><span class="dot"></span><b>Neoview</b></a>
     <div class="nav-links">
       <a class="hide-sm" href="#slicing">Slicing</a>
       <a class="hide-sm" href="#render">3D</a>
@@ -405,7 +405,7 @@ footer{border-top:1px solid var(--line);padding:44px 0}
 <a id="top"></a>
 <header class="hero">
   <div class="wrap">
-    <img class="hero-icon" src="assets/icon.svg" alt="neoview app icon" width="96" height="96" />
+    <img class="hero-icon" src="assets/icon.svg" alt="Neoview app icon" width="96" height="96" />
     <span class="eyebrow"><span class="live"></span>cross-platform desktop app</span>
     <h1>See <em>inside</em> volumetric data.</h1>
     <p class="lede">
@@ -419,7 +419,7 @@ footer{border-top:1px solid var(--line);padding:44px 0}
           <span class="dl-ic" id="dlIc"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3v12m0 0l-4-4m4 4l4-4M4 20h16" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
           <span class="dl-txt">
             <span class="dl-sub">Download</span>
-            <span class="dl-plat" id="dlPlat">neoview</span>
+            <span class="dl-plat" id="dlPlat">Neoview</span>
           </span>
           <span class="dl-ver" id="dlVer" hidden></span>
         </a>
@@ -443,14 +443,14 @@ footer{border-top:1px solid var(--line);padding:44px 0}
   <!-- HERO SHOT ----------------------------------------------------------
        To use a real screenshot instead of the CSS mock:
        replace the whole .quad + .statusbar block below with:
-         <img class="shot" src="assets/hero.png" alt="neoview main window" />
+         <img class="shot" src="assets/hero.png" alt="Neoview main window" />
        (16:10 aspect; dark UI edge-to-edge looks best)
   -->
   <div class="stage reveal">
     <div class="frame hero-shot">
       <div class="chrome">
         <span class="lights"><i></i><i></i><i></i></span>
-        <span class="title">neoview — volume.nii.gz</span>
+        <span class="title">Neoview — volume.nii.gz</span>
       </div>
 
       <div class="quad">
@@ -698,7 +698,7 @@ footer{border-top:1px solid var(--line);padding:44px 0}
 
 <footer>
   <div class="wrap foot">
-    <a class="brand" href="#top"><img class="brand-icon" src="assets/icon.svg" alt="" aria-hidden="true" /><b>neoview</b></a>
+    <a class="brand" href="#top"><img class="brand-icon" src="assets/icon.svg" alt="" aria-hidden="true" /><b>Neoview</b></a>
     <div class="meta">Electron · React 19 · TypeScript · zustand · WebGL2</div>
     <a href="https://github.com/lijiaxiang63/neoview" target="_blank" rel="noopener">github.com/lijiaxiang63/neoview</a>
   </div>
@@ -757,7 +757,7 @@ document.querySelectorAll('.reveal').forEach(el=>io.observe(el));
   }
   function applyMain(spec,asset,version){
     mainBtn.href=asset?asset.browser_download_url:('https://github.com/'+REPO+'/releases/latest');
-    platEl.textContent=spec?spec.label:'neoview';
+    platEl.textContent=spec?spec.label:'Neoview';
     subEl.textContent=spec?'Download for':'Download';
     icEl.innerHTML=spec?spec.icon:IC.dl;
     if(version){verEl.textContent='v'+version;verEl.hidden=false;}

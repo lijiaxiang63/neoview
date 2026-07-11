@@ -398,7 +398,7 @@ class OwnedRendererRuntime implements RendererRuntime {
   }
 
   private syncStoreState(state: AppState): void {
-    const title = state.volume ? `${state.volume.name} — neoview` : 'neoview'
+    const title = state.volume ? `${state.volume.name} — Neoview` : 'Neoview'
     if (title !== this.lastTitle) {
       this.lastTitle = title
       this.deps.documentTarget.title = title

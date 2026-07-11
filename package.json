@@ -1,9 +1,10 @@
 {
   "name": "neoview",
+  "productName": "Neoview",
   "version": "1.4.1",
   "description": "Cross-platform desktop volume viewer",
   "main": "./out/main/index.js",
-  "author": "neoview",
+  "author": "Neoview",
   "homepage": "https://lijiaxiang63.github.io/neoview/",
   "scripts": {
     "format": "prettier --write .",

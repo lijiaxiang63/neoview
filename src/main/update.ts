@@ -47,7 +47,7 @@ function loadSettings(path: string): UpdateSettings {
   }
 }
 
-const userAgent = (): string => `neoview/${app.getVersion()}`
+const userAgent = (): string => `Neoview/${app.getVersion()}`
 
 async function findAvailableUpdate(signal: AbortSignal): Promise<UpdateInfo | null> {
   const response = await net.fetch(RELEASE_API, {

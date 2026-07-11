@@ -5,7 +5,7 @@ function options(isMac: boolean): ApplicationMenuOptions {
   const action = vi.fn()
   return {
     isMac,
-    appName: 'neoview',
+    appName: 'Neoview',
     viewState: {
       fileList: true,
       sidePanel: false,
@@ -69,7 +69,7 @@ describe('application menu template', () => {
 
   it('adds the macOS application and edit menus', () => {
     const template = createApplicationMenuTemplate(options(true))
-    expect(template[0].label).toBe('neoview')
+    expect(template[0].label).toBe('Neoview')
     expect(template.some((item) => item.label === 'Edit')).toBe(true)
     const view = template.find((item) => item.label === 'View')!
     const viewItems = view.submenu as Electron.MenuItemConstructorOptions[]

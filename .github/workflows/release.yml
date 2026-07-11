@@ -120,12 +120,12 @@ jobs:
 
             - **macOS** — the app is ad-hoc signed (not notarized). On first launch,
               right-click the app and choose **Open**, or run
-              `xattr -dr com.apple.quarantine /Applications/neoview.app` to clear the
+              `xattr -dr com.apple.quarantine /Applications/Neoview.app` to clear the
               Gatekeeper quarantine flag.
             - **Windows** — run the `-setup.exe` installer. SmartScreen may warn
               because the binary is unsigned; choose **More info → Run anyway**.
-            - **Linux** — `chmod +x neoview-*.AppImage` then run it, or install the
-              `.deb` with `sudo apt install ./neoview_*.deb`.
+            - **Linux** — `chmod +x Neoview-*.AppImage` then run it, or install the
+              `.deb` with `sudo apt install ./Neoview_*.deb`.
 
             ---
           files: |
