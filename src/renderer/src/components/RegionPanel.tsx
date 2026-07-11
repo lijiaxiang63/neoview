@@ -617,11 +617,12 @@ export function RegionPanel({ exports }: { exports: RegionExportController }): J
   const setSegTool = useStore((s) => s.setSegTool)
   const setBrushRadius = useStore((s) => s.setBrushRadius)
   const setRegionOpacity = useStore((s) => s.setRegionOpacity)
+  const discardModelPreview = useStore((s) => s.discardModelPreview)
 
   const [rowMenu, setRowMenu] = useState<{ id: number; x: number; y: number } | null>(null)
-  // Reserved whole-volume model tool: component-local so the store, gesture
-  // routing, and workers never see it — the real tool underneath stays
-  // 'crosshair' while the preview is shown.
+  // The visible whole-volume tool is component-local; navigation remains the
+  // underlying slice gesture while execution and preview ownership stay in
+  // the store.
   const [modelTool, setModelTool] = useState(false)
 
   // A store-driven tool change (re-segment restores a box and selects the
@@ -645,6 +646,7 @@ export function RegionPanel({ exports }: { exports: RegionExportController }): J
             title={t.title}
             onClick={() => {
               setModelTool(false)
+              discardModelPreview()
               setSegTool(t.key)
             }}
           >
@@ -652,11 +654,9 @@ export function RegionPanel({ exports }: { exports: RegionExportController }): J
           </button>
         ))}
         <button
-          className={`preset-btn future${modelTool ? ' active' : ''}`}
-          title="Segment the whole volume with a model — not yet available"
+          className={`preset-btn${modelTool ? ' active' : ''}`}
+          title="Run the built-in model on the whole volume"
           onClick={() => {
-            // Navigate underneath: slice gestures stay predictable while the
-            // reserved layout is shown.
             setSegTool('crosshair')
             setModelTool(true)
           }}
@@ -665,7 +665,7 @@ export function RegionPanel({ exports }: { exports: RegionExportController }): J
         </button>
       </div>
 
-      {modelTool && <ModelMethodPlaceholder />}
+      {modelTool && <ModelMethodPlaceholder onClose={() => setModelTool(false)} />}
 
       {segTool === 'box' && !segBox && (
         <div className="seg-hint">

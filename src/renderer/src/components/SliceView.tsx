@@ -29,6 +29,7 @@ export function SliceView({ view }: Props): JSX.Element {
   )
   const segBox = useStore((state) => state.segBox)
   const preview = useStore((state) => state.preview)
+  const modelPreview = useStore((state) => state.modelRun.preview)
   const labelMap = useStore((state) => state.labelMap)
   const labelMapRevision = useStore((state) => state.labelMapRev)
   const regions = useStore((state) => state.regions)
@@ -105,6 +106,7 @@ export function SliceView({ view }: Props): JSX.Element {
       regions,
       regionOpacity,
       preview,
+      modelPreview,
       nextRegionId,
       editRegionId
     })
@@ -123,6 +125,7 @@ export function SliceView({ view }: Props): JSX.Element {
     regions,
     regionOpacity,
     preview,
+    modelPreview,
     nextRegionId,
     editRegionId
   ])

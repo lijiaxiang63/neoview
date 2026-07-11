@@ -348,6 +348,37 @@ export function extractPreviewRGBA(
   }
 }
 
+/** Fill img with a whole-grid preview for one slice. */
+export function extractModelPreviewRGBA(
+  labels: Uint8Array,
+  dims: [number, number, number],
+  plane: PlaneSpec,
+  sliceIdx: number,
+  colors: Uint32Array,
+  img: ImageData
+): void {
+  const px = new Uint32Array(img.data.buffer)
+  px.fill(0)
+  const w = dims[plane.colAxis]
+  const h = dims[plane.rowAxis]
+  const stride = [1, dims[0], dims[0] * dims[1]]
+  const cs = stride[plane.colAxis]
+  const rs = stride[plane.rowAxis]
+  const base = sliceIdx * stride[plane.sliceAxis]
+  const colStart = plane.colDirection > 0 ? 0 : w - 1
+  const rowStart = plane.rowDirection > 0 ? h - 1 : 0
+  const colStep = cs * plane.colDirection
+  const rowStep = -plane.rowDirection
+  let p = 0
+  for (let screenRow = 0, row = rowStart; screenRow < h; screenRow++, row += rowStep) {
+    let index = base + row * rs + colStart * cs
+    for (let column = 0; column < w; column++, index += colStep, p++) {
+      const value = labels[index]
+      if (value !== 0 && value < colors.length) px[p] = colors[value]
+    }
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Export helpers
 

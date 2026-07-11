@@ -3,7 +3,6 @@
 ## Hard rules
 
 - **Vocabulary**: The only domain-specific tokens allowed anywhere (code, comments, UI copy, docs, commit messages, dependency choices) are the literal file extensions `.nii` / `.nii.gz`, and only in file filters / drop checks, plus the single-letter slice-direction labels `L` / `R` / `A` / `P` / `S` / `I` in slice annotations and their directly related code, tests, and docs. Everything else uses neutral terms: volume, voxel, slice, plane XY/XZ/YZ, axis 0/1/2, intensity, affine, display range. Raw header field names (`sizeof_hdr`, `pixdim`, `srow_x`, …) may appear only inside `src/renderer/src/volume/parse.ts` and its tests — never in UI strings. Do not add third-party parsing/rendering libraries (their names violate the rule); the parser is written from scratch on purpose. Files under `testdata/` may have arbitrary names — reference them via globs, never echo their name parts.
-- **GUI verification**: never drive the desktop UI with automation. When a change needs visual verification, hand the user a manual test checklist and let them run `npm run dev`.
 
 ## Commands
 

@@ -16,6 +16,15 @@ export interface LabelPatch {
 export interface HistoryEntry<Snap = unknown> {
   /** Voxel changes; null when the operation only touched the region list. */
   patch: LabelPatch | null
+  /** Whole-map replacement. Ordered undo/redo applies later patches before
+   * swapping, so each retained map is back at the exact state captured here. */
+  mapSwap?: { before: Uint16Array | null; after: Uint16Array }
+  /** Whole snapshot-table replacement paired with a whole-map operation. */
+  snapshots?: { before: Record<number, Snap>; after: Record<number, Snap> }
+  selection?: {
+    before: { active: number | null; edit: number | null }
+    after: { active: number | null; edit: number | null }
+  }
   /** Region-list change (commit/delete); absent for pure voxel edits. */
   regions?: { before: Region[]; after: Region[] }
   /** nextRegionId change (a commit that created a region). */
@@ -33,6 +42,13 @@ export const HISTORY_MAX_ENTRIES = 50
 export const HISTORY_MAX_BYTES = 192 * 1024 * 1024
 
 export function entryBytes(e: HistoryEntry): number {
+  if (e.mapSwap) {
+    const buffers = new Set<ArrayBufferLike>([e.mapSwap.after.buffer])
+    if (e.mapSwap.before) buffers.add(e.mapSwap.before.buffer)
+    let bytes = 0
+    for (const buffer of buffers) bytes += buffer.byteLength
+    return bytes
+  }
   if (!e.patch) return 0
   // Dense bulk patches can be subarray views over reused staging. Budget the
   // retained backing allocations, not just the visible view lengths, or the

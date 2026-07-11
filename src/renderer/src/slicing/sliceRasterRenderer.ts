@@ -1,7 +1,9 @@
-import type { BaseColormap, SegPreview } from '../store'
+import type { BaseColormap, ModelPreview, SegPreview } from '../store'
+import { modelClasses } from '../model/catalog'
 import type { Region } from '../segmentation/regions'
 import {
   defaultRegionColor,
+  extractModelPreviewRGBA,
   extractPreviewRGBA,
   extractRegionsRGBA,
   packColor
@@ -29,6 +31,7 @@ export interface RasterExtractors {
   overlay: typeof extractOverlayRGBA
   regions: typeof extractRegionsRGBA
   preview: typeof extractPreviewRGBA
+  modelPreview: typeof extractModelPreviewRGBA
 }
 
 export interface SliceRasterInput {
@@ -48,6 +51,7 @@ export interface SliceRasterInput {
   regions: readonly Region[]
   regionOpacity: number
   preview: SegPreview | null
+  modelPreview: ModelPreview | null
   nextRegionId: number
   editRegionId: number | null
 }
@@ -61,7 +65,8 @@ const defaultExtractors: RasterExtractors = {
   base: extractSliceToImageData,
   overlay: extractOverlayRGBA,
   regions: extractRegionsRGBA,
-  preview: extractPreviewRGBA
+  preview: extractPreviewRGBA,
+  modelPreview: extractModelPreviewRGBA
 }
 
 function contextOf(canvas: HTMLCanvasElement): CanvasRenderingContext2D {
@@ -80,6 +85,19 @@ function regionStyleKey(regions: readonly Region[]): string {
   return regions.map((region) => `${region.id}:${region.visible ? 1 : 0}:${region.color}`).join('|')
 }
 
+function nonzeroModelCount(preview: ModelPreview): number {
+  let total = 0
+  for (let index = 1; index < preview.counts.length; index++) total += preview.counts[index]
+  return total
+}
+
+function modelColors(preview: ModelPreview): Uint32Array {
+  const classes = modelClasses(preview.variantId)
+  const colors = new Uint32Array(classes.length)
+  for (const item of classes) colors[item.value] = packColor(item.color)
+  return colors
+}
+
 export class SliceRasterRenderer {
   private readonly factory: RasterFactory
   private readonly extractors: RasterExtractors
@@ -90,6 +108,7 @@ export class SliceRasterRenderer {
   private readonly overlayBuffers = new Map<number, RasterBuffer>()
   private regionBuffer: RasterBuffer | null = null
   private previewBuffer: RasterBuffer | null = null
+  private modelPreviewBuffer: RasterBuffer | null = null
   private colorRegions: readonly Region[] | null = null
   private colorOf: Uint32Array | null = null
   private disposed = false
@@ -252,6 +271,28 @@ export class SliceRasterRenderer {
         // its potentially large mask as soon as store ownership ends.
         this.previewBuffer.key = null
       }
+
+      if (input.modelPreview && nonzeroModelCount(input.modelPreview) > 0) {
+        const buffer = this.modelPreviewBuffer ?? (this.modelPreviewBuffer = this.createBuffer())
+        const previewKey = [input.modelPreview, input.plane, input.sliceIndex] as const
+        if (!sameKey(buffer.key, previewKey)) {
+          this.extractors.modelPreview(
+            input.modelPreview.labels,
+            input.volume.dims,
+            input.plane,
+            input.sliceIndex,
+            modelColors(input.modelPreview),
+            buffer.image
+          )
+          contextOf(buffer.canvas).putImageData(buffer.image, 0, 0)
+          buffer.key = previewKey
+        }
+        context.imageSmoothingEnabled = false
+        context.globalAlpha = 0.7
+        context.drawImage(buffer.canvas, input.fit.dx, input.fit.dy, input.fit.dw, input.fit.dh)
+      } else if (this.modelPreviewBuffer) {
+        this.modelPreviewBuffer.key = null
+      }
     } finally {
       context.restore()
     }
@@ -262,10 +303,12 @@ export class SliceRasterRenderer {
     for (const buffer of this.overlayBuffers.values()) this.releaseBuffer(buffer)
     this.releaseBuffer(this.regionBuffer)
     this.releaseBuffer(this.previewBuffer)
+    this.releaseBuffer(this.modelPreviewBuffer)
     this.baseBuffer = null
     this.overlayBuffers.clear()
     this.regionBuffer = null
     this.previewBuffer = null
+    this.modelPreviewBuffer = null
     this.volume = null
     this.width = 0
     this.height = 0

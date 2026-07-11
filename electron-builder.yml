@@ -7,6 +7,9 @@ directories:
 files:
   - out/**
   - resources/**
+  # Renderer dependencies are already bundled into out; shipping their full
+  # package trees would add hundreds of megabytes of unused sources and maps.
+  - '!node_modules/**'
 asarUnpack:
   - resources/**
 # Chromium's built-in dialog translations; the app UI itself is English-only.

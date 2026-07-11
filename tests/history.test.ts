@@ -94,4 +94,13 @@ describe('bulk history collector', () => {
     const stack = pushEntry([{ patch: dense }], { patch: dense }, 50, retained + visible)
     expect(stack).toHaveLength(1)
   })
+
+  it('budgets unique backing buffers retained by a whole-map swap', () => {
+    const before = new Uint16Array(12)
+    const after = new Uint16Array(12)
+    expect(entryBytes({ patch: null, mapSwap: { before, after } })).toBe(
+      before.byteLength + after.byteLength
+    )
+    expect(entryBytes({ patch: null, mapSwap: { before: after, after } })).toBe(after.byteLength)
+  })
 })

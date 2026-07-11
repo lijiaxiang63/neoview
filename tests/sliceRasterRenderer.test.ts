@@ -140,7 +140,8 @@ function harness(): {
     base: vi.fn(() => events.push('extract:base')),
     overlay: vi.fn((layer) => events.push(`extract:overlay-${layer.id}`)),
     regions: vi.fn(() => events.push('extract:regions')),
-    preview: vi.fn(() => events.push('extract:preview'))
+    preview: vi.fn(() => events.push('extract:preview')),
+    modelPreview: vi.fn(() => events.push('extract:model-preview'))
   }
   const renderer = new SliceRasterRenderer(factory, extractors)
   const target = new FakeCanvas('target', events)
@@ -160,6 +161,7 @@ function harness(): {
     regions,
     regionOpacity: 0.5,
     preview,
+    modelPreview: null,
     nextRegionId: 2,
     editRegionId: null
   }
@@ -184,6 +186,36 @@ describe('slice raster renderer', () => {
       [0.5, false],
       [0.7, false]
     ])
+  })
+
+  it('draws a model preview above the box preview', () => {
+    const h = harness()
+    h.input.modelPreview = {
+      variantId: 'tissue-high',
+      labels: new Uint8Array(h.input.volume.raw.length).fill(1),
+      counts: new Uint32Array([0, h.input.volume.raw.length, 0])
+    }
+    h.renderer.render(h.input)
+    expect(h.events.filter((event) => event.startsWith('extract:')).slice(-2)).toEqual([
+      'extract:preview',
+      'extract:model-preview'
+    ])
+    expect(h.target.context.draws.at(-1)).toMatchObject({ alpha: 0.7, smoothing: false })
+  })
+
+  it('renders the largest catalog preview through its dynamic color table', () => {
+    const h = harness()
+    const counts = new Uint32Array(104)
+    counts[103] = h.input.volume.raw.length
+    h.input.preview = null
+    h.input.modelPreview = {
+      variantId: 'aparc-104-low',
+      labels: new Uint8Array(h.input.volume.raw.length).fill(103),
+      counts
+    }
+    h.renderer.render(h.input)
+    expect(h.events).toContain('extract:model-preview')
+    expect(h.target.context.draws.at(-1)).toMatchObject({ alpha: 0.7, smoothing: false })
   })
 
   it('skips hidden and zero-opacity overlays while preserving order', () => {

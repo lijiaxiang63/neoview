@@ -21,7 +21,9 @@
     "build:mac": "electron-vite build && electron-builder --mac",
     "build:linux": "electron-vite build && electron-builder --linux",
     "test": "vitest run",
-    "gen:testdata": "node scripts/make-test-volumes.mjs testdata"
+    "gen:testdata": "node scripts/make-test-volumes.mjs testdata",
+    "model:reference": "node scripts/run-model-reference.mjs",
+    "model:reference:upstream": "node scripts/run-upstream-model-reference.mjs"
   },
   "engines": {
     "node": ">=26.5.0"
@@ -55,5 +57,9 @@
     "esbuild@0.25.12": true,
     "esbuild@0.28.1": true,
     "electron-winstaller@5.4.0": true
+  },
+  "dependencies": {
+    "@tensorflow/tfjs": "^4.22.0",
+    "gl-matrix": "^3.4.4"
   }
 }

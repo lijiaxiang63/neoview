@@ -6,6 +6,7 @@ import {
   computeRegionStats,
   defaultRegionColor,
   eraseRegion,
+  extractModelPreviewRGBA,
   extractPreviewRGBA,
   extractRegionsRGBA,
   maskUnion,
@@ -265,5 +266,17 @@ describe('slice extraction', () => {
     const previewImage = stubImg(4, 4)
     extractPreviewRGBA(new Uint8Array([1]), box, DIMS, plane, 0, colorOf[1], previewImage)
     expect(new Uint32Array(previewImage.data.buffer)[2 * 4 + 2] >>> 0).toBe(colorOf[1] >>> 0)
+  })
+
+  it('extracts both whole-grid preview classes with their own colors', () => {
+    const labels = new Uint8Array(N)
+    labels[0] = 1
+    labels[1] = 2
+    const image = stubImg(4, 4)
+    const colors = new Uint32Array([0, packColor('#ffffff'), packColor('#cd3e4e')])
+    extractModelPreviewRGBA(labels, DIMS, PLANES[0], 0, colors, image)
+    const pixels = new Uint32Array(image.data.buffer)
+    expect(Array.from(pixels).filter((pixel) => pixel === colors[1])).toHaveLength(1)
+    expect(Array.from(pixels).filter((pixel) => pixel === colors[2])).toHaveLength(1)
   })
 })

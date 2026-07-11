@@ -26,6 +26,9 @@ import {
   type VoxelPredicate
 } from '../segmentation/segment'
 import { PreviewClient } from '../segmentation/previewClient'
+import type { ModelController } from '../model/modelRunner'
+import { DEFAULT_MODEL_VARIANT_ID, modelClasses, type ModelVariantId } from '../model/catalog'
+import type { ModelErrorCode, ModelProgressStage } from '../model/protocol'
 import {
   applyMaskAsRegion,
   computeRegionStats,
@@ -71,6 +74,24 @@ export interface SegPreview {
   histogram: HistogramResult
 }
 
+export interface ModelPreview {
+  variantId: ModelVariantId
+  labels: Uint8Array
+  counts: Uint32Array
+}
+
+export interface ModelRunState {
+  status: 'idle' | 'running' | 'preview' | 'error'
+  token: number
+  volumeSession: number
+  variantId: ModelVariantId
+  stage: ModelProgressStage
+  progress: number
+  error: string | null
+  errorCode: ModelErrorCode | null
+  preview: ModelPreview | null
+}
+
 export interface ToastState {
   text: string
   variant?: 'info' | 'success' | 'error'
@@ -102,6 +123,8 @@ export interface RegionState {
   slabDepth: number
   segParams: SegParams
   preview: SegPreview | null
+  modelRun: ModelRunState
+  selectedModelVariantId: ModelVariantId
   brushRadius: number
   regionOpacity: number
   segDirty: boolean
@@ -124,6 +147,11 @@ export interface RegionActions {
   setSegParams: (patch: Partial<SegParams>) => void
   commitPreview: () => void
   cancelSeg: () => void
+  startModelRun: () => void
+  setModelVariant: (variantId: ModelVariantId) => void
+  cancelModelRun: () => void
+  discardModelPreview: () => void
+  commitModelPreview: () => void
   paintAt: (view: 0 | 1 | 2, from: [number, number], to: [number, number], erase: boolean) => void
   endStroke: () => void
   setBrushRadius: (radius: number) => void
@@ -155,6 +183,7 @@ export interface RegionTimers {
 
 export interface RegionHostState extends RegionState, RegionActions {
   volume: Volume | null
+  volumeSession: number
   frame: number
   overlays: OverlayLayer[]
   cross: [number, number, number]
@@ -239,6 +268,18 @@ function initialRegionState(): RegionState {
     slabDepth: SLAB_DEPTH_DEFAULT,
     segParams: defaultSegParams(),
     preview: null,
+    modelRun: {
+      status: 'idle',
+      token: 0,
+      volumeSession: 0,
+      variantId: DEFAULT_MODEL_VARIANT_ID,
+      stage: 'prepare',
+      progress: 0,
+      error: null,
+      errorCode: null,
+      preview: null
+    },
+    selectedModelVariantId: DEFAULT_MODEL_VARIANT_ID,
     brushRadius: 4,
     regionOpacity: 0.5,
     segDirty: false,
@@ -255,15 +296,19 @@ export function createRegionDomain(deps: {
   set: RegionSet
   timers: RegionTimers
   previewClient?: PreviewController
+  modelController: ModelController
+  confirmModelReplace(message: string): boolean
 }): RegionDomain {
   const { get, set, timers } = deps
   const previewClient = deps.previewClient ?? new PreviewClient()
+  const modelController = deps.modelController
   let disposed = false
   let nextToastId = 0
   let strokeCollector: ChangeCollector | null = null
   let previewTimer: ReturnType<typeof setTimeout> | undefined
   let previewPending = false
   let previewToken = 0
+  let nextModelToken = 0
   let regionStatsTimer: ReturnType<typeof setTimeout> | undefined
   let regionStatsPendingAfterStroke = false
   let regionStatsCache: {
@@ -538,6 +583,27 @@ export function createRegionDomain(deps: {
     clearPreviewTimer()
   }
 
+  const idleModelRun = (
+    token = get().modelRun.token,
+    variantId = get().selectedModelVariantId
+  ): ModelRunState => ({
+    status: 'idle',
+    token,
+    volumeSession: 0,
+    variantId,
+    stage: 'prepare',
+    progress: 0,
+    error: null,
+    errorCode: null,
+    preview: null
+  })
+
+  const cancelModelRunNow = (): void => {
+    modelController.cancel()
+    const state = get()
+    if (state.modelRun.status !== 'idle') set({ modelRun: idleModelRun(++nextModelToken) })
+  }
+
   const seedFromBox = (): number => {
     const state = get()
     const volume = state.volume
@@ -558,8 +624,10 @@ export function createRegionDomain(deps: {
     const stack = direction === 'undo' ? state.undoStack : state.redoStack
     const entry = stack[stack.length - 1]
     if (!volume || !entry) return
-    const labelMap = state.labelMap
-    if (entry.patch && labelMap) {
+    let labelMap = state.labelMap
+    if (entry.mapSwap) {
+      labelMap = direction === 'undo' ? entry.mapSwap.before : entry.mapSwap.after
+    } else if (entry.patch && labelMap) {
       applyPatchValues(
         labelMap,
         entry.patch.indices,
@@ -581,7 +649,11 @@ export function createRegionDomain(deps: {
     }
     const stillThere = (id: number | null): boolean =>
       id !== null && regions.some((region) => region.id === id)
+    const selection = entry.selection?.[direction === 'undo' ? 'before' : 'after']
     let segSnapshots = state.segSnapshots
+    if (entry.snapshots) {
+      segSnapshots = entry.snapshots[direction === 'undo' ? 'before' : 'after']
+    }
     if (entry.snapshot) {
       const snapshotValue = direction === 'undo' ? entry.snapshot.before : entry.snapshot.after
       segSnapshots = { ...state.segSnapshots }
@@ -589,6 +661,7 @@ export function createRegionDomain(deps: {
       else segSnapshots[entry.snapshot.id] = snapshotValue
     }
     set({
+      labelMap,
       labelMapRev: state.labelMapRev + 1,
       regions,
       segSnapshots,
@@ -597,8 +670,16 @@ export function createRegionDomain(deps: {
         : state.nextRegionId,
       undoStack: direction === 'undo' ? state.undoStack.slice(0, -1) : [...state.undoStack, entry],
       redoStack: direction === 'undo' ? [...state.redoStack, entry] : state.redoStack.slice(0, -1),
-      activeRegionId: stillThere(state.activeRegionId) ? state.activeRegionId : null,
-      editRegionId: stillThere(state.editRegionId) ? state.editRegionId : null,
+      activeRegionId: selection
+        ? selection.active
+        : stillThere(state.activeRegionId)
+          ? state.activeRegionId
+          : null,
+      editRegionId: selection
+        ? selection.edit
+        : stillThere(state.editRegionId)
+          ? state.editRegionId
+          : null,
       segDirty: true,
       segRevision: state.segRevision + 1,
       toasts: dropUndoToasts(state.toasts)
@@ -616,7 +697,10 @@ export function createRegionDomain(deps: {
 
   const actions: RegionActions = {
     refreshRegionStats: refreshRegionStatsNow,
-    setSegTool: (tool) => set({ segTool: tool }),
+    setSegTool: (tool) => {
+      if (tool !== 'crosshair') cancelModelRunNow()
+      set({ segTool: tool })
+    },
     setSegBox: (box) => {
       const volume = get().volume
       if (!volume) return
@@ -792,6 +876,217 @@ export function createRegionDomain(deps: {
       cancelScheduledPreview()
       set({ segBox: null, segSlabAxis: null, preview: null, editRegionId: null })
     },
+    startModelRun: () => {
+      if (strokeCollector) return
+      const state = get()
+      const volume = state.volume
+      const availability = modelController.availability(volume)
+      const token = ++nextModelToken
+      const variantId = state.selectedModelVariantId
+      if (!volume || !availability.available) {
+        set({
+          modelRun: {
+            status: 'error',
+            token,
+            volumeSession: state.volumeSession,
+            variantId,
+            stage: 'prepare',
+            progress: 0,
+            error: availability.reason ?? 'Model execution is unavailable.',
+            errorCode: null,
+            preview: null
+          }
+        })
+        return
+      }
+      const volumeSession = state.volumeSession
+      set({
+        modelRun: {
+          status: 'running',
+          token,
+          volumeSession,
+          variantId,
+          stage: 'prepare',
+          progress: 0,
+          error: null,
+          errorCode: null,
+          preview: null
+        }
+      })
+      const current = (): boolean => {
+        const next = get()
+        return (
+          !disposed &&
+          next.volume === volume &&
+          next.volumeSession === volumeSession &&
+          next.modelRun.token === token &&
+          next.modelRun.variantId === variantId &&
+          next.selectedModelVariantId === variantId &&
+          next.modelRun.status === 'running'
+        )
+      }
+      const started = modelController.run(token, volumeSession, variantId, volume, {
+        progress: (progress, stage) => {
+          if (current()) {
+            set((next) =>
+              progress < next.modelRun.progress
+                ? next
+                : { modelRun: { ...next.modelRun, progress, stage } }
+            )
+          }
+        },
+        complete: (labels, counts) => {
+          if (!current()) return
+          const expected = volume.dims[0] * volume.dims[1] * volume.dims[2]
+          let counted = 0
+          for (let index = 0; index < counts.length; index++) counted += counts[index]
+          if (
+            labels.length !== expected ||
+            counts.length !== modelClasses(variantId).length ||
+            counted !== expected
+          ) {
+            set((next) => ({
+              modelRun: {
+                ...next.modelRun,
+                status: 'error',
+                progress: 0,
+                error: 'Model execution returned an invalid result.',
+                errorCode: null,
+                preview: null
+              }
+            }))
+            return
+          }
+          set((next) => ({
+            modelRun: {
+              ...next.modelRun,
+              status: 'preview',
+              stage: 'writeback',
+              progress: 1,
+              preview: { variantId, labels, counts }
+            }
+          }))
+        },
+        error: (code, message) => {
+          if (!current()) return
+          set((next) => ({
+            modelRun: {
+              ...next.modelRun,
+              status: 'error',
+              progress: 0,
+              error: message,
+              errorCode: code,
+              preview: null
+            }
+          }))
+        }
+      })
+      if (!started && current()) {
+        set((next) => ({
+          modelRun: {
+            ...next.modelRun,
+            status: 'error',
+            error: availability.reason ?? 'Model execution is unavailable.',
+            errorCode: null
+          }
+        }))
+      }
+    },
+    setModelVariant: (variantId) => {
+      modelClasses(variantId)
+      cancelModelRunNow()
+      set((state) => ({
+        selectedModelVariantId: variantId,
+        modelRun: idleModelRun(state.modelRun.token, variantId)
+      }))
+    },
+    cancelModelRun: cancelModelRunNow,
+    discardModelPreview: cancelModelRunNow,
+    commitModelPreview: () => {
+      if (strokeCollector) return
+      const state = get()
+      const volume = state.volume
+      const run = state.modelRun
+      if (
+        !volume ||
+        run.status !== 'preview' ||
+        !run.preview ||
+        run.volumeSession !== state.volumeSession
+      ) {
+        return
+      }
+      if (
+        (state.labelMap !== null || state.regions.length > 0) &&
+        !deps.confirmModelReplace('Committing this preview will replace all existing regions.')
+      ) {
+        return
+      }
+      const classes = modelClasses(run.preview.variantId)
+      const present = classes.filter(
+        (item) => item.value !== 0 && (run.preview?.counts[item.value] ?? 0) > 0
+      )
+      const created = present.length
+      if (created === 0) return
+      if (state.nextRegionId + created - 1 > 0xffff) {
+        set({ modelRun: { ...run, status: 'error', error: 'No region identifiers remain.' } })
+        return
+      }
+      const ids = new Uint16Array(run.preview.counts.length)
+      let nextId = state.nextRegionId
+      for (const item of present) ids[item.value] = nextId++
+      const labelMap = new Uint16Array(run.preview.labels.length)
+      for (let index = 0; index < labelMap.length; index++) {
+        const value = run.preview.labels[index]
+        if (value < ids.length) labelMap[index] = ids[value]
+      }
+      const list: Region[] = present.map((item) => ({
+        id: ids[item.value],
+        name: item.name,
+        color: item.color,
+        visible: true,
+        voxelCount: 0,
+        stats: null
+      }))
+      clearRegionStatsTimer()
+      const regions = computeRegionStats(volume, labelMap, list, frameOffsetOf(volume, state.frame))
+      cacheRegionStats(volume, labelMap, state.labelMapRev + 1, state.frame, regions)
+      const entry: HistoryEntry<SegSnapshot> = {
+        patch: null,
+        mapSwap: { before: state.labelMap, after: labelMap },
+        regions: { before: state.regions, after: regions },
+        nextId: { before: state.nextRegionId, after: nextId },
+        snapshots: { before: state.segSnapshots, after: {} },
+        selection: {
+          before: { active: state.activeRegionId, edit: state.editRegionId },
+          after: { active: regions[0]?.id ?? null, edit: null }
+        }
+      }
+      cancelScheduledPreview()
+      const segParams =
+        state.segParams.constraint.type === 'region'
+          ? { ...state.segParams, constraint: { type: 'none' } as const }
+          : state.segParams
+      set({
+        labelMap,
+        labelMapRev: state.labelMapRev + 1,
+        regions,
+        nextRegionId: nextId,
+        activeRegionId: regions[0]?.id ?? null,
+        segBox: null,
+        segSlabAxis: null,
+        preview: null,
+        editRegionId: null,
+        segSnapshots: {},
+        segParams,
+        segTool: 'crosshair',
+        modelRun: idleModelRun(run.token),
+        segDirty: true,
+        segRevision: state.segRevision + 1,
+        undoStack: pushEntry(state.undoStack, entry),
+        redoStack: [],
+        toasts: dropUndoToasts(state.toasts)
+      })
+    },
     paintAt: (view, from, to, erase) => {
       const state = get()
       const volume = state.volume
@@ -862,6 +1157,7 @@ export function createRegionDomain(deps: {
       const state = get()
       const volume = state.volume
       if (!volume || !state.labelMap || !state.regions.some((region) => region.id === id)) return
+      cancelModelRunNow()
       const snapshot = state.segSnapshots[id]
       const box = snapshot?.box ?? regionBoundingBox(state.labelMap, volume.dims, id)
       let params = snapshot?.params ?? state.segParams
@@ -984,6 +1280,8 @@ export function createRegionDomain(deps: {
     state: { ...initialRegionState(), ...actions },
     resetForVolume: () => {
       cancelScheduledPreview()
+      modelController.cancel()
+      nextModelToken++
       clearRegionStatsTimer()
       regionStatsCache = null
       strokeCollector = null
@@ -1002,6 +1300,7 @@ export function createRegionDomain(deps: {
         maximizedView: null,
         segSlabAxis: null,
         preview: null,
+        modelRun: idleModelRun(nextModelToken),
         segParams: defaultSegParams(),
         segDirty: false,
         segRevision: 0,
@@ -1025,9 +1324,11 @@ export function createRegionDomain(deps: {
       clearPreviewTimer()
       previewPending = false
       previewToken++
+      nextModelToken++
       strokeCollector = null
       regionStatsPendingAfterStroke = false
       previewClient.dispose()
+      modelController.dispose()
     }
   }
 }

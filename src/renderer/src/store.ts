@@ -15,6 +15,7 @@ import {
 import { clampPanelWidth, SIDE_PANEL_WIDTH_DEFAULT } from './panelLayout'
 import { defaultLayerSettings, guessOverlayKind, type OverlayLayer } from './slicing/overlay'
 import { PreviewClient } from './segmentation/previewClient'
+import { ModelRunner, type ModelController } from './model/modelRunner'
 import {
   createRegionDomain,
   type PreviewController,
@@ -33,6 +34,8 @@ export {
   SLAB_DEPTH_DEFAULT
 } from './store/regionDomain'
 export type {
+  ModelPreview,
+  ModelRunState,
   PreviewController,
   SegConstraint,
   SegMethod,
@@ -43,6 +46,7 @@ export type {
   ToastItem,
   ToastState
 } from './store/regionDomain'
+export type { ModelController } from './model/modelRunner'
 
 export type { SidePanelTab } from './files/uiPrefs'
 export { SIDE_PANEL_WIDTH_DEFAULT, SIDE_PANEL_WIDTH_MAX, SIDE_PANEL_WIDTH_MIN } from './panelLayout'
@@ -163,6 +167,9 @@ export interface AppStoreDeps {
   pagehideTarget?: PagehideTarget | null
   /** Every call must return a controller owned by the new store instance. */
   createPreviewController?: () => PreviewController
+  /** Every call must return a controller owned by the new store instance. */
+  createModelController?: () => ModelController
+  confirmModelReplace?: (message: string) => boolean
   timers?: AppStoreTimers
 }
 
@@ -222,6 +229,8 @@ interface StoreLifecycle {
   pagehideTarget: PagehideTarget | null
   timers: AppStoreTimers
   previewClient: PreviewController
+  modelController: ModelController
+  confirmModelReplace(message: string): boolean
   dispose: () => void
 }
 
@@ -230,7 +239,14 @@ function createAppState(
   writeState: StoreApi<AppState>['setState'],
   get: StoreApi<AppState>['getState']
 ): AppState {
-  const { prefStorage, pagehideTarget, timers, previewClient } = lifecycle
+  const {
+    prefStorage,
+    pagehideTarget,
+    timers,
+    previewClient,
+    modelController,
+    confirmModelReplace
+  } = lifecycle
   let disposed = false
   const set = ((...args: unknown[]): void => {
     if (!disposed) (writeState as (...values: unknown[]) => void)(...args)
@@ -322,7 +338,9 @@ function createAppState(
     get: () => get(),
     set: (patch) => set(typeof patch === 'function' ? (state) => patch(state) : patch),
     timers,
-    previewClient
+    previewClient,
+    modelController,
+    confirmModelReplace
   })
 
   const state: AppState = {
@@ -599,6 +617,10 @@ export function createAppStore(deps: AppStoreDeps = {}): AppStore {
       clearTimeout: (handle) => clearTimeout(handle)
     },
     previewClient: deps.createPreviewController?.() ?? new PreviewClient(),
+    modelController: deps.createModelController?.() ?? new ModelRunner(),
+    confirmModelReplace:
+      deps.confirmModelReplace ??
+      ((message) => (typeof window !== 'undefined' ? window.confirm(message) : false)),
     dispose: () => undefined
   }
   let disposed = false
