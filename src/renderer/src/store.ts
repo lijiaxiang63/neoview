@@ -25,6 +25,13 @@ import {
   type RegionTimers
 } from './store/regionDomain'
 import type { RenderMode } from './render3d/types'
+import {
+  defaultAppSettings,
+  parseAppSettings,
+  PLAYBACK_FPS_DEFAULT,
+  type AppSettings,
+  type SegDefaults
+} from '../../shared/settings'
 
 export {
   BRUSH_RADIUS_MAX,
@@ -119,6 +126,12 @@ export interface AppState extends RegionState, RegionActions {
   shortcutsOpen: boolean
   /** Overlay layers in draw order: index 0 is the bottom-most. */
   overlays: OverlayLayer[]
+  /** Frame playback rate (application setting, owned by the main process). */
+  playbackFps: number
+  /** Whether a newly added labels layer starts with its label list open. */
+  expandLabelLists: boolean
+  /** Segmentation values applied when a volume loads (application setting). */
+  segDefaults: SegDefaults
 
   startLoading: () => void
   setVolume: (v: Volume, sourcePath?: string | null, settleLoad?: boolean) => void
@@ -162,6 +175,8 @@ export interface AppState extends RegionState, RegionActions {
   setBaseColormap: (c: BaseColormap) => void
   setFileFilter: (q: string) => void
   setShortcutsOpen: (open: boolean) => void
+  /** Adopt the main-owned settings snapshot (initial query or broadcast). */
+  applyAppSettings: (settings: AppSettings) => void
 }
 
 export interface PagehideTarget {
@@ -344,6 +359,7 @@ function createAppState(
   }
 
   const initialUiPrefs = prefStorage ? loadUiPrefs(prefStorage) : defaultUiPrefs()
+  const initialSegDefaults = defaultAppSettings().seg
 
   const regionDomain = createRegionDomain({
     get: () => get(),
@@ -351,7 +367,10 @@ function createAppState(
     timers,
     previewClient,
     modelController,
-    confirmModelReplace
+    confirmModelReplace,
+    // The domain constructs its initial state before the store state object
+    // exists, so the getter must fall back until the first read can succeed.
+    segDefaults: () => (get() as AppState | undefined)?.segDefaults ?? initialSegDefaults
   })
 
   const state: AppState = {
@@ -382,6 +401,9 @@ function createAppState(
     fileFilter: '',
     shortcutsOpen: false,
     overlays: [],
+    playbackFps: PLAYBACK_FPS_DEFAULT,
+    expandLabelLists: true,
+    segDefaults: initialSegDefaults,
     ...regionDomain.state,
 
     startLoading: () => set({ loadState: 'loading', errorMessage: null }),
@@ -602,7 +624,18 @@ function createAppState(
 
     setFileFilter: (q) => set({ fileFilter: q }),
 
-    setShortcutsOpen: (open) => set({ shortcutsOpen: open })
+    setShortcutsOpen: (open) => set({ shortcutsOpen: open }),
+
+    // The snapshot was validated main-side; re-parsing here is a cheap guard
+    // that also fills any fields an older main process did not send.
+    applyAppSettings: (settings) => {
+      const next = parseAppSettings(settings)
+      set({
+        playbackFps: next.playbackFps,
+        expandLabelLists: next.expandLabelLists,
+        segDefaults: next.seg
+      })
+    }
   }
 
   lifecycle.dispose = (): void => {

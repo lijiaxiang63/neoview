@@ -8,6 +8,14 @@ export default defineConfig({
   preload: {},
   renderer: {
     server: { headers: ISOLATION_HEADERS },
+    build: {
+      rollupOptions: {
+        input: {
+          index: resolve('src/renderer/index.html'),
+          settings: resolve('src/renderer/settings.html')
+        }
+      }
+    },
     resolve: {
       alias: {
         '@renderer': resolve('src/renderer/src')

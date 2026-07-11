@@ -17,14 +17,13 @@ const COLORMAPS: { key: BaseColormap; label: string }[] = [
   { key: 'cool', label: 'Cool' }
 ]
 
-const PLAYBACK_FPS = 8
-
 /** Loop the frame slider while playing; any volume change stops playback. */
 function FrameControls(): JSX.Element {
   const volume = useStore((s) => s.volume)!
   const volumeSession = useStore((s) => s.volumeSession)
   const frame = useStore((s) => s.frame)
   const setFrame = useStore((s) => s.setFrame)
+  const playbackFps = useStore((s) => s.playbackFps)
   // Retain only a small store session, never the volume/raw buffer it names.
   const [playingSession, setPlayingSession] = useState<number | null>(null)
   const playing = playingSession === volumeSession
@@ -36,13 +35,14 @@ function FrameControls(): JSX.Element {
       const s = useStore.getState()
       const frame = playbackFrameTarget(s, playbackSession)
       if (frame !== null) s.setFrame(frame)
-    }, 1000 / PLAYBACK_FPS)
+    }, 1000 / playbackFps)
     return () => {
       clearInterval(id)
       const s = useStore.getState()
       if (s.volumeSession === playbackSession) s.refreshRegionStats()
     }
-  }, [playing, volumeSession])
+    // A rate change while playing restarts the interval at the new cadence.
+  }, [playing, volumeSession, playbackFps])
 
   return (
     <>

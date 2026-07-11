@@ -29,6 +29,7 @@ import {
   type LoadTarget
 } from './appEvents'
 import { layerTableKey, parseLayerLabelTable, type LayerLabelTable } from '../slicing/labelTable'
+import type { AppSettings } from '../../../shared/settings'
 
 export interface RendererBridge {
   platform: string
@@ -53,6 +54,8 @@ export interface RendererBridge {
   onToggleSidePanel(callback: () => void): () => void
   onToggleDirectionLabels(callback: () => void): () => void
   onToggleCrosshair(callback: () => void): () => void
+  getAppSettings(): Promise<AppSettings>
+  onAppSettingsChanged(callback: (settings: AppSettings) => void): () => void
   openFolderScan(token: number): Promise<FolderScan | null>
   scanDroppedFolder(file: File, token: number): Promise<FolderScan | null>
   isDirectory(path: string): Promise<boolean>
@@ -544,6 +547,21 @@ class OwnedRendererRuntime implements RendererRuntime {
         if (this.active) store.getState().setShortcutsOpen(true)
       })
     )
+    // Subscribe before the initial query so a write from the settings window
+    // cannot slip between them unseen; snapshots are idempotent to reapply.
+    keep(
+      bridge.onAppSettingsChanged((settings) => {
+        if (this.active) store.getState().applyAppSettings(settings)
+      })
+    )
+    void bridge
+      .getAppSettings()
+      .then((settings) => {
+        if (this.active) store.getState().applyAppSettings(settings)
+      })
+      .catch(() => {
+        // Defaults remain in effect when the initial query cannot resolve.
+      })
     keep(bridge.onMenuUndo(() => this.routeMenuHistory(false)))
     keep(bridge.onMenuRedo(() => this.routeMenuHistory(true)))
     keep(

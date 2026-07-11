@@ -11,6 +11,7 @@ import type {
 } from '../shared/files'
 import { FILE_CHANNELS } from '../shared/files'
 import type { UpdateInstallResult, UpdateSnapshot } from '../shared/updates'
+import { SETTINGS_CHANNELS, type AppSettings, type AppSettingsPatch } from '../shared/settings'
 import { applyStorageOriginMigration, storageMigrationStep } from '../shared/storageMigration'
 
 export type {
@@ -24,6 +25,7 @@ export type {
   ViewMenuState
 } from '../shared/files'
 export type { UpdateInstallResult, UpdateSnapshot } from '../shared/updates'
+export type { AppSettings, AppSettingsPatch } from '../shared/settings'
 
 // Packaged builds moved from a file origin to a secure custom origin. Main
 // reads the former origin once in a hidden page; preload copies only the
@@ -239,7 +241,25 @@ const api = {
     ipcRenderer.invoke('update-install', commandId),
   skipUpdateVersion: (version: string, commandId: number): void =>
     ipcRenderer.send('update-skip', version, commandId),
-  dismissUpdate: (commandId: number): void => ipcRenderer.send('update-dismiss', commandId)
+  dismissUpdate: (commandId: number): void => ipcRenderer.send('update-dismiss', commandId),
+  /** Application-owned preferences; main validates and persists them. */
+  getAppSettings: (): Promise<AppSettings> => ipcRenderer.invoke(SETTINGS_CHANNELS.get),
+  setAppSettings: (patch: AppSettingsPatch): void => ipcRenderer.send(SETTINGS_CHANNELS.set, patch),
+  /** Fires with the authoritative snapshot after any window's write. */
+  onAppSettingsChanged: (cb: (settings: AppSettings) => void): (() => void) => {
+    const listener = (_e: Electron.IpcRendererEvent, settings: AppSettings): void => cb(settings)
+    ipcRenderer.on(SETTINGS_CHANNELS.changed, listener)
+    return () => ipcRenderer.removeListener(SETTINGS_CHANNELS.changed, listener)
+  },
+  getUpdateAutoCheck: (): Promise<boolean> => ipcRenderer.invoke('update-auto-check'),
+  setUpdateAutoCheck: (enabled: boolean): void =>
+    ipcRenderer.send('update-auto-check-set', enabled),
+  /** Fires when either surface (menu checkbox or a window) changes it. */
+  onUpdateAutoCheckChanged: (cb: (enabled: boolean) => void): (() => void) => {
+    const listener = (_e: Electron.IpcRendererEvent, enabled: boolean): void => cb(enabled)
+    ipcRenderer.on('update-auto-check-changed', listener)
+    return () => ipcRenderer.removeListener('update-auto-check-changed', listener)
+  }
 }
 
 export type NeoviewApi = typeof api

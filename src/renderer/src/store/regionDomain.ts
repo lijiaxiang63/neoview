@@ -47,6 +47,12 @@ import {
   pushEntry,
   type HistoryEntry
 } from '../segmentation/history'
+import {
+  BRUSH_RADIUS_MAX,
+  BRUSH_RADIUS_MIN,
+  defaultAppSettings,
+  type SegDefaults
+} from '../../../shared/settings'
 
 export type SegTool = 'crosshair' | 'box' | 'brush'
 export type SegMethod = 'threshold' | 'grow'
@@ -203,8 +209,9 @@ export interface RegionDomain {
   dispose(): void
 }
 
-export const BRUSH_RADIUS_MIN = 1
-export const BRUSH_RADIUS_MAX = 30
+// The brush limits live in the shared settings contract so the main-side
+// validator clamps against the same bounds.
+export { BRUSH_RADIUS_MAX, BRUSH_RADIUS_MIN } from '../../../shared/settings'
 export const REGION_STATS_DEBOUNCE_MS = 180
 export const SLAB_DEPTH_DEFAULT = 9
 
@@ -226,8 +233,12 @@ const METHOD_DEFAULTS: Record<SegMethod, Partial<SegParams>> = {
   grow: { minVoxels: 1, growMargin: null }
 }
 
-function defaultSegParams(): SegParams {
-  return { ...DEFAULT_SEG_PARAMS, constraint: { type: 'none' } }
+function defaultSegParams(defaults: SegDefaults): SegParams {
+  return {
+    ...DEFAULT_SEG_PARAMS,
+    connectivity: defaults.connectivity,
+    constraint: { type: 'none' }
+  }
 }
 
 export function normalizeSegParams(params: SegParams, edited: 'low' | 'high'): SegParams {
@@ -253,7 +264,11 @@ function frameOffsetOf(volume: Volume, frame: number): number {
 const dropUndoToasts = (toasts: ToastItem[]): ToastItem[] =>
   toasts.filter((toast) => toast.action?.kind !== 'undo')
 
-function initialRegionState(): RegionState {
+function clampBrushRadius(value: number): number {
+  return Math.min(BRUSH_RADIUS_MAX, Math.max(BRUSH_RADIUS_MIN, Math.round(value)))
+}
+
+function initialRegionState(defaults: SegDefaults): RegionState {
   return {
     labelMap: null,
     labelMapRev: 0,
@@ -266,8 +281,8 @@ function initialRegionState(): RegionState {
     segSnapshots: {},
     maximizedView: null,
     segSlabAxis: null,
-    slabDepth: SLAB_DEPTH_DEFAULT,
-    segParams: defaultSegParams(),
+    slabDepth: Math.max(1, Math.round(defaults.slabDepth)),
+    segParams: defaultSegParams(defaults),
     preview: null,
     modelRun: {
       status: 'idle',
@@ -281,7 +296,7 @@ function initialRegionState(): RegionState {
       preview: null
     },
     selectedModelVariantId: DEFAULT_MODEL_VARIANT_ID,
-    brushRadius: 4,
+    brushRadius: clampBrushRadius(defaults.brushRadius),
     regionOpacity: 0.5,
     segDirty: false,
     segRevision: 0,
@@ -299,8 +314,13 @@ export function createRegionDomain(deps: {
   previewClient?: PreviewController
   modelController: ModelController
   confirmModelReplace(message: string): boolean
+  /** Initial segmentation values applied when a volume loads. Read lazily so
+   * a settings change lands on the next load without touching the current
+   * session's values. */
+  segDefaults?: () => SegDefaults
 }): RegionDomain {
   const { get, set, timers } = deps
+  const segDefaults = deps.segDefaults ?? (() => defaultAppSettings().seg)
   const previewClient = deps.previewClient ?? new PreviewClient()
   const modelController = deps.modelController
   let disposed = false
@@ -1330,7 +1350,7 @@ export function createRegionDomain(deps: {
   }
 
   return {
-    state: { ...initialRegionState(), ...actions },
+    state: { ...initialRegionState(segDefaults()), ...actions },
     resetForVolume: () => {
       cancelScheduledPreview()
       modelController.cancel()
@@ -1340,6 +1360,7 @@ export function createRegionDomain(deps: {
       strokeCollector = null
       regionStatsPendingAfterStroke = false
       if (!disposed) previewClient.reset()
+      const defaults = segDefaults()
       return {
         labelMap: null,
         labelMapRev: 0,
@@ -1352,9 +1373,11 @@ export function createRegionDomain(deps: {
         segSnapshots: {},
         maximizedView: null,
         segSlabAxis: null,
+        slabDepth: Math.max(1, Math.round(defaults.slabDepth)),
+        brushRadius: clampBrushRadius(defaults.brushRadius),
         preview: null,
         modelRun: idleModelRun(nextModelToken),
-        segParams: defaultSegParams(),
+        segParams: defaultSegParams(defaults),
         segDirty: false,
         segRevision: 0,
         undoStack: [],

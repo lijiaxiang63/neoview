@@ -826,6 +826,7 @@ body {
 
 .label-list {
   margin-top: 8px;
+  /* Fallback cap; the Layers tab's fill chain below lifts it. */
   max-height: 190px;
   overflow-y: auto;
   display: flex;
@@ -834,6 +835,44 @@ body {
   border: 1px solid var(--border);
   border-radius: 8px;
   padding: 4px;
+}
+
+/* ---------- Layers tab height distribution ----------
+   Open label lists divide the tab's leftover height equally and fill it (no
+   blank strip under a 190px box). Each list floors at 140px; below that it
+   scrolls internally while the tab body's own overflow-y takes over.
+   Deliberately NO min-height:0 anywhere in this chain — the 140px floor on
+   .label-list propagates upward as min-content through the overflow-visible
+   ancestors, which is exactly what re-enables the outer scrollbar. */
+.panel-body-fill > .panel-section {
+  /* Fill the tab when content is short; size to content when it is tall. */
+  flex: 1 0 auto;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Only rows with an OPEN label list join the distribution (a closed
+   CollapsibleSection unmounts its children, so the .label-list is absent). */
+.panel-body-fill .overlay-row:has(> .label-visibility .label-list) {
+  flex: 1 1 0; /* basis 0 → open rows share the leftover height equally */
+  display: flex;
+  flex-direction: column;
+}
+
+/* Pass the row's height down to the list; headers/sliders keep natural
+   height because only the last link in each container is flexible. */
+.panel-body-fill .overlay-row:has(> .label-visibility .label-list) .label-visibility,
+.panel-body-fill .overlay-row:has(> .label-visibility .label-list) .collapse-section,
+.panel-body-fill .overlay-row:has(> .label-visibility .label-list) .collapse-body {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+}
+
+.panel-body-fill .label-list {
+  flex: 1 1 0;
+  max-height: none;
+  min-height: 140px; /* floor; below it the list scrolls internally */
 }
 
 .label-row {
@@ -1133,6 +1172,10 @@ body {
   display: flex;
   flex-direction: column;
   gap: 4px;
+  /* Long region lists scroll internally so the opacity slider and export
+     controls below stay reachable without scrolling the whole tab. */
+  max-height: clamp(180px, 40vh, 520px);
+  overflow-y: auto;
 }
 
 .region-row {

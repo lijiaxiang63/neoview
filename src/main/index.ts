@@ -12,7 +12,7 @@ import {
 } from 'electron'
 import { join } from 'path'
 import { pathToFileURL } from 'url'
-import { promises as fs } from 'fs'
+import { promises as fs, readFileSync } from 'fs'
 import { electronApp, optimizer } from '@electron-toolkit/utils'
 import { createUpdateService, type UpdateService } from './update'
 import { AsyncQuitCoordinator, finalizeApplicationExit } from './updateService'
@@ -37,6 +37,10 @@ import { OpenIntentIssuer } from '../shared/openIntents'
 import { shouldCreateWindowOnActivate, shouldQuitAfterAllWindowsClosed } from './appLifecycle'
 import { createApplicationMenuTemplate } from './menu'
 import { installLaunchFileRouting } from './launchFiles'
+import { createAppSettingsStore } from './appSettings'
+import { registerSettingsIpc } from './settingsIpc'
+import { createSettingsWindowHost } from './settingsWindow'
+import { SETTINGS_CHANNELS } from '../shared/settings'
 import {
   createRendererMainFrameGate,
   isolatedRendererResponse,
@@ -77,6 +81,9 @@ protocol.registerSchemesAsPrivileged([
 const developmentRendererUrl = rendererServerUrl(process.env['ELECTRON_RENDERER_URL'])
 const rendererMainFrameIsTrusted = createRendererMainFrameGate(developmentRendererUrl)
 const storageMigrationWindowIds = new Set<number>()
+// Auxiliary windows (the settings window) never count as application windows:
+// activation, quit-on-last-window and launch-file routing all ignore them.
+const auxiliaryWindowIds = new Set<number>()
 let initialWindowPending = false
 
 function applicationWindows(): BrowserWindow[] {
@@ -84,7 +91,7 @@ function applicationWindows(): BrowserWindow[] {
     const contents = windowContentsIfAlive(window)
     if (!contents) return false
     try {
-      return !storageMigrationWindowIds.has(contents.id)
+      return !storageMigrationWindowIds.has(contents.id) && !auxiliaryWindowIds.has(contents.id)
     } catch {
       return false
     }
@@ -182,6 +189,22 @@ const openIntents = new OpenIntentIssuer()
 const openJobs = new OpenJobCoordinator<Electron.WebContents>()
 let nextOverlayOpenId = 0
 let updateService: UpdateService | null = null
+
+const settingsWindowHost = createSettingsWindowHost({
+  icon,
+  developmentRendererUrl,
+  registerAuxiliary: (contentsId) => auxiliaryWindowIds.add(contentsId),
+  releaseAuxiliary: (contentsId) => auxiliaryWindowIds.delete(contentsId),
+  logIncident
+})
+
+/** An auto-check change is published to every window so an open settings
+ * window never shows a stale value. */
+function publishAutoCheck(enabled: boolean): void {
+  for (const window of BrowserWindow.getAllWindows()) {
+    sendIfAlive(window, 'update-auto-check-changed', enabled)
+  }
+}
 
 function captureWindowOpenScope(
   win: BrowserWindow | null,
@@ -424,7 +447,6 @@ function buildMenu(getWindow: () => BrowserWindow | null): void {
     appName: app.name,
     viewState: lastViewState,
     recentItems: recentFiles.map((path, index) => ({ path, label: labels[index] })),
-    autoCheckEnabled: updateService?.autoCheckEnabled() ?? true,
     actions: {
       openFile: () => {
         void (async () => {
@@ -473,6 +495,7 @@ function buildMenu(getWindow: () => BrowserWindow | null): void {
         }
       },
       showShortcuts: () => sendToWindow('show-shortcuts'),
+      showPreferences: () => settingsWindowHost.open(),
       undo: () => sendToWindow('menu-undo'),
       redo: () => sendToWindow('menu-redo'),
       toggleFilePanel: () => sendToWindow('toggle-file-panel'),
@@ -481,8 +504,7 @@ function buildMenu(getWindow: () => BrowserWindow | null): void {
       toggleCrosshair: () => sendToWindow('toggle-crosshair'),
       openHomepage: () => void shell.openExternal(HOMEPAGE_URL),
       openRepository: () => void shell.openExternal(REPO_URL),
-      checkForUpdates: () => void updateService?.checkForUpdates(true),
-      setAutoCheck: (enabled) => updateService?.setAutoCheck(enabled)
+      checkForUpdates: () => void updateService?.checkForUpdates(true)
     }
   })
   Menu.setApplicationMenu(Menu.buildFromTemplate(template))
@@ -500,7 +522,7 @@ function syncDockIcon(): void {
 }
 
 function createWindow(): BrowserWindow {
-  return createApplicationWindow({
+  const window = createApplicationWindow({
     icon,
     developmentRendererUrl,
     isTrustedMainFrame: rendererMainFrameIsTrusted,
@@ -509,6 +531,14 @@ function createWindow(): BrowserWindow {
     crashLogPath,
     closeCancelled: () => updateService?.closeCancelled()
   })
+  // A lone settings window must not keep the process alive on platforms that
+  // quit when the last application window closes.
+  window.on('closed', () => {
+    if (process.platform !== 'darwin' && applicationWindows().length === 0) {
+      settingsWindowHost.closeIfOpen()
+    }
+  })
+  return window
 }
 
 const gotLock = installLaunchFileRouting({
@@ -519,7 +549,8 @@ const gotLock = installLaunchFileRouting({
   open: async (window, path, intent, scope) => {
     await deliverBaseOpen(window, intent, scope, (signal) => fileReader.read(path, path, signal))
   },
-  isExcludedContents: (contentsId) => storageMigrationWindowIds.has(contentsId)
+  isExcludedContents: (contentsId) =>
+    storageMigrationWindowIds.has(contentsId) || auxiliaryWindowIds.has(contentsId)
 })
 
 if (gotLock) {
@@ -540,6 +571,29 @@ if (gotLock) {
       const migrationSnapshot = await formerOriginStorage()
       const disposeStorageMigrationIpc = installStorageMigrationIpc(migrationSnapshot)
       app.once('will-quit', disposeStorageMigrationIpc)
+
+      const appSettingsPath = join(app.getPath('userData'), 'app-settings.json')
+      const appSettingsStore = createAppSettingsStore({
+        load: () => {
+          try {
+            return JSON.parse(readFileSync(appSettingsPath, 'utf8'))
+          } catch {
+            return null
+          }
+        },
+        save: (settings) => fs.writeFile(appSettingsPath, JSON.stringify(settings, null, 2))
+      })
+      const disposeSettingsIpc = registerSettingsIpc({
+        ipc: ipcMain,
+        store: appSettingsStore,
+        isTrustedMainFrame: rendererMainFrameIsTrusted,
+        broadcast: (settings) => {
+          for (const window of BrowserWindow.getAllWindows()) {
+            sendIfAlive(window, SETTINGS_CHANNELS.changed, settings)
+          }
+        }
+      })
+      app.once('will-quit', disposeSettingsIpc)
 
       // Load persisted recents before any renderer can report a newly opened
       // path, so an in-flight read can never overwrite a later addition.
@@ -611,7 +665,11 @@ if (gotLock) {
 
       createWindow()
       initialWindowPending = false
-      updateService = createUpdateService(applicationWindow, rendererMainFrameIsTrusted)
+      updateService = createUpdateService(
+        applicationWindow,
+        rendererMainFrameIsTrusted,
+        publishAutoCheck
+      )
       const updateQuit = new AsyncQuitCoordinator()
       app.on('will-quit', (event) => {
         const service = updateService
@@ -621,7 +679,7 @@ if (gotLock) {
         // explicitly finalize installer hand-off and exit without quit re-entry.
         updateQuit.intercept(
           event,
-          () => service.dispose(),
+          () => Promise.all([service.dispose(), appSettingsStore.settled()]).then(() => undefined),
           () => {
             updateService = null
             // `will-quit` has already run after every window passed its close

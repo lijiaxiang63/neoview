@@ -110,7 +110,8 @@ async function downloadUpdate(
  * hand-off as one disposable application service. */
 export function createUpdateService(
   getWindow: () => BrowserWindow | null,
-  isTrustedMainFrame: RendererMainFrameGate
+  isTrustedMainFrame: RendererMainFrameGate,
+  onAutoCheckChanged?: (enabled: boolean) => void
 ): UpdateService {
   const settingsPath = join(app.getPath('userData'), 'update-settings.json')
   let disposePromise: Promise<void> | null = null
@@ -146,6 +147,7 @@ export function createUpdateService(
     port,
     controller,
     publish,
+    onAutoCheckChanged,
     install: (commandId): Promise<UpdateInstallResult> =>
       installTasks.track(
         Promise.resolve().then(async (): Promise<UpdateInstallResult> => {

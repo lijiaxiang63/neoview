@@ -41,10 +41,20 @@ export interface UpdateIpcDependencies {
   port: UpdateIpcPort
   controller: Pick<
     UpdateController,
-    'snapshot' | 'download' | 'cancelDownload' | 'skip' | 'dismiss' | 'installFailed'
+    | 'snapshot'
+    | 'download'
+    | 'cancelDownload'
+    | 'skip'
+    | 'dismiss'
+    | 'installFailed'
+    | 'autoCheckEnabled'
+    | 'setAutoCheck'
   >
   publish(snapshot: UpdateSnapshot): void
   install(commandId: number): Promise<UpdateInstallResult>
+  /** A renderer changed the auto-check preference; lets the composition root
+   * mirror the application menu's checkbox. */
+  onAutoCheckChanged?(enabled: boolean): void
 }
 
 /** Register the complete updater IPC contract as one disposable unit. Every
@@ -124,6 +134,14 @@ export function registerUpdateIpc(deps: UpdateIpcDependencies): () => void {
           return
         }
         controller.dismiss(commandId)
+      })
+    )
+    keep(port.handle('update-auto-check', () => controller.autoCheckEnabled()))
+    keep(
+      port.listen('update-auto-check-set', (enabled) => {
+        if (typeof enabled !== 'boolean') return
+        controller.setAutoCheck(enabled)
+        deps.onAutoCheckChanged?.(enabled)
       })
     )
   } catch (error) {

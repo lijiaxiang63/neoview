@@ -278,6 +278,52 @@ describe('render settings', () => {
   })
 })
 
+describe('application settings', () => {
+  it('applies a validated snapshot with clamped fields', () => {
+    useStore.getState().applyAppSettings({
+      playbackFps: 99,
+      seg: { connectivity: 6, slabDepth: 0, brushRadius: 500 },
+      expandLabelLists: false
+    })
+    const s = useStore.getState()
+    expect(s.playbackFps).toBe(30)
+    expect(s.expandLabelLists).toBe(false)
+    expect(s.segDefaults).toEqual({ connectivity: 6, slabDepth: 1, brushRadius: 30 })
+  })
+
+  it('applies segmentation defaults on the next volume load, not retroactively', () => {
+    useStore.getState().setVolume(baseVolume())
+    useStore.getState().setBrushRadius(11)
+    useStore.getState().applyAppSettings({
+      playbackFps: 8,
+      seg: { connectivity: 6, slabDepth: 5, brushRadius: 2 },
+      expandLabelLists: true
+    })
+    // The active session keeps its values…
+    let s = useStore.getState()
+    expect(s.brushRadius).toBe(11)
+    expect(s.segParams.connectivity).toBe(26)
+
+    // …and the next load starts from the configured defaults.
+    useStore.getState().setVolume(baseVolume())
+    s = useStore.getState()
+    expect(s.brushRadius).toBe(2)
+    expect(s.slabDepth).toBe(5)
+    expect(s.segParams.connectivity).toBe(6)
+  })
+
+  it('is inert after dispose', () => {
+    const owned = createAppStore({ storage: null, pagehideTarget: null })
+    owned.dispose()
+    owned.getState().applyAppSettings({
+      playbackFps: 20,
+      seg: { connectivity: 6, slabDepth: 5, brushRadius: 2 },
+      expandLabelLists: false
+    })
+    expect(owned.getState().playbackFps).toBe(8)
+  })
+})
+
 describe('panel layout', () => {
   it('defaults to the display tab at the default width with nothing collapsed', () => {
     const s = useStore.getState()

@@ -6,7 +6,6 @@ export interface ApplicationMenuOptions {
   appName: string
   viewState: ViewMenuState
   recentItems: Array<{ path: string; label: string }>
-  autoCheckEnabled: boolean
   actions: {
     openFile(): void
     openFolder(): void
@@ -21,10 +20,10 @@ export interface ApplicationMenuOptions {
     toggleSidePanel(): void
     toggleDirectionLabels(): void
     toggleCrosshair(): void
+    showPreferences(): void
     openHomepage(): void
     openRepository(): void
     checkForUpdates(): void
-    setAutoCheck(enabled: boolean): void
   }
 }
 
@@ -34,7 +33,7 @@ export interface ApplicationMenuOptions {
 export function createApplicationMenuTemplate(
   options: ApplicationMenuOptions
 ): MenuItemConstructorOptions[] {
-  const { isMac, appName, viewState, recentItems, autoCheckEnabled, actions } = options
+  const { isMac, appName, viewState, recentItems, actions } = options
   const links: MenuItemConstructorOptions[] = [
     { label: 'Website', click: actions.openHomepage },
     { label: 'GitHub Repository', click: actions.openRepository }
@@ -54,21 +53,24 @@ export function createApplicationMenuTemplate(
           { type: 'separator' as const },
           { label: 'Clear Menu', click: actions.clearRecent }
         ]
+  // The automatic-check preference lives in the settings window; the menu
+  // keeps only the explicit check command.
   const updates: MenuItemConstructorOptions[] = [
-    { label: 'Check for Updates…', click: actions.checkForUpdates },
-    {
-      label: 'Check for Updates Automatically',
-      type: 'checkbox',
-      checked: autoCheckEnabled,
-      click: (item) => actions.setAutoCheck(item.checked)
-    }
+    { label: 'Check for Updates…', click: actions.checkForUpdates }
   ]
+  const preferences: MenuItemConstructorOptions = {
+    label: 'Settings…',
+    accelerator: 'CmdOrCtrl+,',
+    click: actions.showPreferences
+  }
   const macAppMenu: MenuItemConstructorOptions = {
     label: appName,
     submenu: [
       { role: 'about' },
       { type: 'separator' },
       ...updates,
+      { type: 'separator' },
+      preferences,
       { type: 'separator' },
       { role: 'services' },
       { type: 'separator' },
@@ -95,6 +97,7 @@ export function createApplicationMenuTemplate(
         { type: 'separator' },
         { label: 'Open Built-in Volume', click: actions.openBuiltinBase },
         { label: 'Open Built-in Overlay', click: actions.openBuiltinOverlay },
+        ...(isMac ? [] : [{ type: 'separator' as const }, preferences]),
         { type: 'separator' },
         isMac ? { role: 'close' } : { role: 'quit' }
       ]

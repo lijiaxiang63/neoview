@@ -14,10 +14,13 @@ import type { RegionExportController } from '../runtime/regionExportController'
 function TabPanel({
   id,
   active,
+  fill,
   children
 }: {
   id: SidePanelTab
   active: SidePanelTab
+  /** Let flexible content (open label lists) divide the panel's height. */
+  fill?: boolean
   children: ReactNode
 }): JSX.Element {
   // Inactive panels stay mounted but hidden: frame playback intervals and
@@ -25,7 +28,7 @@ function TabPanel({
   // tab switches (same approach as the maximized slice views).
   return (
     <div
-      className="panel-body"
+      className={fill ? 'panel-body panel-body-fill' : 'panel-body'}
       role="tabpanel"
       id={tabPanelId('side', id)}
       aria-labelledby={tabButtonId('side', id)}
@@ -81,7 +84,7 @@ export function SidePanel({
       <TabPanel id="regions" active={tab}>
         <RegionPanel exports={regionExports} />
       </TabPanel>
-      <TabPanel id="layers" active={tab}>
+      <TabPanel id="layers" active={tab} fill>
         <OverlayPanel onAdd={onAddOverlay} />
       </TabPanel>
       <TabPanel id="info" active={tab}>

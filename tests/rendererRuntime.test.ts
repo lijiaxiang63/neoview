@@ -11,6 +11,7 @@ import {
   type RuntimeDocument,
   type RuntimeEventTarget
 } from '../src/renderer/src/runtime/rendererRuntime'
+import { defaultAppSettings } from '../src/shared/settings'
 
 type Callback = (...args: unknown[]) => void
 
@@ -97,6 +98,7 @@ interface BridgeHarness {
   claimCloseResponder: ReturnType<typeof vi.fn<RendererBridge['claimCloseResponder']>>
   activateCloseResponder: ReturnType<typeof vi.fn<RendererBridge['activateCloseResponder']>>
   releaseCloseResponder: ReturnType<typeof vi.fn<RendererBridge['releaseCloseResponder']>>
+  getAppSettings: ReturnType<typeof vi.fn<RendererBridge['getAppSettings']>>
 }
 
 function bridgeHarness(): BridgeHarness {
@@ -132,6 +134,7 @@ function bridgeHarness(): BridgeHarness {
   )
   const activateCloseResponder = vi.fn<RendererBridge['activateCloseResponder']>()
   const releaseCloseResponder = vi.fn<RendererBridge['releaseCloseResponder']>()
+  const getAppSettings = vi.fn<RendererBridge['getAppSettings']>(async () => defaultAppSettings())
   const bridge: RendererBridge = {
     platform: 'darwin',
     openDialog,
@@ -153,6 +156,8 @@ function bridgeHarness(): BridgeHarness {
     onToggleSidePanel: (callback) => listen('toggle-side', callback as Callback),
     onToggleDirectionLabels: (callback) => listen('toggle-labels', callback as Callback),
     onToggleCrosshair: (callback) => listen('toggle-crosshair', callback as Callback),
+    getAppSettings,
+    onAppSettingsChanged: (callback) => listen('app-settings-changed', callback as Callback),
     openFolderScan,
     scanDroppedFolder,
     isDirectory,
@@ -195,7 +200,8 @@ function bridgeHarness(): BridgeHarness {
     cancelClose,
     claimCloseResponder,
     activateCloseResponder,
-    releaseCloseResponder
+    releaseCloseResponder,
+    getAppSettings
   }
 }
 
@@ -351,7 +357,7 @@ describe('renderer runtime lifecycle', () => {
 
     expect(h.coordinatorFactory).toHaveBeenCalledTimes(1)
     expect(h.coordinatorFactory.mock.calls[0][1].intentGate).toBe(h.store.openIntentGate)
-    expect(h.bridge.unsubscribes).toHaveLength(15)
+    expect(h.bridge.unsubscribes).toHaveLength(16)
     expect(h.window.add).toHaveBeenCalledTimes(5)
     expect(h.bridge.claimCloseResponder).toHaveBeenCalledTimes(1)
     expect(h.bridge.activateCloseResponder).toHaveBeenCalledWith(1)
@@ -507,6 +513,43 @@ describe('renderer runtime event routing', () => {
     expect(h.store.getState().filePanelOpen).toBe(false)
     expect(h.store.getState().sidePanelOpen).toBe(false)
     expect(h.store.getState().shortcutsOpen).toBe(true)
+  })
+
+  it('adopts the main-owned settings snapshot on init and on broadcasts', async () => {
+    const h = runtimeHarness()
+    h.bridge.getAppSettings.mockResolvedValueOnce({
+      playbackFps: 20,
+      seg: { connectivity: 6, slabDepth: 3, brushRadius: 7 },
+      expandLabelLists: false
+    })
+    h.runtime.init()
+    await tick()
+    expect(h.store.getState().playbackFps).toBe(20)
+    expect(h.store.getState().expandLabelLists).toBe(false)
+    expect(h.store.getState().segDefaults).toEqual({
+      connectivity: 6,
+      slabDepth: 3,
+      brushRadius: 7
+    })
+
+    h.bridge.emit('app-settings-changed', {
+      ...defaultAppSettings(),
+      playbackFps: 12
+    })
+    expect(h.store.getState().playbackFps).toBe(12)
+    expect(h.store.getState().segDefaults).toEqual(defaultAppSettings().seg)
+  })
+
+  it('ignores settings arriving after dispose', async () => {
+    const h = runtimeHarness()
+    const settled = deferred<Awaited<ReturnType<RendererBridge['getAppSettings']>>>()
+    h.bridge.getAppSettings.mockReturnValueOnce(settled.promise)
+    h.runtime.init()
+    h.runtime.dispose()
+    h.bridge.emit('app-settings-changed', { ...defaultAppSettings(), playbackFps: 25 })
+    settled.resolve({ ...defaultAppSettings(), playbackFps: 25 })
+    await tick()
+    expect(h.store.getState().playbackFps).toBe(8)
   })
 
   it('routes explicit file and overlay dialogs through their distinct entries', async () => {

@@ -19,9 +19,11 @@ function harness(): {
     skip: ReturnType<typeof vi.fn>
     dismiss: ReturnType<typeof vi.fn>
     installFailed: ReturnType<typeof vi.fn>
+    setAutoCheck: ReturnType<typeof vi.fn>
   }
   install: ReturnType<typeof vi.fn>
   publish: ReturnType<typeof vi.fn>
+  onAutoCheckChanged: ReturnType<typeof vi.fn>
   snapshot: UpdateSnapshot
   dispose(): void
   registered(): { handles: number; listeners: number }
@@ -60,11 +62,14 @@ function harness(): {
     cancelDownload: vi.fn(),
     skip: vi.fn(),
     dismiss: vi.fn(),
-    installFailed: vi.fn()
+    installFailed: vi.fn(),
+    autoCheckEnabled: vi.fn(() => true),
+    setAutoCheck: vi.fn()
   }
   const install = vi.fn(async () => ({ quits: true }))
   const publish = vi.fn()
-  const dispose = registerUpdateIpc({ port, controller, install, publish })
+  const onAutoCheckChanged = vi.fn()
+  const dispose = registerUpdateIpc({ port, controller, install, publish, onAutoCheckChanged })
 
   return {
     invoke: async (channel, ...args) => {
@@ -80,6 +85,7 @@ function harness(): {
     controller,
     install,
     publish,
+    onAutoCheckChanged,
     snapshot,
     dispose,
     registered: () => ({ handles: handles.size, listeners: listeners.size })
@@ -104,10 +110,26 @@ describe('update IPC registration', () => {
     expect(h.install).toHaveBeenCalledWith(7)
     expect(h.publish).not.toHaveBeenCalled()
 
-    expect(h.registered()).toEqual({ handles: 3, listeners: 3 })
+    expect(h.registered()).toEqual({ handles: 4, listeners: 4 })
     h.dispose()
     h.dispose()
     expect(h.registered()).toEqual({ handles: 0, listeners: 0 })
+  })
+
+  it('serves and applies the auto-check preference with the menu callback', async () => {
+    const h = harness()
+
+    expect(await h.invoke('update-auto-check')).toBe(true)
+
+    h.emit('update-auto-check-set', false)
+    expect(h.controller.setAutoCheck).toHaveBeenCalledWith(false)
+    expect(h.onAutoCheckChanged).toHaveBeenCalledWith(false)
+
+    for (const malformed of [undefined, null, 'true', 1, {}]) {
+      h.emit('update-auto-check-set', malformed)
+    }
+    expect(h.controller.setAutoCheck).toHaveBeenCalledTimes(1)
+    expect(h.onAutoCheckChanged).toHaveBeenCalledTimes(1)
   })
 
   it('rejects malformed payloads and stale install commands by replaying state', async () => {
@@ -169,7 +191,9 @@ describe('update IPC registration', () => {
           cancelDownload: () => {},
           skip: () => {},
           dismiss: () => {},
-          installFailed: () => {}
+          installFailed: () => {},
+          autoCheckEnabled: () => true,
+          setAutoCheck: () => {}
         },
         publish: () => {},
         install: async () => ({ quits: false })

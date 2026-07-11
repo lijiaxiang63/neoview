@@ -14,7 +14,6 @@ function options(isMac: boolean): ApplicationMenuOptions {
       crosshair: false
     },
     recentItems: [{ path: '/a.nii', label: 'a.nii' }],
-    autoCheckEnabled: false,
     actions: {
       openFile: action,
       openFolder: action,
@@ -29,10 +28,10 @@ function options(isMac: boolean): ApplicationMenuOptions {
       toggleSidePanel: action,
       toggleDirectionLabels: action,
       toggleCrosshair: action,
+      showPreferences: action,
       openHomepage: action,
       openRepository: action,
-      checkForUpdates: action,
-      setAutoCheck: action
+      checkForUpdates: action
     }
   }
 }
@@ -65,6 +64,40 @@ describe('application menu template', () => {
     expect(viewItems.filter((item) => item.role === 'togglefullscreen')).toHaveLength(1)
     recentItems[0].click?.({} as never, {} as never, {} as never)
     expect(input.actions.openRecent).toHaveBeenCalledWith('/a.nii')
+  })
+
+  it('places one Settings… item with the standard accelerator per platform', () => {
+    const mac = options(true)
+    const macTemplate = createApplicationMenuTemplate(mac)
+    const appItems = macTemplate[0].submenu as Electron.MenuItemConstructorOptions[]
+    const macSettings = appItems.find((item) => item.label === 'Settings…')!
+    expect(macSettings.accelerator).toBe('CmdOrCtrl+,')
+    macSettings.click?.({} as never, {} as never, {} as never)
+    expect(mac.actions.showPreferences).toHaveBeenCalledTimes(1)
+    const macFile = macTemplate.find((item) => item.label === 'File')!
+    expect(
+      (macFile.submenu as Electron.MenuItemConstructorOptions[]).some(
+        (item) => item.label === 'Settings…'
+      )
+    ).toBe(false)
+
+    const other = createApplicationMenuTemplate(options(false))
+    const fileItems = other.find((item) => item.label === 'File')!
+      .submenu as Electron.MenuItemConstructorOptions[]
+    const settings = fileItems.find((item) => item.label === 'Settings…')!
+    expect(settings.accelerator).toBe('CmdOrCtrl+,')
+  })
+
+  it('offers only the explicit update check — the automatic toggle lives in settings', () => {
+    for (const isMac of [true, false]) {
+      const template = createApplicationMenuTemplate(options(isMac))
+      const holder = isMac
+        ? (template[0].submenu as Electron.MenuItemConstructorOptions[])
+        : (template.find((item) => item.label === 'Help')!
+            .submenu as Electron.MenuItemConstructorOptions[])
+      expect(holder.some((item) => item.label === 'Check for Updates…')).toBe(true)
+      expect(holder.some((item) => item.type === 'checkbox')).toBe(false)
+    }
   })
 
   it('adds the macOS application and edit menus', () => {

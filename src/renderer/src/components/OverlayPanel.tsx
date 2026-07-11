@@ -1,4 +1,4 @@
-import { useState, type JSX } from 'react'
+import { useEffect, useRef, useState, type JSX } from 'react'
 import { useStore } from '../store'
 import { RangeSlider } from './RangeSlider'
 import { EyeIcon } from './EyeIcon'
@@ -30,9 +30,9 @@ const COLORMAPS: { key: ColormapName; label: string }[] = [
 /**
  * Collapsible label list for the labels kind: color swatch, id + name
  * (click = jump the crosshair to that label), voxel count, and an eye toggle
- * for per-label visibility. Collapsed by default — real label volumes can
- * carry hundreds of entries, so the list (and the inventory scan) only
- * happens on expand.
+ * for per-label visibility. Whether a new layer starts open follows the
+ * `expandLabelLists` application setting (default on); the inventory scan is
+ * memoized per volume, so opening by default costs one pass per label volume.
  */
 function LabelVisibility({
   layer,
@@ -42,6 +42,23 @@ function LabelVisibility({
   onPatch: (patch: { hiddenLabels: Set<number> }) => void
 }): JSX.Element {
   const [open, setOpen] = useState(false)
+  // Default-open is deferred to idle time so the first (whole-volume)
+  // inventory pass never rides the load path's commit render. The setting is
+  // read once per mount — a change affects layers added afterwards — and an
+  // explicit user toggle before the idle callback wins.
+  const interacted = useRef(false)
+  useEffect(() => {
+    if (!useStore.getState().expandLabelLists) return
+    const reveal = (): void => {
+      if (!interacted.current) setOpen(true)
+    }
+    if (typeof requestIdleCallback === 'function') {
+      const handle = requestIdleCallback(reveal)
+      return () => cancelIdleCallback(handle)
+    }
+    const handle = window.setTimeout(reveal, 0)
+    return () => window.clearTimeout(handle)
+  }, [])
   const [filter, setFilter] = useState('')
   const base = useStore((s) => s.volume)
   const setCross = useStore((s) => s.setCross)
@@ -96,7 +113,15 @@ function LabelVisibility({
     <div className="label-visibility">
       {/* Controlled with local state: layer ids are session-scoped, so this
           collapse is deliberately not persisted. */}
-      <CollapsibleSection title="Labels" badge={badge || undefined} open={open} onToggle={setOpen}>
+      <CollapsibleSection
+        title="Labels"
+        badge={badge || undefined}
+        open={open}
+        onToggle={(next) => {
+          interacted.current = true
+          setOpen(next)
+        }}
+      >
         {entries && shown && (
           <>
             <div className="preset-row" style={{ marginTop: 0 }}>
@@ -115,6 +140,13 @@ function LabelVisibility({
                 placeholder="filter…"
                 value={filter}
                 onChange={(e) => setFilter(e.target.value)}
+                onKeyDown={(e) => {
+                  // Esc clears the filter instead of bubbling to app shortcuts.
+                  if (e.key === 'Escape' && filter !== '') {
+                    e.stopPropagation()
+                    setFilter('')
+                  }
+                }}
               />
             </div>
             <div className="label-list">
@@ -148,7 +180,11 @@ function LabelVisibility({
                   </div>
                 )
               })}
-              {shown.length === 0 && <div className="label-empty mono">no match</div>}
+              {shown.length === 0 && (
+                <div className="label-empty mono">
+                  {entries.length === 0 ? 'no labels in the data' : 'no match'}
+                </div>
+              )}
             </div>
           </>
         )}
