@@ -24,7 +24,7 @@
     "gen:testdata": "node scripts/make-test-volumes.mjs testdata"
   },
   "engines": {
-    "node": ">=22.12.0"
+    "node": ">=26.5.0"
   },
   "devDependencies": {
     "@electron-toolkit/eslint-config-prettier": "^3.0.0",

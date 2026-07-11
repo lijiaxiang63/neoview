@@ -70,7 +70,7 @@ No parsing, math, or rendering libraries — the whole pipeline is hand-written 
 
 ## Getting started
 
-Requires Node.js 22.12 or newer.
+Requires Node.js 26.5.0 or newer.
 
 ```bash
 npm install
