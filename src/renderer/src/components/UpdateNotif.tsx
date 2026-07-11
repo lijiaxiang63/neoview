@@ -1,124 +1,155 @@
-import { useEffect, useState, type JSX } from 'react'
-import type { UpdateProgress, UpdateStatus } from '../../../shared/updates'
+import { useCallback, useEffect, useRef, useState, type JSX } from 'react'
+import type { UpdateRef, UpdateState } from '../../../shared/updates'
+import {
+  INITIAL_UPDATE_SNAPSHOT,
+  ownedUpdateFallback,
+  UpdateCommandLatch,
+  type UpdateCommandOwner,
+  UpdateSnapshotReceiver,
+  updateResultAutoDismisses
+} from '../runtime/updateSnapshots'
 
 const RESULT_MS = 6000
-
-interface UpdateRef {
-  version: string
-  notesUrl: string
-  assetName: string
-  assetSize: number
-}
-
-type Phase =
-  | { p: 'checking' }
-  | { p: 'available'; info: UpdateRef; error: string | null }
-  | { p: 'downloading'; info: UpdateRef; received: number; total: number }
-  | { p: 'ready'; info: UpdateRef }
-  /** Linux: file revealed in the file manager, updating is manual from here. */
-  | { p: 'saved'; info: UpdateRef }
-  | { p: 'none'; version: string }
-  | { p: 'error'; message: string }
 
 function fmtMB(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
 }
 
-/** Drop the "Error invoking remote method ..." wrapper IPC errors carry. */
-function ipcErrorText(err: unknown): string {
-  const raw = err instanceof Error ? err.message : 'Download failed.'
+function ipcErrorText(error: unknown): string {
+  const raw = error instanceof Error ? error.message : 'Update failed.'
   return raw.replace(/^Error invoking remote method '[^']+': (Error: )?/, '')
 }
 
-/** The update lifecycle rendered as a notification card. Persistent phases
- * (available / downloading / ready) stay until resolved; result phases dismiss
- * themselves. Always mounted inside the notification stack so it keeps
- * receiving IPC events. */
+/** Application-owned update state rendered as one notification card. The
+ * initial snapshot makes downloads and completed work survive window rebuilds. */
 export function UpdateNotif(): JSX.Element | null {
-  const [phase, setPhase] = useState<Phase | null>(null)
+  const [snapshot, setSnapshot] = useState(INITIAL_UPDATE_SNAPSHOT)
+  const latestSnapshot = useRef(INITIAL_UPDATE_SNAPSHOT)
+  const commandLatch = useRef(new UpdateCommandLatch())
+  const [commandPending, setCommandPending] = useState(false)
+  const state = snapshot.state
 
   useEffect(() => {
-    const offStatus = window.neoview.onUpdateStatus((status: UpdateStatus) => {
-      setPhase((cur) => {
-        // A download in flight (or done) outranks new check chatter, unless a
-        // different version shows up.
-        const busy = cur && (cur.p === 'downloading' || cur.p === 'ready' || cur.p === 'saved')
-        if (busy && !(status.kind === 'available' && status.version !== cur.info.version)) {
-          return cur
-        }
-        if (status.kind === 'checking') return { p: 'checking' }
-        if (status.kind === 'available') {
-          const { version, notesUrl, assetName, assetSize } = status
-          return { p: 'available', info: { version, notesUrl, assetName, assetSize }, error: null }
-        }
-        if (status.kind === 'none') return { p: 'none', version: status.version }
-        return { p: 'error', message: status.message }
-      })
+    const receiver = new UpdateSnapshotReceiver()
+    const latch = commandLatch.current
+    const accept = (next: Parameters<UpdateSnapshotReceiver['accept']>[0]): void => {
+      const accepted = receiver.accept(next)
+      if (accepted) {
+        const advanced = accepted.revision > latestSnapshot.current.revision
+        latestSnapshot.current = accepted
+        if (advanced && latch.reset()) setCommandPending(false)
+        setSnapshot(accepted)
+      }
+    }
+    const unsubscribe = window.neoview.onUpdateState((next) => {
+      accept(next)
     })
-    const offProgress = window.neoview.onUpdateProgress((progress: UpdateProgress) => {
-      setPhase((cur) => (cur && cur.p === 'downloading' ? { ...cur, ...progress } : cur))
-    })
+    void window.neoview
+      .getUpdateState()
+      .then(accept)
+      .catch(() => {})
     return () => {
-      offStatus()
-      offProgress()
+      receiver.dispose()
+      latch.reset()
+      unsubscribe()
     }
   }, [])
 
-  // Transient results dismiss themselves like a toast.
+  const beginCommand = useCallback((): UpdateCommandOwner | null => {
+    const latest = latestSnapshot.current
+    // An IPC event can advance ownership just before React commits its render;
+    // an event handler from the old card must not send that stale command.
+    if (latest.revision !== snapshot.revision || latest.commandId !== snapshot.commandId)
+      return null
+    const token = commandLatch.current.begin()
+    if (token === null) return null
+    setCommandPending(true)
+    return { token, revision: snapshot.revision, commandId: snapshot.commandId }
+  }, [snapshot.commandId, snapshot.revision])
+
+  const finishCommand = useCallback((token: number): void => {
+    if (commandLatch.current.release(token)) setCommandPending(false)
+  }, [])
+
+  const setLocalFallback = useCallback((owner: UpdateCommandOwner, state: UpdateState): void => {
+    const next = ownedUpdateFallback(latestSnapshot.current, owner, commandLatch.current, state)
+    if (!next) return
+    latestSnapshot.current = next
+    setSnapshot(next)
+  }, [])
+
   useEffect(() => {
-    if (!phase || (phase.p !== 'none' && phase.p !== 'error' && phase.p !== 'saved')) return
-    const t = setTimeout(() => setPhase(null), RESULT_MS)
-    return () => clearTimeout(t)
-  }, [phase])
+    if (!updateResultAutoDismisses(state)) return
+    const timer = setTimeout(() => {
+      const command = beginCommand()
+      if (command) window.neoview.dismissUpdate(command.commandId)
+    }, RESULT_MS)
+    return () => clearTimeout(timer)
+  }, [beginCommand, state])
 
   const download = async (info: UpdateRef): Promise<void> => {
-    setPhase({ p: 'downloading', info, received: 0, total: info.assetSize })
+    const command = beginCommand()
+    if (!command) return
     try {
-      const path = await window.neoview.downloadUpdate()
-      if (path) setPhase({ p: 'ready', info })
-      else setPhase(null) // cancelled
-    } catch (err) {
-      setPhase({ p: 'available', info, error: ipcErrorText(err) })
+      await window.neoview.downloadUpdate(command.commandId)
+    } catch (error) {
+      // The main service normally publishes this state first; this fallback
+      // covers a transport failure where no event can arrive.
+      setLocalFallback(command, { phase: 'available', info, error: ipcErrorText(error) })
+    } finally {
+      finishCommand(command.token)
     }
   }
 
   const install = async (info: UpdateRef): Promise<void> => {
-    // On mac/win the app quits and hands off to the installer; if unsaved
-    // region edits veto the quit, the banner simply stays on 'ready'.
-    const { quits } = await window.neoview.installUpdate()
-    if (!quits) setPhase({ p: 'saved', info })
+    const command = beginCommand()
+    if (!command) return
+    try {
+      await window.neoview.installUpdate(command.commandId)
+    } catch (error) {
+      setLocalFallback(command, { phase: 'ready', info, error: ipcErrorText(error) })
+    } finally {
+      finishCommand(command.token)
+    }
   }
 
   const dismiss = (): void => {
-    if (phase?.p === 'downloading') window.neoview.cancelUpdateDownload()
-    setPhase(null)
+    const command = beginCommand()
+    if (!command) return
+    if (state.phase === 'downloading') window.neoview.cancelUpdateDownload(command.commandId)
+    else window.neoview.dismissUpdate(command.commandId)
   }
 
-  if (!phase) return null
+  if (state.phase === 'idle') return null
 
   return (
-    <div className={`notif${phase.p === 'error' ? ' error' : ''}`}>
-      {phase.p === 'checking' && <span className="msg">Checking for updates…</span>}
-      {phase.p === 'none' && <span className="msg">You’re up to date (v{phase.version}).</span>}
-      {phase.p === 'error' && <span className="msg">Update check failed: {phase.message}</span>}
-      {phase.p === 'available' && (
+    <div className={`notif${state.phase === 'error' ? ' error' : ''}`}>
+      {state.phase === 'checking' && <span className="msg">Checking for updates…</span>}
+      {state.phase === 'none' && <span className="msg">You’re up to date (v{state.version}).</span>}
+      {state.phase === 'error' && <span className="msg">Update check failed: {state.message}</span>}
+      {state.phase === 'available' && (
         <>
           <div className="notif-row">
-            <span className="msg">Update available: v{phase.info.version}</span>
-            <button className="notif-action" onClick={() => window.open(phase.info.notesUrl)}>
+            <span className="msg">Update available: v{state.info.version}</span>
+            <button className="notif-action" onClick={() => window.open(state.info.notesUrl)}>
               What’s new
             </button>
           </div>
-          {phase.error && <div className="notif-detail">{phase.error}</div>}
+          {state.error && <div className="notif-detail">{state.error}</div>}
           <div className="notif-row">
-            <button className="btn primary" onClick={() => void download(phase.info)}>
-              Download{phase.info.assetSize > 0 ? ` (${fmtMB(phase.info.assetSize)})` : ''}
+            <button
+              className="btn primary"
+              disabled={commandPending}
+              onClick={() => void download(state.info)}
+            >
+              Download{state.info.assetSize > 0 ? ` (${fmtMB(state.info.assetSize)})` : ''}
             </button>
             <button
               className="notif-action"
+              disabled={commandPending}
               onClick={() => {
-                window.neoview.skipUpdateVersion(phase.info.version)
-                setPhase(null)
+                const command = beginCommand()
+                if (command) window.neoview.skipUpdateVersion(state.info.version, command.commandId)
               }}
             >
               Skip this version
@@ -126,14 +157,14 @@ export function UpdateNotif(): JSX.Element | null {
           </div>
         </>
       )}
-      {phase.p === 'downloading' && (
+      {state.phase === 'downloading' && (
         <>
           <div className="notif-row">
             <span className="msg">
-              Downloading v{phase.info.version}… {fmtMB(phase.received)}
-              {phase.total > 0 ? ` / ${fmtMB(phase.total)}` : ''}
+              Downloading v{state.info.version}… {fmtMB(state.received)}
+              {state.total > 0 ? ` / ${fmtMB(state.total)}` : ''}
             </span>
-            <button className="notif-action" onClick={() => window.neoview.cancelUpdateDownload()}>
+            <button className="notif-action" disabled={commandPending} onClick={dismiss}>
               Cancel
             </button>
           </div>
@@ -142,24 +173,40 @@ export function UpdateNotif(): JSX.Element | null {
               className="fill"
               style={{
                 width:
-                  phase.total > 0 ? `${Math.min(100, (phase.received / phase.total) * 100)}%` : 0
+                  state.total > 0 ? `${Math.min(100, (state.received / state.total) * 100)}%` : 0
               }}
             />
           </div>
         </>
       )}
-      {phase.p === 'ready' && (
-        <div className="notif-row">
-          <span className="msg">v{phase.info.version} downloaded.</span>
-          <button className="btn primary" onClick={() => void install(phase.info)}>
-            {window.neoview.platform === 'darwin' ? 'Quit & install' : 'Restart to install'}
-          </button>
-        </div>
+      {state.phase === 'ready' && (
+        <>
+          <div className="notif-row">
+            <span className="msg">v{state.info.version} downloaded.</span>
+            <button
+              className="btn primary"
+              disabled={commandPending}
+              onClick={() => void install(state.info)}
+            >
+              {window.neoview.platform === 'darwin'
+                ? 'Quit & install'
+                : window.neoview.platform === 'linux'
+                  ? 'Save installer'
+                  : 'Restart to install'}
+            </button>
+          </div>
+          {state.error && <div className="notif-detail">{state.error}</div>}
+        </>
       )}
-      {phase.p === 'saved' && (
+      {state.phase === 'saved' && (
         <span className="msg">Installer saved — run it to finish updating.</span>
       )}
-      <button className="notif-close" aria-label="Dismiss" onClick={dismiss}>
+      <button
+        className="notif-close"
+        aria-label="Dismiss"
+        disabled={commandPending}
+        onClick={dismiss}
+      >
         ✕
       </button>
     </div>

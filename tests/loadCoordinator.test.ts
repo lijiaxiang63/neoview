@@ -10,6 +10,7 @@ import {
   regionExportView,
   type FolderEntry
 } from '../src/renderer/src/files/folderList'
+import { OpenIntentGate } from '../src/shared/openIntents'
 
 // The coordinator exists so that load/scan races are pinned by tests instead
 // of being found in review. Each test here simulates one interleaving of
@@ -39,6 +40,19 @@ const tick = (): Promise<void> => new Promise((r) => setTimeout(r, 0))
 
 const bytes = (n = 8): ArrayBuffer => new ArrayBuffer(n)
 
+function cancelled(): Error {
+  const error = new Error('cancelled')
+  error.name = 'AbortError'
+  return error
+}
+
+function ownedPromise<T>(d: Deferred<T>, signal: AbortSignal): Promise<T> {
+  const onAbort = (): void => d.reject(cancelled())
+  if (signal.aborted) onAbort()
+  else signal.addEventListener('abort', onAbort, { once: true })
+  return d.promise.finally(() => signal.removeEventListener('abort', onAbort))
+}
+
 const entry = (path: string, relDir = ''): FolderEntry => ({
   name: path.split('/').pop() ?? path,
   path,
@@ -64,13 +78,20 @@ interface Harness {
   }
   commits: { volume: string; path: string | null }[]
   failures: string[]
-  reads: { path: string; d: Deferred<OpenedBytes> }[]
-  cappedReads: { path: string; maxBytes: number; d: Deferred<OpenedBytes | null> }[]
-  parses: { name: string; d: Deferred<string> }[]
-  overlays: { name: string; d: Deferred<void> }[]
+  reads: { path: string; signal: AbortSignal; d: Deferred<OpenedBytes> }[]
+  cappedReads: {
+    path: string
+    maxBytes: number
+    signal: AbortSignal
+    d: Deferred<OpenedBytes | null>
+  }[]
+  parses: { name: string; signal: AbortSignal; d: Deferred<string> }[]
+  releasedBases: string[]
+  overlays: { name: string; signal: AbortSignal; d: Deferred<void> }[]
   overlayCommits: string[]
   scanConfirms: number[]
   scanCancels: number[]
+  confirmCount: () => number
   setConfirm: (v: boolean) => void
 }
 
@@ -85,6 +106,8 @@ function makeHarness(
     prefetchMax?: number
     foldFiles?: (files: FolderEntry[]) => FolderEntry[]
     deferAutoLoad?: (entry: FolderEntry) => boolean
+    intentGate?: OpenIntentGate
+    onIntentAccepted?: (token: number) => void
   } = {}
 ): Harness {
   const state: Harness['state'] = {
@@ -98,11 +121,13 @@ function makeHarness(
   const reads: Harness['reads'] = []
   const cappedReads: Harness['cappedReads'] = []
   const parses: Harness['parses'] = []
+  const releasedBases: string[] = []
   const overlays: Harness['overlays'] = []
   const overlayCommits: string[] = []
   const scanConfirms: number[] = []
   const scanCancels: number[] = []
   let confirmResult = opts.confirm ?? true
+  let confirmCalls = 0
 
   const fx: CoordinatorEffects<string> = {
     snapshot: () => ({
@@ -114,21 +139,22 @@ function makeHarness(
         ? (opts.foldFiles ?? ((x): FolderEntry[] => x))(state.folder.files)
         : null
     }),
-    read: (path) => {
+    read: (path, signal) => {
       const d = deferred<OpenedBytes>()
-      reads.push({ path, d })
-      return d.promise
+      reads.push({ path, signal, d })
+      return ownedPromise(d, signal)
     },
-    readWithin: (path, maxBytes) => {
+    readWithin: (path, maxBytes, signal) => {
       const d = deferred<OpenedBytes | null>()
-      cappedReads.push({ path, maxBytes, d })
-      return d.promise
+      cappedReads.push({ path, maxBytes, signal, d })
+      return ownedPromise(d, signal)
     },
-    parseBase: (name) => {
+    parseBase: (name, _bytes, signal) => {
       const d = deferred<string>()
-      parses.push({ name, d })
+      parses.push({ name, signal, d })
       return d.promise
     },
+    releaseBase: (volume) => releasedBases.push(volume),
     commitBase: (volume, path) => {
       commits.push({ volume, path })
       state.sourcePath = path
@@ -137,15 +163,18 @@ function makeHarness(
         co.releasePrefetch()
       }
     },
-    parseAndAddOverlay: async (name, _bytes, isCurrent) => {
+    parseAndAddOverlay: async (name, _bytes, isCurrent, signal) => {
       const basePath = state.sourcePath
       const d = deferred<void>()
-      overlays.push({ name, d })
+      overlays.push({ name, signal, d })
       await d.promise
       if (!isCurrent() || state.sourcePath !== basePath) return
       overlayCommits.push(name)
     },
-    confirmReplaceBase: () => confirmResult,
+    confirmReplaceBase: () => {
+      confirmCalls++
+      return confirmResult
+    },
     raiseLoading: () => {
       state.loading = true
     },
@@ -177,7 +206,9 @@ function makeHarness(
   }
   const co = new LoadCoordinator<string>(fx, {
     prefetchMax: opts.prefetchMax,
-    deferAutoLoad: opts.deferAutoLoad
+    deferAutoLoad: opts.deferAutoLoad,
+    intentGate: opts.intentGate,
+    onIntentAccepted: opts.onIntentAccepted
   })
   return {
     co,
@@ -187,10 +218,12 @@ function makeHarness(
     reads,
     cappedReads,
     parses,
+    releasedBases,
     overlays,
     overlayCommits,
     scanConfirms,
     scanCancels,
+    confirmCount: () => confirmCalls,
     setConfirm: (v) => {
       confirmResult = v
     }
@@ -205,6 +238,7 @@ describe('overlay load ownership', () => {
     void h.co.openBase('base.nii', bytes(), '/x/base.nii')
     await tick()
 
+    expect(h.overlays[0].signal.aborted).toBe(true)
     h.overlays[0].d.resolve()
     await tick()
 
@@ -227,6 +261,7 @@ describe('overlay load ownership', () => {
     })
 
     h.co.onScanBatch(token, '/new', [entry('/new/first.nii')])
+    expect(h.overlays[0].signal.aborted).toBe(true)
     h.overlays[0].d.resolve()
     await tick()
 
@@ -236,7 +271,7 @@ describe('overlay load ownership', () => {
     await tick()
   })
 
-  it('settles loading when a later overlay is discarded after the base commits', async () => {
+  it('settles loading immediately when base commit cancels a later old-base layer', async () => {
     const h = makeHarness()
     h.state.sourcePath = '/old/base.nii'
     void h.co.openBase('replacement.nii', bytes(), '/new/replacement.nii')
@@ -246,7 +281,8 @@ describe('overlay load ownership', () => {
 
     h.parses[0].d.resolve('vol:replacement')
     await tick()
-    expect(h.state.loading).toBe(true)
+    expect(h.overlays[0].signal.aborted).toBe(true)
+    expect(h.state.loading).toBe(false)
     h.overlays[0].d.resolve()
     await tick()
 
@@ -288,18 +324,165 @@ describe('overlay load ownership', () => {
     expect(h.failures).toEqual(['Error: base failed'])
     expect(h.state.loading).toBe(false)
   })
+
+  it('cancels a layer bound to the old base when pending base replacement succeeds', async () => {
+    const h = makeHarness()
+    h.state.sourcePath = '/old/base.nii'
+    void h.co.openBase('replacement.nii', bytes(), '/new/replacement.nii')
+    await tick()
+    void h.co.openOverlay('old-layer.nii', bytes())
+    await tick()
+
+    h.parses[0].d.resolve('vol:replacement')
+    await tick()
+
+    expect(h.overlays[0].signal.aborted).toBe(true)
+    expect(h.commits).toEqual([{ volume: 'vol:replacement', path: '/new/replacement.nii' }])
+    expect(h.state.loading).toBe(false)
+    h.overlays[0].d.reject(new Error('old layer failed'))
+    await tick()
+    expect(h.failures).toEqual([])
+  })
+
+  it('forgets an old-layer failure that completed before pending base replacement succeeds', async () => {
+    const h = makeHarness()
+    h.state.sourcePath = '/old/base.nii'
+    void h.co.openBase('replacement.nii', bytes(), '/new/replacement.nii')
+    await tick()
+    void h.co.openOverlay('old-layer.nii', bytes())
+    await tick()
+
+    h.overlays[0].d.reject(new Error('old layer failed'))
+    await tick()
+    expect(h.state.loading).toBe(true)
+    expect(h.failures).toEqual([])
+
+    h.parses[0].d.resolve('vol:replacement')
+    await tick()
+    expect(h.commits.map((commit) => commit.path)).toEqual(['/new/replacement.nii'])
+    expect(h.failures).toEqual([])
+    expect(h.state.loading).toBe(false)
+  })
 })
 
 describe('base load ownership', () => {
+  it('promotes only newly accepted terminal intents to application ownership', async () => {
+    const accepted: number[] = []
+    const h = makeHarness({ onIntentAccepted: (token) => accepted.push(token) })
+    const picker = deferred<ScanResult | null>()
+    const scanning = h.co.scanFolder(() => picker.promise, 3)
+    expect(accepted).toEqual([])
+
+    const current = h.co.openBase('current.nii', bytes(), '/x/current.nii', 2)
+    expect(accepted).toEqual([2])
+    h.co.reportBaseError(new Error('same intent'), 2)
+    expect(accepted).toEqual([2])
+
+    picker.resolve(null)
+    await scanning
+    h.parses[0].d.resolve('obsolete')
+    await current
+  })
+
+  it('rejects an older user intent that reaches the coordinator after a newer one', async () => {
+    const h = makeHarness()
+    void h.co.openBase('newer.nii', bytes(), '/x/newer.nii', 2)
+    void h.co.openBase('older.nii', bytes(), '/x/older.nii', 1)
+    await tick()
+    expect(h.parses.map((parse) => parse.name)).toEqual(['newer.nii'])
+    h.parses[0].d.resolve('vol:newer')
+    await tick()
+    expect(h.commits).toEqual([{ volume: 'vol:newer', path: '/x/newer.nii' }])
+  })
+
+  it('keeps the accepted intent watermark across coordinator replacement', async () => {
+    const intentGate = new OpenIntentGate()
+    const firstRuntime = makeHarness({ intentGate })
+    const replacementRuntime = makeHarness({ intentGate })
+
+    void firstRuntime.co.openBase('newer.nii', bytes(), '/x/newer.nii', 2)
+    void replacementRuntime.co.openBase('older.nii', bytes(), '/x/older.nii', 1)
+
+    expect(firstRuntime.parses.map((parse) => parse.name)).toEqual(['newer.nii'])
+    expect(replacementRuntime.parses).toHaveLength(0)
+    firstRuntime.parses[0].d.resolve('vol:newer')
+    await tick()
+    expect(firstRuntime.commits).toEqual([{ volume: 'vol:newer', path: '/x/newer.nii' }])
+    expect(replacementRuntime.commits).toEqual([])
+  })
+
+  it('does not accept an old runtime scan batch after a replacement scan starts', async () => {
+    const intentGate = new OpenIntentGate()
+    const oldRuntime = makeHarness({ intentGate })
+    const replacementRuntime = makeHarness({ intentGate })
+    const oldDone = deferred<ScanResult | null>()
+    const replacementDone = deferred<ScanResult | null>()
+    let oldToken = 0
+    let replacementToken = 0
+
+    void oldRuntime.co.scanFolder((token) => {
+      oldToken = token
+      return oldDone.promise
+    }, 10)
+    oldRuntime.co.dispose()
+    void replacementRuntime.co.scanFolder((token) => {
+      replacementToken = token
+      return replacementDone.promise
+    }, 11)
+
+    expect([oldToken, replacementToken]).toEqual([10, 11])
+    replacementRuntime.co.onScanBatch(oldToken, '/old', [entry('/old/a.nii')])
+    expect(replacementRuntime.state.folder).toBeNull()
+    expect(replacementRuntime.scanConfirms).toEqual([])
+
+    replacementRuntime.co.onScanBatch(replacementToken, '/new', [entry('/new/a.nii')])
+    expect(replacementRuntime.state.folder?.root).toBe('/new')
+    expect(replacementRuntime.scanConfirms).toEqual([11])
+    oldDone.resolve(null)
+    replacementDone.resolve(folder(['/new/a.nii'], '/new'))
+    await tick()
+  })
+
+  it('does not let a cancelled newer folder picker suppress an older load', async () => {
+    const h = makeHarness()
+    const picker = deferred<ScanResult | null>()
+    const scanning = h.co.scanFolder(() => picker.promise, 2)
+    await tick()
+    const older = h.co.openBase('older.nii', bytes(), '/x/older.nii', 1)
+    await tick()
+    expect(h.parses.map((parse) => parse.name)).toEqual(['older.nii'])
+
+    picker.resolve(null)
+    await expect(scanning).resolves.toBe(false)
+    h.parses[0].d.resolve('vol:older')
+    await older
+    expect(h.commits).toEqual([{ volume: 'vol:older', path: '/x/older.nii' }])
+  })
+
+  it('drops an older terminal error after a newer intent is accepted', async () => {
+    const h = makeHarness()
+    const current = h.co.openBase('newer.nii', bytes(), '/x/newer.nii', 2)
+    await tick()
+    h.co.reportBaseError(new Error('older read failed'), 1)
+    expect(h.failures).toEqual([])
+
+    h.parses[0].d.resolve('vol:newer')
+    await current
+    expect(h.commits.map((commit) => commit.path)).toEqual(['/x/newer.nii'])
+  })
+
   it('the newest base load owns the view; the older parse discards silently', async () => {
     const h = makeHarness()
     void h.co.openBase('a.nii', bytes(), '/x/a.nii')
     void h.co.openBase('b.nii', bytes(), '/x/b.nii')
     await tick()
     expect(h.parses.map((p) => p.name)).toEqual(['a.nii', 'b.nii'])
+    expect(h.parses[0].signal.aborted).toBe(true)
+    expect(h.parses[1].signal.aborted).toBe(false)
     h.parses[0].d.resolve('vol:a')
     await tick()
     expect(h.commits).toEqual([])
+    expect(h.releasedBases).toEqual(['vol:a'])
     expect(h.state.loading).toBe(true) // the newer load still owns the flag
     h.parses[1].d.resolve('vol:b')
     await tick()
@@ -320,11 +503,88 @@ describe('base load ownership', () => {
     expect(h.commits.map((c) => c.path)).toEqual(['/x/b.nii'])
   })
 
+  it('does not revive an older folder read after a newer explicit base fails', async () => {
+    const h = makeHarness()
+    h.state.folder = folder(['/r/base.nii', '/r/next.nii'])
+    h.state.sourcePath = '/r/base.nii'
+    h.co.requestEntry('/r/next.nii')
+    await tick()
+
+    const explicit = h.co.openBase('replacement.nii', bytes(), '/r/base.nii')
+    await tick()
+    expect(h.reads[0].signal.aborted).toBe(true)
+    expect(h.cappedReads).toHaveLength(0)
+    h.parses[0].d.reject(new Error('replacement failed'))
+    await explicit
+    h.reads[0].d.resolve({ name: 'next.nii', bytes: bytes() })
+    await tick()
+
+    expect(h.parses.map((parse) => parse.name)).toEqual(['replacement.nii'])
+    expect(h.commits).toEqual([])
+    expect(h.failures).toEqual(['Error: replacement failed'])
+  })
+
+  it('does not revive an older folder read after explicit base succeeds at the same path', async () => {
+    const h = makeHarness()
+    h.state.folder = folder(['/r/base.nii', '/r/next.nii'])
+    h.state.sourcePath = '/r/base.nii'
+    h.co.requestEntry('/r/next.nii')
+    await tick()
+
+    const explicit = h.co.openBase('replacement.nii', bytes(), '/r/base.nii')
+    await tick()
+    h.parses[0].d.resolve('vol:replacement')
+    await explicit
+    h.reads[0].d.resolve({ name: 'next.nii', bytes: bytes() })
+    await tick()
+
+    expect(h.parses.map((parse) => parse.name)).toEqual(['replacement.nii'])
+    expect(h.commits).toEqual([{ volume: 'vol:replacement', path: '/r/base.nii' }])
+    expect(h.failures).toEqual([])
+  })
+
+  it('does not report an older folder read error after explicit same-path success', async () => {
+    const h = makeHarness()
+    h.state.folder = folder(['/r/base.nii', '/r/next.nii'])
+    h.state.sourcePath = '/r/base.nii'
+    h.co.requestEntry('/r/next.nii')
+    await tick()
+
+    const explicit = h.co.openBase('replacement.nii', bytes(), '/r/base.nii')
+    await tick()
+    h.parses[0].d.resolve('vol:replacement')
+    await explicit
+    h.reads[0].d.reject(new Error('old read failed'))
+    await tick()
+
+    expect(h.commits).toEqual([{ volume: 'vol:replacement', path: '/r/base.nii' }])
+    expect(h.failures).toEqual([])
+  })
+
   it('declining the region confirm cancels the load without touching state', async () => {
     const h = makeHarness({ confirm: false })
     await h.co.openBase('a.nii', bytes(), '/x/a.nii')
     expect(h.parses).toHaveLength(0)
     expect(h.state.loading).toBe(false)
+  })
+
+  it('declining folder navigation keeps its intent provisional and leaves older work alive', async () => {
+    const accepted: number[] = []
+    const h = makeHarness({ onIntentAccepted: (token) => accepted.push(token) })
+    h.state.folder = folder(['/r/base.nii', '/r/next.nii'])
+    h.state.sourcePath = '/r/base.nii'
+    const older = h.co.openBase('older.nii', bytes(), '/outside/older.nii', 1)
+    await tick()
+
+    h.setConfirm(false)
+    h.co.requestEntry('/r/next.nii', 2)
+
+    expect(accepted).toEqual([1])
+    expect(h.reads).toHaveLength(0)
+    expect(h.parses[0].signal.aborted).toBe(false)
+    h.parses[0].d.resolve('vol:older')
+    await older
+    expect(h.commits).toEqual([{ volume: 'vol:older', path: '/outside/older.nii' }])
   })
 })
 
@@ -338,10 +598,27 @@ describe('coordinator lifecycle', () => {
     h.co.dispose()
     h.co.dispose()
     expect(h.state.loading).toBe(false)
+    expect(h.parses[0].signal.aborted).toBe(true)
 
     h.parses[0].d.resolve('vol:a')
     await tick()
     expect(h.commits).toEqual([])
+    expect(h.failures).toEqual([])
+  })
+
+  it('dispose cancels every active overlay parse', async () => {
+    const h = makeHarness()
+    void h.co.openOverlay('first.nii', bytes())
+    void h.co.openOverlay('second.nii', bytes())
+    await tick()
+
+    h.co.dispose()
+
+    expect(h.overlays.map((overlay) => overlay.signal.aborted)).toEqual([true, true])
+    expect(h.state.loading).toBe(false)
+    h.overlays[0].d.reject(new Error('aborted'))
+    h.overlays[1].d.reject(new Error('aborted'))
+    await tick()
     expect(h.failures).toEqual([])
   })
 
@@ -375,6 +652,7 @@ describe('coordinator lifecycle', () => {
     expect(h.cappedReads[0]?.path).toBe('/r/b.nii')
 
     h.co.dispose()
+    expect(h.cappedReads[0].signal.aborted).toBe(true)
     h.cappedReads[0].d.resolve({ name: 'b.nii', bytes: bytes(32) })
     await tick()
     h.co.requestEntry('/r/b.nii')
@@ -390,6 +668,7 @@ describe('coordinator lifecycle', () => {
     expect(h.cappedReads[0]?.path).toBe('/r/b.nii')
 
     h.co.releasePrefetch()
+    expect(h.cappedReads[0].signal.aborted).toBe(true)
     // The next folder session happens to expose the same absolute paths.
     h.state.folder = folder(['/r/a.nii', '/r/b.nii'])
     h.cappedReads[0].d.resolve({ name: 'old-b.nii', bytes: bytes(32) })
@@ -426,14 +705,94 @@ describe('coordinator lifecycle', () => {
 })
 
 describe('folder navigation', () => {
+  it('reports a folder read failure while an existing layer is parsing', async () => {
+    const h = makeHarness()
+    h.state.folder = folder(['/r/base.nii', '/r/next.nii'])
+    h.state.sourcePath = '/r/base.nii'
+    void h.co.openOverlay('layer.nii', bytes())
+    await tick()
+
+    h.co.requestEntry('/r/next.nii')
+    await tick()
+    h.reads[0].d.reject(new Error('read failed'))
+    await tick()
+
+    expect(h.failures).toEqual(['Error: read failed'])
+    expect(h.overlays[0].signal.aborted).toBe(false)
+    h.overlays[0].d.resolve()
+    await tick()
+    expect(h.failures).toEqual(['Error: read failed'])
+  })
+
+  it('reports a folder read failure when a layer starts during that read', async () => {
+    const h = makeHarness()
+    h.state.folder = folder(['/r/base.nii', '/r/next.nii'])
+    h.state.sourcePath = '/r/base.nii'
+    h.co.requestEntry('/r/next.nii')
+    await tick()
+    void h.co.openOverlay('layer.nii', bytes())
+    await tick()
+
+    h.reads[0].d.reject(new Error('read failed'))
+    await tick()
+
+    expect(h.failures).toEqual(['Error: read failed'])
+    expect(h.overlays[0].signal.aborted).toBe(false)
+    h.overlays[0].d.resolve()
+    await tick()
+    expect(h.failures).toEqual(['Error: read failed'])
+  })
+
+  it('does not drop a navigation request just because a layer is parsing', async () => {
+    const h = makeHarness()
+    h.state.folder = folder(['/r/base.nii', '/r/next.nii'])
+    h.state.sourcePath = '/r/base.nii'
+    void h.co.openOverlay('layer.nii', bytes())
+    await tick()
+
+    h.co.requestEntry('/r/next.nii')
+    await tick()
+    expect(h.reads[0]?.path).toBe('/r/next.nii')
+    h.reads[0].d.resolve({ name: 'next.nii', bytes: bytes() })
+    await tick()
+
+    expect(h.overlays[0].signal.aborted).toBe(true)
+    h.parses[0].d.resolve('vol:next')
+    h.overlays[0].d.reject(new Error('aborted'))
+    await tick()
+    expect(h.commits.map((commit) => commit.path)).toEqual(['/r/next.nii'])
+    expect(h.failures).toEqual([])
+  })
+
+  it('does not discard bytes when a layer starts during a folder read', async () => {
+    const h = makeHarness()
+    h.state.folder = folder(['/r/base.nii', '/r/next.nii'])
+    h.state.sourcePath = '/r/base.nii'
+    h.co.requestEntry('/r/next.nii')
+    await tick()
+    void h.co.openOverlay('layer.nii', bytes())
+    await tick()
+
+    h.reads[0].d.resolve({ name: 'next.nii', bytes: bytes() })
+    await tick()
+
+    expect(h.parses[0]?.name).toBe('next.nii')
+    expect(h.overlays[0].signal.aborted).toBe(true)
+    h.parses[0].d.resolve('vol:next')
+    h.overlays[0].d.reject(new Error('aborted'))
+    await tick()
+    expect(h.commits.map((commit) => commit.path)).toEqual(['/r/next.nii'])
+    expect(h.failures).toEqual([])
+  })
+
   it('holding a key coalesces: bytes read for a superseded target drop unparsed', async () => {
     const h = makeHarness()
     h.state.folder = folder(['/r/a.nii', '/r/b.nii', '/r/c.nii', '/r/d.nii'])
     h.co.requestEntry('/r/b.nii')
     await tick()
     h.co.requestEntry('/r/d.nii') // target moves while b's read is in flight
-    h.reads[0].d.resolve({ name: 'b.nii', bytes: bytes() })
     await tick()
+    expect(h.reads[0].signal.aborted).toBe(true)
     expect(h.parses).toHaveLength(0) // b was never parsed
     expect(h.reads[1]?.path).toBe('/r/d.nii')
     h.reads[1].d.resolve({ name: 'd.nii', bytes: bytes() })
@@ -444,6 +803,50 @@ describe('folder navigation', () => {
     expect(h.state.loading).toBe(false)
   })
 
+  it('reuses one discard authorization while dirty key targets coalesce', async () => {
+    const h = makeHarness()
+    h.state.folder = folder(['/r/a.nii', '/r/b.nii', '/r/c.nii', '/r/d.nii'])
+    h.state.sourcePath = '/r/a.nii'
+    h.co.requestEntry('/r/b.nii', 1)
+    await tick()
+
+    // If the later targets asked again they would now decline. They instead
+    // share the first accepted decision until this queue-of-one pump settles.
+    h.setConfirm(false)
+    h.co.requestEntry('/r/c.nii', 2)
+    h.co.requestEntry('/r/d.nii', 3)
+    await tick()
+
+    expect(h.confirmCount()).toBe(1)
+    expect(h.reads.map((read) => read.path)).toEqual(['/r/b.nii', '/r/d.nii'])
+    expect(h.reads[0].signal.aborted).toBe(true)
+    h.reads[1].d.resolve({ name: 'd.nii', bytes: bytes() })
+    await tick()
+    expect(h.parses.map((parse) => parse.name)).toEqual(['d.nii'])
+    h.parses[0].d.resolve('vol:d')
+    await tick()
+    expect(h.commits.map((commit) => commit.path)).toEqual(['/r/d.nii'])
+  })
+
+  it('restarts a cancelled read when its target returns A to B to A', async () => {
+    const h = makeHarness()
+    h.state.folder = folder(['/r/a.nii', '/r/b.nii'])
+    h.co.requestEntry('/r/a.nii')
+    await tick()
+
+    h.co.requestEntry('/r/b.nii')
+    h.co.requestEntry('/r/a.nii')
+    await tick()
+
+    expect(h.reads.map((read) => read.path)).toEqual(['/r/a.nii', '/r/a.nii'])
+    expect(h.reads.map((read) => read.signal.aborted)).toEqual([true, false])
+    h.reads[1].d.resolve({ name: 'a.nii', bytes: bytes() })
+    await tick()
+    h.parses[0].d.resolve('vol:a')
+    await tick()
+    expect(h.commits).toEqual([{ volume: 'vol:a', path: '/r/a.nii' }])
+  })
+
   it('navigating back to the loaded file discards the middle parse and rests', async () => {
     const h = makeHarness()
     h.state.folder = folder(['/r/a.nii', '/r/b.nii'])
@@ -452,11 +855,27 @@ describe('folder navigation', () => {
     await tick()
     h.reads[0].d.resolve({ name: 'b.nii', bytes: bytes() })
     await tick()
+    h.setConfirm(false)
     h.co.requestEntry('/r/a.nii') // back to the already-loaded file mid-parse
+    expect(h.parses[0].signal.aborted).toBe(true)
     h.parses[0].d.resolve('vol:b')
     await tick()
     expect(h.commits).toEqual([]) // b never flashed
     expect(h.state.loading).toBe(false) // the discard settled its own flag
+  })
+
+  it('clicking the active row is inert even when replacement confirmation would decline', async () => {
+    const accepted: number[] = []
+    const h = makeHarness({ confirm: false, onIntentAccepted: (token) => accepted.push(token) })
+    h.state.folder = folder(['/r/a.nii', '/r/b.nii'])
+    h.state.sourcePath = '/r/a.nii'
+
+    h.co.requestEntry('/r/a.nii', 4)
+    await tick()
+
+    expect(h.reads).toHaveLength(0)
+    expect(h.parses).toHaveLength(0)
+    expect(accepted).toEqual([])
   })
 
   it('a corrupt file the user scrubbed past reports nothing and settles', async () => {
@@ -467,6 +886,7 @@ describe('folder navigation', () => {
     h.reads[0].d.resolve({ name: 'b.nii', bytes: bytes() })
     await tick()
     h.co.requestEntry('/r/c.nii') // moved on while b parses
+    expect(h.parses[0].signal.aborted).toBe(true)
     h.parses[0].d.reject(new Error('corrupt'))
     await tick()
     expect(h.failures).toEqual([]) // nobody is waiting on b
@@ -476,6 +896,29 @@ describe('folder navigation', () => {
     h.parses[1].d.resolve('vol:c')
     await tick()
     expect(h.commits.map((c) => c.path)).toEqual(['/r/c.nii'])
+  })
+
+  it('restarts an aborted navigation when the target returns A to B to A', async () => {
+    const h = makeHarness()
+    h.state.folder = folder(['/r/a.nii', '/r/b.nii'])
+    h.co.requestEntry('/r/a.nii')
+    h.reads[0].d.resolve({ name: 'a.nii', bytes: bytes() })
+    await tick()
+
+    h.co.requestEntry('/r/b.nii')
+    h.co.requestEntry('/r/a.nii')
+    expect(h.parses[0].signal.aborted).toBe(true)
+    h.parses[0].d.reject(new Error('aborted'))
+    await tick()
+
+    expect(h.failures).toEqual([])
+    expect(h.reads[1]?.path).toBe('/r/a.nii')
+    h.reads[1].d.resolve({ name: 'a.nii', bytes: bytes() })
+    await tick()
+    expect(h.parses[1].signal.aborted).toBe(false)
+    h.parses[1].d.resolve('vol:a')
+    await tick()
+    expect(h.commits).toEqual([{ volume: 'vol:a', path: '/r/a.nii' }])
   })
 
   it('same-root scan confirmation cannot reuse an old in-flight read of the same path', async () => {
@@ -654,6 +1097,7 @@ describe('folder scans', () => {
     // The first streamed batch confirms the scan: the parse is invalidated
     // and its ownerless loading flag settles now.
     h.co.onScanBatch(token, '/new', [entry('/new/a.nii')])
+    expect(h.parses[0].signal.aborted).toBe(true)
     expect(h.state.loading).toBe(false)
     expect(h.state.folder?.root).toBe('/new')
     expect(h.reads[0]?.path).toBe('/new/a.nii') // auto-load kicked off
@@ -702,6 +1146,25 @@ describe('folder scans', () => {
     await tick()
     expect(h.commits).toEqual([])
     expect(h.state.folder?.root).toBe('/empty') // not cleared by the stale parse
+  })
+
+  it('asks only once when the first-file auto-load is declined across later scan results', async () => {
+    const h = makeHarness({ confirm: false })
+    const done = deferred<ScanResult | null>()
+    let token = 0
+    const scanning = h.co.scanFolder((value) => {
+      token = value
+      return done.promise
+    }, 5)
+
+    h.co.onScanBatch(token, '/new', [entry('/new/a.nii')])
+    h.co.onScanBatch(token, '/new', [entry('/new/b.nii')])
+    done.resolve(folder(['/new/a.nii', '/new/b.nii'], '/new'))
+    await scanning
+
+    expect(h.confirmCount()).toBe(1)
+    expect(h.reads).toHaveLength(0)
+    expect(h.state.folder?.root).toBe('/new')
   })
 
   it('declining the replace confirm leaves a running scan untouched', async () => {
@@ -863,37 +1326,32 @@ describe('folder scans', () => {
     expect(h.reads.map((r) => r.path)).toEqual(['/r/a.mask.nii.gz'])
   })
 
-  it('a pick on the old list before the scan confirms does not eat the new folder auto-load', async () => {
-    const h = makeHarness()
+  it('orders an old-list pick after and cancels a still-provisional folder scan', async () => {
+    const accepted: number[] = []
+    const h = makeHarness({ onIntentAccepted: (token) => accepted.push(token) })
     h.state.folder = folder(['/old/a.nii', '/old/b.nii'], '/old')
     h.state.sourcePath = '/old/a.nii'
-    let token = 0
     const scanDone = deferred<ScanResult | null>()
-    void h.co.scanFolder((t) => {
-      token = t
-      return scanDone.promise
-    })
+    void h.co.scanFolder(() => scanDone.promise, 10)
     // No batch has arrived yet, so the OLD folder's list is still shown and
-    // interactive — the user clicks a row in it.
-    h.co.requestEntry('/old/b.nii')
+    // interactive. Its later click wins the shared total intent order.
+    h.co.requestEntry('/old/b.nii', 11)
+    expect(accepted).toEqual([11])
+    expect(h.scanCancels).toEqual([10])
+    expect(h.state.scanning).toBe(false)
     expect(h.reads[0]?.path).toBe('/old/b.nii')
-    // The new folder's first batch confirms the scan: the old pick is
-    // invalidated, and the auto-load — which that pick must NOT have
-    // disarmed — targets the new folder's first file.
-    h.co.onScanBatch(token, '/new', [entry('/new/x.nii')])
-    expect(h.state.folder?.root).toBe('/new')
+    // A batch already queued in main is now stale and cannot replace the list.
+    h.co.onScanBatch(10, '/new', [entry('/new/x.nii')])
+    expect(h.state.folder?.root).toBe('/old')
     h.reads[0].d.resolve({ name: 'b.nii', bytes: bytes() })
     await tick()
-    expect(h.parses).toHaveLength(0) // the stale pick's bytes drop unparsed
-    expect(h.reads[1]?.path).toBe('/new/x.nii')
-    h.reads[1].d.resolve({ name: 'x.nii', bytes: bytes() })
+    h.parses[0].d.resolve('vol:b')
     await tick()
-    h.parses[0].d.resolve('vol:x')
-    await tick()
-    expect(h.commits.map((c) => c.path)).toEqual(['/new/x.nii'])
+    expect(h.commits.map((c) => c.path)).toEqual(['/old/b.nii'])
     scanDone.resolve({ root: '/new', files: [entry('/new/x.nii')], truncated: false })
     await tick()
-    expect(h.commits.map((c) => c.path)).toEqual(['/new/x.nii']) // final adds nothing
+    expect(h.state.folder?.root).toBe('/old')
+    expect(h.commits.map((c) => c.path)).toEqual(['/old/b.nii'])
   })
 
   it('a pick made while the auto-load waits disarms it instead of being overridden', async () => {

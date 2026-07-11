@@ -1,6 +1,8 @@
 import { useStore as useZustandStore, type StoreApi, type UseBoundStore } from 'zustand'
 import { createStore } from 'zustand/vanilla'
+import { OpenIntentGate } from '../../shared/openIntents'
 import type { Volume } from './volume/types'
+import { releaseFrameTextureSource } from './volume/loadVolume'
 import { sortEntries, type FolderEntry } from './files/folderList'
 import { loadViewPref, saveViewPref, type ViewPref } from './files/viewPrefs'
 import { defaultLayerSettings, guessOverlayKind, type OverlayLayer } from './slicing/overlay'
@@ -35,12 +37,14 @@ import {
   computeRegionStats,
   defaultRegionColor,
   eraseRegion,
+  eraseRegionInto,
   paintStroke,
   regionBoundingBox,
   type Region
 } from './segmentation/regions'
 import {
   applyPatchValues,
+  BulkChangeCollector,
   ChangeCollector,
   patchFromErase,
   pushEntry,
@@ -134,6 +138,9 @@ export interface FolderState {
 
 export interface AppState {
   volume: Volume | null
+  /** Monotonic identity for the loaded base. Lightweight async owners use it
+   * instead of retaining the potentially large Volume object. */
+  volumeSession: number
   /** Absolute path of the opened base file (null for unknown origins). */
   sourcePath: string | null
   /** Opened folder; cleared when a base volume from outside it loads. */
@@ -193,6 +200,9 @@ export interface AppState {
   regionOpacity: number
   /** True while region edits exist that have not been exported. */
   segDirty: boolean
+  /** Monotonic within one loaded volume. Every export captures this value so
+   * an older async write cannot mark newer edits as saved. */
+  segRevision: number
   /** Source paths whose regions were exported this session. Marks file-panel
    * rows even when the export file lands outside the opened folder. */
   exportedPaths: ReadonlySet<string>
@@ -220,6 +230,7 @@ export interface AppState {
   dismissError: () => void
   setCross: (ijk: [number, number, number]) => void
   setFrame: (t: number) => void
+  refreshRegionStats: () => void
   setRange: (lo: number, hi: number) => void
   applyPreset: (p: Exclude<Preset, 'custom'>) => void
   setHover: (h: HoverInfo | null) => void
@@ -264,8 +275,8 @@ export interface AppState {
   /** An export finished writing. Both arguments are captured when the export
    * STARTS: the write is async, and reading current state here instead would
    * attribute the export to whatever file the user navigated to meanwhile.
-   * Clears the dirty flag only while `volume` is still the loaded one. */
-  markExported: (volume: Volume, sourcePath: string | null) => void
+   * Clears the dirty flag only while both `volume` and `revision` still match. */
+  markExported: (volume: Volume, sourcePath: string | null, revision: number) => void
   /** Append a toast to the stack; returns its id so callers can dismiss it. */
   pushToast: (t: ToastState) => number
   dismissToast: (id: number) => void
@@ -296,7 +307,12 @@ export interface AppStoreDeps {
   timers?: AppStoreTimers
 }
 
-export type AppStore = UseBoundStore<StoreApi<AppState>> & { dispose: () => void }
+export type AppStore = UseBoundStore<StoreApi<AppState>> & {
+  dispose: () => void
+  /** Survives renderer-runtime replacement so late outer I/O cannot revive an
+   * intent that an earlier runtime already superseded. */
+  openIntentGate: OpenIntentGate
+}
 
 const identityState = (state: AppState): AppState => state
 
@@ -307,6 +323,7 @@ export const BRIGHTNESS_MAX = 1
 export const BRIGHTNESS_DEFAULT = 0.45
 export const BRUSH_RADIUS_MIN = 1
 export const BRUSH_RADIUS_MAX = 30
+export const REGION_STATS_DEBOUNCE_MS = 180
 
 export const SLAB_DEPTH_DEFAULT = 9
 /** Display resolution of the panel's box histogram. */
@@ -430,11 +447,113 @@ function createAppState(
   let previewTimer: ReturnType<typeof setTimeout> | undefined
   let previewPending = false
   let previewToken = 0
+  let regionStatsTimer: ReturnType<typeof setTimeout> | undefined
+  let regionStatsPendingAfterStroke = false
+  let regionStatsCache: {
+    volume: Volume
+    labelMap: Uint16Array
+    revision: number
+    frames: Map<number, Map<number, Pick<Region, 'voxelCount' | 'stats'>>>
+  } | null = null
 
   function clearPrefSaveTimer(): void {
     if (prefSaveTimer === undefined) return
     timers.clearTimeout(prefSaveTimer)
     prefSaveTimer = undefined
+  }
+
+  function clearRegionStatsTimer(): void {
+    if (regionStatsTimer === undefined) return
+    timers.clearTimeout(regionStatsTimer)
+    regionStatsTimer = undefined
+  }
+
+  function refreshRegionStatsNow(): void {
+    clearRegionStatsTimer()
+    if (strokeCollector) {
+      regionStatsPendingAfterStroke = true
+      return
+    }
+    const s = get()
+    if (!s.volume || !s.labelMap || s.regions.length === 0) return
+    const cached = cachedRegionStats(s.volume, s.labelMap, s.labelMapRev, s.frame, s.regions)
+    if (cached) {
+      set({ regions: cached })
+      return
+    }
+    const regions = computeRegionStats(
+      s.volume,
+      s.labelMap,
+      s.regions,
+      frameOffsetOf(s.volume, s.frame)
+    )
+    cacheRegionStats(s.volume, s.labelMap, s.labelMapRev, s.frame, regions)
+    set({ regions })
+  }
+
+  function cachedRegionStats(
+    volume: Volume,
+    labelMap: Uint16Array,
+    revision: number,
+    frame: number,
+    regions: readonly Region[]
+  ): Region[] | null {
+    const cache = regionStatsCache
+    if (
+      !cache ||
+      cache.volume !== volume ||
+      cache.labelMap !== labelMap ||
+      cache.revision !== revision
+    ) {
+      return null
+    }
+    const byId = cache.frames.get(frame)
+    if (!byId || regions.some((region) => !byId.has(region.id))) return null
+    cache.frames.delete(frame)
+    cache.frames.set(frame, byId)
+    return regions.map((region) => ({ ...region, ...byId.get(region.id)! }))
+  }
+
+  function cacheRegionStats(
+    volume: Volume,
+    labelMap: Uint16Array,
+    revision: number,
+    frame: number,
+    regions: readonly Region[]
+  ): void {
+    if (
+      !regionStatsCache ||
+      regionStatsCache.volume !== volume ||
+      regionStatsCache.labelMap !== labelMap ||
+      regionStatsCache.revision !== revision
+    ) {
+      regionStatsCache = { volume, labelMap, revision, frames: new Map() }
+    }
+    const byId = new Map<number, Pick<Region, 'voxelCount' | 'stats'>>()
+    for (const region of regions) {
+      byId.set(region.id, { voxelCount: region.voxelCount, stats: region.stats })
+    }
+    regionStatsCache.frames.delete(frame)
+    regionStatsCache.frames.set(frame, byId)
+    while (regionStatsCache.frames.size > 16) {
+      const oldest = regionStatsCache.frames.keys().next().value
+      if (oldest === undefined) break
+      regionStatsCache.frames.delete(oldest)
+    }
+  }
+
+  function scheduleRegionStatsRefresh(): void {
+    clearRegionStatsTimer()
+    if (strokeCollector) {
+      regionStatsPendingAfterStroke = true
+      return
+    }
+    const s = get()
+    if (!s.volume || !s.labelMap || s.regions.length === 0) return
+    regionStatsTimer = timers.setTimeout(() => {
+      regionStatsTimer = undefined
+      refreshRegionStatsNow()
+    }, REGION_STATS_DEBOUNCE_MS)
   }
 
   /** Write the pending capture immediately (idempotent). Runs on the timer,
@@ -666,9 +785,11 @@ function createAppState(
     // edits into retained snapshots). Stats are recomputed below either way.
     const snapshot = entry.regions ? entry.regions[dir === 'undo' ? 'before' : 'after'] : s.regions
     const list = snapshot.map((r) => s.regions.find((c) => c.id === r.id) ?? r)
+    if (labelMap) clearRegionStatsTimer()
     const regions = labelMap
       ? computeRegionStats(vol, labelMap, list, frameOffsetOf(vol, s.frame))
       : list
+    if (labelMap) cacheRegionStats(vol, labelMap, s.labelMapRev + 1, s.frame, regions)
     const stillThere = (id: number | null): boolean =>
       id !== null && regions.some((r) => r.id === id)
     // A commit rewrote its region's saved snapshot; put the matching side
@@ -692,6 +813,7 @@ function createAppState(
       activeRegionId: stillThere(s.activeRegionId) ? s.activeRegionId : null,
       editRegionId: stillThere(s.editRegionId) ? s.editRegionId : null,
       segDirty: true,
+      segRevision: s.segRevision + 1,
       // The popped entry is what a lingering undo toast pointed at; other
       // toasts (export reveals) are unaffected by history moves.
       toasts: dropUndoToasts(s.toasts)
@@ -734,6 +856,7 @@ function createAppState(
 
   const state: AppState = {
     volume: null,
+    volumeSession: 0,
     sourcePath: null,
     folder: null,
     folderLoading: false,
@@ -772,6 +895,7 @@ function createAppState(
     brushRadius: 4,
     regionOpacity: 0.5,
     segDirty: false,
+    segRevision: 0,
     exportedPaths: new Set<string>(),
     undoStack: [],
     redoStack: [],
@@ -811,10 +935,15 @@ function createAppState(
     setPendingFilePath: (p) => set({ pendingFilePath: p }),
 
     setVolume: (v, sourcePath = null, settleLoad = true) => {
+      const previousVolume = get().volume
+      if (previousVolume && previousVolume !== v) releaseFrameTextureSource(previousVolume)
       cancelScheduledPreview()
+      clearRegionStatsTimer()
+      regionStatsCache = null
       // A missed pointer-up must not carry stamped voxels across the base
       // change (the collector indexes into the OLD grid).
       strokeCollector = null
+      regionStatsPendingAfterStroke = false
       // The worker's mirrored grids belong to the outgoing dataset; left
       // alone they would pin its buffers until the next big preview.
       if (!disposed) previewClient.reset()
@@ -838,6 +967,7 @@ function createAppState(
       }
       set((s) => ({
         volume: v,
+        volumeSession: s.volumeSession + 1,
         sourcePath,
         // A base volume from outside the opened folder replaces it entirely:
         // the file list only makes sense while browsing within that folder.
@@ -870,6 +1000,7 @@ function createAppState(
         preview: null,
         segParams: defaultSegParams(),
         segDirty: false,
+        segRevision: 0,
         undoStack: [],
         redoStack: [],
         toasts: []
@@ -938,14 +1069,15 @@ function createAppState(
       const vol = s.volume
       if (!vol) return
       const frame = Math.min(Math.max(t, 0), vol.frames - 1)
-      // Region stats are per-frame; keep them in step with the slices.
-      const regions =
-        frame !== s.frame && s.labelMap && s.regions.length > 0
-          ? computeRegionStats(vol, s.labelMap, s.regions, frameOffsetOf(vol, frame))
-          : s.regions
-      set({ frame, regions })
+      if (frame === s.frame) return
+      set({ frame })
+      // Continuous playback and slider drags collapse into one full-map scan
+      // after the frame target settles.
+      scheduleRegionStatsRefresh()
       if (s.segBox) schedulePreview()
     },
+
+    refreshRegionStats: refreshRegionStatsNow,
 
     setRange: (lo, hi) => {
       set({ range: { lo, hi }, activePreset: 'custom' })
@@ -1087,12 +1219,17 @@ function createAppState(
       const labelMap = s.labelMap ?? new Uint16Array(n)
       // Re-edit flow: the commit replaces the target region's voxels and
       // keeps its identity (name/color/visibility).
-      const editing = s.editRegionId !== null && s.regions.some((r) => r.id === s.editRegionId)
+      const editingRegion =
+        s.editRegionId === null ? undefined : s.regions.find((r) => r.id === s.editRegionId)
+      const editing = editingRegion !== undefined
       const id = editing ? (s.editRegionId as number) : s.nextRegionId
-      const changes = new ChangeCollector()
+      const changes = new BulkChangeCollector(
+        labelMap.length,
+        s.preview.voxels + (editingRegion?.voxelCount ?? 0),
+        editing
+      )
       if (editing) {
-        const erased = eraseRegion(labelMap, id)
-        for (let i = 0; i < erased.length; i++) changes.record(erased[i], id)
+        eraseRegionInto(labelMap, id, changes)
       }
       applyMaskAsRegion(labelMap, vol.dims, s.preview.bounds, s.preview.mask, id, changes)
       const list = editing
@@ -1110,7 +1247,9 @@ function createAppState(
           ]
       // Committing can overwrite voxels of earlier regions, so all stats
       // refresh together.
+      clearRegionStatsTimer()
       const regions = computeRegionStats(vol, labelMap, list, frameOffsetOf(vol, s.frame))
+      cacheRegionStats(vol, labelMap, s.labelMapRev + 1, s.frame, regions)
       // Remember what this region was cut from, so re-editing restores the
       // drawn box and tuned parameters. The old/new pair rides the history
       // entry so undo/redo keep the snapshot in step with the voxels.
@@ -1139,6 +1278,7 @@ function createAppState(
         editRegionId: null,
         segTool: 'crosshair',
         segDirty: true,
+        segRevision: s.segRevision + 1,
         undoStack: pushEntry(s.undoStack, entry),
         redoStack: [],
         toasts: dropUndoToasts(s.toasts)
@@ -1158,7 +1298,7 @@ function createAppState(
       // One collector per stroke: created on the first stamp, consumed by
       // endStroke into a single undo entry.
       if (!strokeCollector) strokeCollector = new ChangeCollector()
-      paintStroke(
+      const changed = paintStroke(
         s.labelMap,
         vol.dims,
         plane,
@@ -1170,7 +1310,15 @@ function createAppState(
         erase,
         strokeCollector
       )
-      set({ labelMapRev: s.labelMapRev + 1, segDirty: true })
+      if (changed === 0) return
+      // A frame-settle timer must never scan the full label map in the middle
+      // of a long gesture; pointer-up performs the one authoritative refresh.
+      clearRegionStatsTimer()
+      set({
+        labelMapRev: s.labelMapRev + 1,
+        segDirty: true,
+        segRevision: s.segRevision + 1
+      })
     },
 
     endStroke: () => {
@@ -1178,27 +1326,33 @@ function createAppState(
       const vol = s.volume
       const patch = s.labelMap && strokeCollector ? strokeCollector.finish(s.labelMap) : null
       strokeCollector = null
+      const refreshAfterStroke = regionStatsPendingAfterStroke
+      regionStatsPendingAfterStroke = false
       if (!vol || !s.labelMap) return
+      // Pointer-up is common after an erase that touched no owned voxel. It
+      // must not rescan the entire label map unless a frame change explicitly
+      // deferred its stats while the gesture was open.
+      if (!patch) {
+        if (refreshAfterStroke) refreshRegionStatsNow()
+        return
+      }
       if (s.regions.length === 0) {
         // No region can own the stroke (they were all removed mid-gesture
         // by another input): every label-map change must be in history or
         // reverted, so revert — orphaned voxels would silently join the
         // next region to reuse the id.
-        if (patch) {
-          applyPatchValues(s.labelMap, patch.indices, patch.before)
-          set({ labelMapRev: s.labelMapRev + 1 })
-        }
+        applyPatchValues(s.labelMap, patch.indices, patch.before)
+        set({ labelMapRev: s.labelMapRev + 1 })
         return
       }
+      clearRegionStatsTimer()
+      const regions = computeRegionStats(vol, s.labelMap, s.regions, frameOffsetOf(vol, s.frame))
+      cacheRegionStats(vol, s.labelMap, s.labelMapRev, s.frame, regions)
       set({
-        regions: computeRegionStats(vol, s.labelMap, s.regions, frameOffsetOf(vol, s.frame)),
-        ...(patch
-          ? {
-              undoStack: pushEntry(s.undoStack, { patch }),
-              redoStack: [],
-              toasts: dropUndoToasts(s.toasts)
-            }
-          : {})
+        regions,
+        undoStack: pushEntry(s.undoStack, { patch }),
+        redoStack: [],
+        toasts: dropUndoToasts(s.toasts)
       })
       // Painting changes region shapes; a region-constrained preview must follow.
       if (s.segBox && s.segParams.constraint.type === 'region') schedulePreview()
@@ -1279,6 +1433,7 @@ function createAppState(
         return {
           regions: patchList(s.regions),
           segDirty: true,
+          segRevision: s.segRevision + 1,
           undoStack: s.undoStack.map(patchEntry),
           // An edit forks history like paint/commit/delete: a surviving redo
           // could re-delete or resurrect regions the user no longer expects.
@@ -1309,6 +1464,7 @@ function createAppState(
         undoStack: pushEntry(s.undoStack, entry),
         redoStack: [],
         segDirty: true,
+        segRevision: s.segRevision + 1,
         toasts: [
           ...dropUndoToasts(s.toasts),
           {
@@ -1332,11 +1488,13 @@ function createAppState(
 
     redo: () => applyHistory('redo'),
 
-    markExported: (vol, path) =>
+    markExported: (vol, path, revision) =>
       set((s) => ({
         // A volume swapped in mid-write keeps its own dirty state: this
-        // export saved the OLD volume's regions, not the new one's.
-        segDirty: s.volume === vol ? false : s.segDirty,
+        // export saved the OLD volume's regions, not the new one's. Likewise,
+        // a newer edit on the same volume must not be cleared by an older
+        // export completing late.
+        segDirty: s.volume === vol && s.segRevision === revision ? false : s.segDirty,
         exportedPaths:
           path !== null && !s.exportedPaths.has(path)
             ? new Set(s.exportedPaths).add(path)
@@ -1356,6 +1514,10 @@ function createAppState(
     if (disposed) return
     // Persistence is part of teardown: do not silently drop the last edit.
     flushPrefSave()
+    clearRegionStatsTimer()
+    regionStatsCache = null
+    const volume = get().volume
+    if (volume) releaseFrameTextureSource(volume)
     disposed = true
     if (previewTimer !== undefined) {
       timers.clearTimeout(previewTimer)
@@ -1364,6 +1526,7 @@ function createAppState(
     previewPending = false
     previewToken++
     strokeCollector = null
+    regionStatsPendingAfterStroke = false
     previewClient.dispose()
     pagehideTarget?.removeEventListener('pagehide', flushPrefSave)
   }
@@ -1383,6 +1546,7 @@ function createAppState(
 }
 
 export function createAppStore(deps: AppStoreDeps = {}): AppStore {
+  const openIntentGate = new OpenIntentGate()
   const lifecycle: StoreLifecycle = {
     prefStorage:
       deps.storage === undefined
@@ -1439,7 +1603,7 @@ export function createAppStore(deps: AppStoreDeps = {}): AppStore {
     for (const unsubscribe of [...subscriptions]) unsubscribe()
     lifecycle.dispose()
   }
-  return Object.assign(store, { dispose })
+  return Object.assign(store, { dispose, openIntentGate })
 }
 
 /** Runtime singleton: components keep the existing bound-hook API. */

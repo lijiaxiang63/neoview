@@ -198,3 +198,53 @@ export function buildTexData(
   }
   return dst
 }
+
+export interface CooperativeTextureOptions {
+  /** Stop an obsolete target before doing another chunk. */
+  cancelled(): boolean
+  /** Yield to input/rendering between bounded chunks. */
+  yieldControl(): Promise<void>
+  chunkTexels?: number
+}
+
+/** Large non-shared frames cannot be transferred to a worker without first
+ * copying the whole frame on the UI thread. Build only the bounded texture
+ * output instead, yielding between chunks so input and paint work can run;
+ * a newer target can cancel at every yield without retaining a frame copy. */
+export async function buildTexDataCooperative(
+  vol: Volume,
+  frame: number,
+  plan: TexPlan,
+  options: CooperativeTextureOptions
+): Promise<Uint16Array | null> {
+  if (options.cancelled()) return null
+  const [nx, ny] = [vol.dims[0], vol.dims[1]]
+  const [tx, ty, tz] = plan.texDims
+  const [sx, sy, sz] = plan.stride
+  const count = tx * ty * tz
+  const dst = new Uint16Array(count)
+  const { raw, slope, inter, stats } = vol
+  const span = Math.max(stats.dataMax - stats.dataMin, 1e-12)
+  const lo = stats.dataMin
+  const frameOff = frame * nx * ny * vol.dims[2]
+  const chunkTexels = Math.max(1, Math.floor(options.chunkTexels ?? 262_144))
+  let chunk = 0
+  let p = 0
+  for (let k = 0; k < tz; k++) {
+    const kOff = frameOff + k * sz * nx * ny
+    for (let j = 0; j < ty; j++) {
+      let idx = kOff + j * sy * nx
+      for (let i = 0; i < tx; i++, idx += sx, p++) {
+        const v = (raw[idx] * slope + inter - lo) / span
+        dst[p] = floatToHalf(Number.isFinite(v) ? v : 0)
+        chunk++
+        if (chunk < chunkTexels || p + 1 === count) continue
+        if (options.cancelled()) return null
+        chunk = 0
+        await options.yieldControl()
+        if (options.cancelled()) return null
+      }
+    }
+  }
+  return dst
+}

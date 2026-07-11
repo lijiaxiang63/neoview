@@ -8,6 +8,10 @@ import {
 import type { RenderSchedulerCallbacks } from '../src/renderer/src/render3d/renderScheduler'
 import type { Quality } from '../src/renderer/src/render3d/types'
 import {
+  WorkerFrameTextureBuilder,
+  type FrameTextureBuilder
+} from '../src/renderer/src/render3d/frameTextureClient'
+import {
   LABEL_REBUILD_MS,
   VolumeViewController,
   type VolumeCamera,
@@ -99,6 +103,76 @@ class ManualTimers {
   }
 }
 
+class ManualFrameTextureBuilder implements FrameTextureBuilder {
+  readonly jobs: Array<{ frame: number; callback: (data: Uint16Array | null) => void }> = []
+  readonly abandon = vi.fn()
+  readonly reset = vi.fn()
+  readonly dispose = vi.fn()
+
+  request(
+    _volume: Volume,
+    frame: number,
+    _plan: TexPlan,
+    callback: (data: Uint16Array | null) => void
+  ): boolean {
+    this.jobs.push({ frame, callback })
+    return true
+  }
+}
+
+class UnavailableFrameTextureBuilder implements FrameTextureBuilder {
+  readonly abandon = vi.fn()
+  readonly reset = vi.fn()
+  readonly dispose = vi.fn()
+
+  request(): boolean {
+    return false
+  }
+}
+
+class ReowningManualFrameTextureBuilder implements FrameTextureBuilder {
+  readonly requested: number[] = []
+  active: { frame: number; callback: (data: Uint16Array | null) => void } | null = null
+  pending: { frame: number; callback: (data: Uint16Array | null) => void } | null = null
+  readonly abandon = vi.fn(() => {
+    this.pending = null
+    if (this.active) this.active.callback = () => undefined
+  })
+  readonly reset = vi.fn(() => {
+    this.active = null
+    this.pending = null
+  })
+  readonly dispose = vi.fn()
+
+  request(
+    _volume: Volume,
+    frame: number,
+    _plan: TexPlan,
+    callback: (data: Uint16Array | null) => void
+  ): boolean {
+    this.requested.push(frame)
+    if (this.active?.frame === frame) {
+      this.active.callback = callback
+      this.pending = null
+    } else if (this.pending?.frame === frame) {
+      this.pending.callback = callback
+    } else if (this.active) {
+      this.pending = { frame, callback }
+    } else {
+      this.active = { frame, callback }
+    }
+    return true
+  }
+
+  complete(data: Uint16Array): void {
+    const job = this.active
+    if (!job) throw new Error('expected an active frame build')
+    this.active = this.pending
+    this.pending = null
+    job.callback(data)
+  }
+}
+
 function makeVolume(name: string, dims: [number, number, number] = [2, 2, 2], frames = 3): Volume {
   const count = dims[0] * dims[1] * dims[2]
   const raw = new Uint8Array(count * frames)
@@ -149,6 +223,7 @@ interface Harness {
   timers: ManualTimers
   controller: VolumeViewController
   initialTextureOf: ReturnType<typeof vi.fn>
+  releaseInitialTexture: ReturnType<typeof vi.fn>
   buildTexture: ReturnType<typeof vi.fn>
   buildLabelTexture: ReturnType<typeof vi.fn>
   onUnsupported: ReturnType<typeof vi.fn>
@@ -159,6 +234,7 @@ function harness(
     renderer?: FakeRenderer
     initial?: WeakMap<Volume, { data: Uint16Array; plan: TexPlan }>
     plan?: (dims: Volume['dims'], spacing: Volume['spacing']) => TexPlan
+    frameBuilder?: FrameTextureBuilder
   } = {}
 ): Harness {
   const renderer = options.renderer ?? new FakeRenderer()
@@ -166,6 +242,7 @@ function harness(
   const scheduler = new FakeScheduler()
   const timers = new ManualTimers()
   const initialTextureOf = vi.fn((volume: Volume) => options.initial?.get(volume) ?? null)
+  const releaseInitialTexture = vi.fn((volume: Volume) => options.initial?.delete(volume))
   const buildTexture = vi.fn(
     (volume: Volume, frame: number, texturePlan: TexPlan, out?: Uint16Array) => {
       const count = texturePlan.texDims[0] * texturePlan.texDims[1] * texturePlan.texDims[2]
@@ -184,6 +261,8 @@ function harness(
     },
     timers,
     initialTextureOf,
+    releaseInitialTexture,
+    createFrameTextureBuilder: () => options.frameBuilder ?? new UnavailableFrameTextureBuilder(),
     planTexture: options.plan ?? ((dims, spacing) => planTexture(dims, spacing)),
     buildTexture,
     buildLabelTexture,
@@ -196,6 +275,7 @@ function harness(
     timers,
     controller: new VolumeViewController(renderer, camera, dependencies),
     initialTextureOf,
+    releaseInitialTexture,
     buildTexture,
     buildLabelTexture,
     onUnsupported
@@ -203,7 +283,31 @@ function harness(
 }
 
 describe('VolumeViewController texture synchronization', () => {
-  it('reuses the non-consuming worker frame 0 payload and preserves it across frame changes', () => {
+  it('waits for an initially requested nonzero frame without building or rendering frame 0', () => {
+    const volume = makeVolume('initial-target')
+    const frameBuilder = new ManualFrameTextureBuilder()
+    const h = harness({ frameBuilder })
+
+    h.controller.updateState(state(volume, { frame: 2 }))
+
+    expect(h.buildTexture).not.toHaveBeenCalled()
+    expect(h.renderer.setVolume).not.toHaveBeenCalled()
+    expect(frameBuilder.jobs.map((job) => job.frame)).toEqual([2])
+    expect(h.scheduler.requests).toEqual([])
+    h.scheduler.callbacks?.render('full')
+    expect(h.renderer.render).not.toHaveBeenCalled()
+    const lutUploads = h.renderer.setLabelLut.mock.calls.length
+    h.renderer.onContextRestored?.()
+
+    const target = new Uint16Array(8).fill(3)
+    frameBuilder.jobs[0].callback(target)
+    expect(h.renderer.setVolume).toHaveBeenCalledWith(target, expect.any(Array), expect.any(Array))
+    expect(h.renderer.setFrameData).not.toHaveBeenCalled()
+    expect(h.renderer.setLabelLut).toHaveBeenCalledTimes(lutUploads + 1)
+    expect(h.scheduler.requests).toEqual(['full'])
+  })
+
+  it('releases and reuses the worker frame 0 payload on the first frame change', () => {
     const volume = makeVolume('first')
     const texturePlan = planTexture(volume.dims, volume.spacing)
     const workerData = new Uint16Array(8).fill(77)
@@ -220,19 +324,16 @@ describe('VolumeViewController texture synchronization', () => {
 
     h.controller.updateState(state(volume, { frame: 1 }))
     const firstStaging = h.renderer.setFrameData.mock.calls.at(-1)?.[0]
-    expect(h.buildTexture).toHaveBeenLastCalledWith(volume, 1, texturePlan, undefined)
+    expect(h.releaseInitialTexture).toHaveBeenCalledWith(volume)
+    expect(h.buildTexture).toHaveBeenLastCalledWith(volume, 1, texturePlan, workerData)
     h.controller.updateState(state(volume, { frame: 2 }))
     expect(h.buildTexture).toHaveBeenLastCalledWith(volume, 2, texturePlan, firstStaging)
-    expect(Array.from(workerData)).toEqual(new Array(8).fill(77))
+    expect(Array.from(workerData)).toEqual(new Array(8).fill(3))
 
     h.controller.updateState({ ...state(volume), volume: null })
     h.controller.updateState(state(volume))
     expect(h.initialTextureOf).toHaveBeenCalledTimes(2)
-    expect(h.renderer.setVolume).toHaveBeenLastCalledWith(
-      workerData,
-      texturePlan.texDims,
-      texturePlan.texSpacing
-    )
+    expect(h.buildTexture).toHaveBeenLastCalledWith(volume, 0, texturePlan)
   })
 
   it('builds frame 0 only when no worker payload exists and reuses staging thereafter', () => {
@@ -246,6 +347,154 @@ describe('VolumeViewController texture synchronization', () => {
     h.controller.updateState(state(volume, { frame: 2 }))
     expect(h.buildTexture).toHaveBeenLastCalledWith(volume, 2, expect.any(Object), initialStaging)
     expect(h.renderer.setFrameData).toHaveBeenCalledWith(initialStaging)
+  })
+
+  it('applies only the latest asynchronous frame result', () => {
+    const volume = makeVolume('async')
+    const texturePlan = planTexture(volume.dims, volume.spacing)
+    const initial = new WeakMap([[volume, { data: new Uint16Array(8), plan: texturePlan }]])
+    const frameBuilder = new ManualFrameTextureBuilder()
+    const h = harness({ initial, frameBuilder })
+    h.controller.updateState(state(volume))
+
+    h.controller.updateState(state(volume, { frame: 1 }))
+    h.controller.updateState(state(volume, { frame: 2 }))
+    expect(frameBuilder.jobs.map((job) => job.frame)).toEqual([1, 2])
+    expect(h.renderer.setFrameData).not.toHaveBeenCalled()
+
+    frameBuilder.jobs[0].callback(new Uint16Array(8).fill(1))
+    expect(h.renderer.setFrameData).not.toHaveBeenCalled()
+    const latest = new Uint16Array(8).fill(2)
+    frameBuilder.jobs[1].callback(latest)
+    expect(h.renderer.setFrameData).toHaveBeenCalledWith(latest)
+    expect(h.releaseInitialTexture).toHaveBeenCalledWith(volume)
+    expect(h.buildTexture).not.toHaveBeenCalled()
+    expect(h.scheduler.requests.at(-1)).toBe('interactive')
+  })
+
+  it('reuses the active frame build when the target sequence returns from 1 to 2 to 1', () => {
+    const volume = makeVolume('return-active')
+    const frameBuilder = new ReowningManualFrameTextureBuilder()
+    const h = harness({ frameBuilder })
+    h.controller.updateState(state(volume))
+
+    h.controller.updateState(state(volume, { frame: 1 }))
+    h.controller.updateState(state(volume, { frame: 2 }))
+    h.controller.updateState(state(volume, { frame: 1 }))
+
+    expect(frameBuilder.requested).toEqual([1, 2, 1])
+    expect(frameBuilder.active?.frame).toBe(1)
+    expect(frameBuilder.pending).toBeNull()
+    const target = new Uint16Array(8).fill(8)
+    frameBuilder.complete(target)
+    expect(h.renderer.setFrameData).toHaveBeenCalledWith(target)
+    expect(frameBuilder.active).toBeNull()
+  })
+
+  it('does not queue the same pending frame again for unrelated state changes', () => {
+    const volume = makeVolume('same-pending')
+    const frameBuilder = new ManualFrameTextureBuilder()
+    const h = harness({ frameBuilder })
+    h.controller.updateState(state(volume))
+    h.controller.updateState(state(volume, { frame: 1 }))
+    h.controller.updateState(state(volume, { frame: 1, range: { lo: 20, hi: 80 } }))
+    h.controller.updateState(state(volume, { frame: 1, regions: [region()] }))
+
+    expect(frameBuilder.jobs.map((job) => job.frame)).toEqual([1])
+    const data = new Uint16Array(8).fill(9)
+    frameBuilder.jobs[0].callback(data)
+    expect(h.renderer.setFrameData).toHaveBeenCalledWith(data)
+  })
+
+  it('abandons callback ownership when the target returns to the applied frame', () => {
+    const volume = makeVolume('return-applied')
+    const frameBuilder = new ManualFrameTextureBuilder()
+    const h = harness({ frameBuilder })
+    h.controller.updateState(state(volume))
+    const abandons = frameBuilder.abandon.mock.calls.length
+    h.controller.updateState(state(volume, { frame: 1 }))
+    h.controller.updateState(state(volume, { frame: 0 }))
+
+    expect(frameBuilder.abandon).toHaveBeenCalledTimes(abandons + 1)
+    frameBuilder.jobs[0].callback(new Uint16Array(8).fill(1))
+    expect(h.renderer.setFrameData).not.toHaveBeenCalled()
+  })
+
+  it('reports an asynchronous frame failure without retrying it synchronously', () => {
+    const volume = makeVolume('failed-frame')
+    const texturePlan = planTexture(volume.dims, volume.spacing)
+    const initial = new WeakMap([[volume, { data: new Uint16Array(8), plan: texturePlan }]])
+    const frameBuilder = new ManualFrameTextureBuilder()
+    const h = harness({ initial, frameBuilder })
+    h.controller.updateState(state(volume))
+    const builds = h.buildTexture.mock.calls.length
+
+    h.controller.updateState(state(volume, { frame: 1 }))
+    frameBuilder.jobs[0].callback(null)
+
+    expect(h.buildTexture).toHaveBeenCalledTimes(builds)
+    expect(h.renderer.setFrameData).not.toHaveBeenCalled()
+    expect(h.onUnsupported).toHaveBeenLastCalledWith(
+      'Could not prepare this frame for the 3D view.'
+    )
+    h.controller.updateState(state(volume, { frame: 0 }))
+    expect(h.onUnsupported).toHaveBeenLastCalledWith(null)
+  })
+
+  it('redraws the applied frame after a failed target and context restoration', () => {
+    const volume = makeVolume('failed-restoration')
+    const texturePlan = planTexture(volume.dims, volume.spacing)
+    const initial = new WeakMap([[volume, { data: new Uint16Array(8), plan: texturePlan }]])
+    const frameBuilder = new ManualFrameTextureBuilder()
+    const h = harness({ initial, frameBuilder })
+    h.controller.updateState(state(volume))
+    h.controller.updateState(state(volume, { frame: 1 }))
+    frameBuilder.jobs[0].callback(null)
+    const requestsAfterFailure = h.scheduler.requests.length
+
+    h.renderer.onContextRestored?.()
+    expect(h.scheduler.requests).toHaveLength(requestsAfterFailure)
+    h.controller.updateState(state(volume, { frame: 0 }))
+
+    expect(frameBuilder.abandon).toHaveBeenCalledTimes(1)
+    expect(h.scheduler.requests).toHaveLength(requestsAfterFailure + 1)
+    expect(h.scheduler.requests.at(-1)).toBe('full')
+    expect(h.onUnsupported).toHaveBeenLastCalledWith(null)
+  })
+
+  it('keeps compatibility-worker construction failure off the synchronous texture path', async () => {
+    vi.stubGlobal(
+      'Worker',
+      class {
+        constructor() {
+          throw new Error('unavailable')
+        }
+      }
+    )
+    try {
+      const volume = makeVolume('worker-unavailable')
+      const texturePlan = planTexture(volume.dims, volume.spacing)
+      const initial = new WeakMap([[volume, { data: new Uint16Array(8), plan: texturePlan }]])
+      let finish!: (data: Uint16Array | null) => void
+      const cooperativeBuild = vi.fn(
+        () =>
+          new Promise<Uint16Array | null>((resolve) => {
+            finish = resolve
+          })
+      )
+      const frameBuilder = new WorkerFrameTextureBuilder(() => null, { cooperativeBuild })
+      const h = harness({ initial, frameBuilder })
+      h.controller.updateState(state(volume))
+      const builds = h.buildTexture.mock.calls.length
+
+      h.controller.updateState(state(volume, { frame: 1 }))
+      expect(h.buildTexture).toHaveBeenCalledTimes(builds)
+      finish(new Uint16Array(8).fill(4))
+      await Promise.resolve()
+      expect(h.renderer.setFrameData).toHaveBeenLastCalledWith(new Uint16Array(8).fill(4))
+    } finally {
+      vi.unstubAllGlobals()
+    }
   })
 
   it('resets the camera and replaces plan and staging on every volume switch', () => {

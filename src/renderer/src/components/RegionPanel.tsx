@@ -562,6 +562,7 @@ function ExportSection(): JSX.Element {
     // another file before it resolves — the mark must go to THIS source.
     const exportedVolume = volume
     const exportedPath = sourcePath
+    const exportedRevision = useStore.getState().segRevision
     const dir = settings.dir || (sourcePath ? dirOfPath(sourcePath) : '')
     if (!dir) {
       fail('The source folder is unknown — pick an export folder in the export settings.')
@@ -580,7 +581,7 @@ function ExportSection(): JSX.Element {
         bytes: payload.bytes,
         sidecar: payload.sidecar
       })
-      markExported(exportedVolume, exportedPath)
+      markExported(exportedVolume, exportedPath, exportedRevision)
       pushToast({
         text: `Saved ${result.path.split(/[\\/]/).pop()}${result.sidecarPath ? ' + color table' : ''}`,
         variant: 'success',

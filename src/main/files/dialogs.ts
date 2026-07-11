@@ -7,7 +7,10 @@ export interface FileDialogDependencies {
 }
 
 export interface FileDialogs {
-  pickAndRead(window: BrowserWindow): Promise<OpenedFile | null>
+  /** Keep the selected path on the main side so callers can establish read
+   * ownership after a non-null pick but before any bytes are allocated. */
+  pickFilePath(window: BrowserWindow): Promise<string | null>
+  pickAndRead(window: BrowserWindow, signal?: AbortSignal): Promise<OpenedFile | null>
   pickScanRoot(window: BrowserWindow): Promise<string | null>
   pickExportDirectory(window: BrowserWindow): Promise<string | null>
 }
@@ -17,17 +20,23 @@ function selectedPath(result: OpenDialogReturnValue): string | null {
 }
 
 export function createFileDialogs(deps: FileDialogDependencies, reader: FileReader): FileDialogs {
-  return {
-    async pickAndRead(window) {
-      const result = await deps.showOpenDialog(window, {
+  const pickFilePath = async (window: BrowserWindow): Promise<string | null> =>
+    selectedPath(
+      await deps.showOpenDialog(window, {
         properties: ['openFile'],
         filters: [
           { name: 'Volume files', extensions: ['nii', 'nii.gz'] },
           { name: 'All files', extensions: ['*'] }
         ]
       })
-      const path = selectedPath(result)
-      return path === null ? null : reader.read(path)
+    )
+
+  return {
+    pickFilePath,
+
+    async pickAndRead(window, signal) {
+      const path = await pickFilePath(window)
+      return path === null ? null : reader.read(path, path, signal)
     },
 
     async pickScanRoot(window) {

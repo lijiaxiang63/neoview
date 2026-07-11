@@ -108,6 +108,20 @@ export function eraseRegion(labelMap: Uint16Array, id: number): Uint32Array {
   return indices
 }
 
+/** Clear one region in a single pass while feeding a caller-owned patch
+ * collector. Used by large replacement commits to avoid first materializing a
+ * second full index list. */
+export function eraseRegionInto(labelMap: Uint16Array, id: number, changes: ChangeSink): number {
+  let erased = 0
+  for (let index = 0; index < labelMap.length; index++) {
+    if (labelMap[index] !== id) continue
+    changes.record(index, id)
+    labelMap[index] = 0
+    erased++
+  }
+  return erased
+}
+
 /** Tight bounding box of a region's voxels; null when it has none. */
 export function regionBoundingBox(
   labelMap: Uint16Array,
@@ -158,7 +172,7 @@ export function paintDisk(
   id: number,
   erase: boolean,
   changes: ChangeSink | null = null
-): void {
+): number {
   const w = dims[plane.colAxis]
   const h = dims[plane.rowAxis]
   const stride = [1, dims[0], dims[0] * dims[1]]
@@ -170,6 +184,7 @@ export function paintDisk(
   const c1 = Math.min(w - 1, Math.floor(center[0] + radius))
   const rr0 = Math.max(0, Math.ceil(center[1] - radius))
   const rr1 = Math.min(h - 1, Math.floor(center[1] + radius))
+  let changed = 0
   for (let r = rr0; r <= rr1; r++) {
     const dr = r - center[1]
     for (let c = c0; c <= c1; c++) {
@@ -180,13 +195,16 @@ export function paintDisk(
         if (labelMap[idx] === id) {
           changes?.record(idx, id)
           labelMap[idx] = 0
+          changed++
         }
       } else if (labelMap[idx] !== id) {
         changes?.record(idx, labelMap[idx])
         labelMap[idx] = id
+        changed++
       }
     }
   }
+  return changed
 }
 
 /** Stamp disks along a segment so fast drags leave no gaps. */
@@ -201,12 +219,13 @@ export function paintStroke(
   id: number,
   erase: boolean,
   changes: ChangeSink | null = null
-): void {
+): number {
   const dist = Math.hypot(to[0] - from[0], to[1] - from[1])
   const steps = Math.max(1, Math.ceil(dist / Math.max(radius * 0.5, 0.5)))
+  let changed = 0
   for (let s = 0; s <= steps; s++) {
     const t = s / steps
-    paintDisk(
+    changed += paintDisk(
       labelMap,
       dims,
       plane,
@@ -218,6 +237,7 @@ export function paintStroke(
       changes
     )
   }
+  return changed
 }
 
 // ---------------------------------------------------------------------------

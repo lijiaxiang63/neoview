@@ -3,6 +3,7 @@ import { serializeVolume } from '../volume/parse'
 import { gzip } from '../volume/gunzip'
 import { buildColorTable, maskUnion, remapForExport, type Region } from './regions'
 import type { ExportRequest } from '../../../shared/files'
+import { PERSISTED_STORAGE_KEYS } from '../../../shared/storageMigration'
 
 export type ExportFormat = 'nii.gz' | 'nii'
 
@@ -12,8 +13,8 @@ export interface ExportSettings {
   dir: string
 }
 
-const FORMAT_KEY = 'neoview.export.format'
-const DIR_KEY = 'neoview.export.dir'
+const FORMAT_KEY = PERSISTED_STORAGE_KEYS[1]
+const DIR_KEY = PERSISTED_STORAGE_KEYS[2]
 
 export function loadExportSettings(): ExportSettings {
   const format = localStorage.getItem(FORMAT_KEY)

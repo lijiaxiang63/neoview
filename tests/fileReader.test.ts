@@ -40,4 +40,33 @@ describe('file reader', () => {
     expect(opened.bytes.byteLength).toBe(2)
     expect([...new Uint8Array(opened.bytes)]).toEqual([1, 2])
   })
+
+  it('forwards cancellation to the byte read and rejects a pre-cancelled request early', async () => {
+    const active = new AbortController()
+    let receivedSignal: AbortSignal | undefined
+    const readFile = vi.fn(
+      (_path: string, signal?: AbortSignal): Promise<Uint8Array> =>
+        new Promise((_resolve, reject) => {
+          receivedSignal = signal
+          const onAbort = (): void => reject(signal?.reason)
+          if (signal?.aborted) onAbort()
+          else signal?.addEventListener('abort', onAbort, { once: true })
+        })
+    )
+    const stat = vi.fn(async () => ({ size: 1 }))
+    const reader = createFileReader({ stat, readFile })
+    const pending = reader.read('/root/a.nii', '/root/a.nii', active.signal)
+    await vi.waitFor(() => expect(readFile).toHaveBeenCalledTimes(1))
+
+    active.abort()
+    await expect(pending).rejects.toMatchObject({ name: 'AbortError' })
+    expect(receivedSignal).toBe(active.signal)
+
+    const preCancelled = new AbortController()
+    preCancelled.abort()
+    await expect(
+      reader.read('/root/b.nii', '/root/b.nii', preCancelled.signal)
+    ).rejects.toMatchObject({ name: 'AbortError' })
+    expect(stat).toHaveBeenCalledTimes(1)
+  })
 })

@@ -1,3 +1,5 @@
+import { PERSISTED_STORAGE_KEYS } from '../../../shared/storageMigration'
+
 /**
  * Per-file display preferences (preset choice + custom range), keyed by the
  * file's absolute path in localStorage. Reopening a file restores how it was
@@ -11,7 +13,7 @@ export interface ViewPref {
   hi: number
 }
 
-const STORAGE_KEY = 'neoview.viewPrefs.v1'
+const STORAGE_KEY = PERSISTED_STORAGE_KEYS[0]
 export const VIEW_PREFS_MAX = 200
 
 interface Payload {

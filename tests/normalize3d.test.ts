@@ -5,6 +5,7 @@ import { parseVolume } from '../src/renderer/src/volume/parse'
 import {
   buildLabelTexData,
   buildTexData,
+  buildTexDataCooperative,
   floatToHalf,
   halfExtents,
   normalizeFrame,
@@ -214,5 +215,44 @@ describe('buildTexData', () => {
     const plan = planTexture(vol.dims, vol.spacing)
     const f2 = buildTexData(vol, 2, plan)
     expect(f2[0]).toBe(floatToHalf(200 / 201))
+  })
+
+  it('cooperatively produces identical texture data while yielding bounded chunks', async () => {
+    const buf = buildVolume({
+      dims: [4, 4, 2, 2],
+      dtype: 'float32',
+      value: (i: number, j: number, k: number, t: number) => i + j + k + 10 * t
+    })
+    const vol = parseVolume('t.nii', toArrayBuffer(buf))
+    const plan = planTexture(vol.dims, vol.spacing)
+    let yields = 0
+
+    const data = await buildTexDataCooperative(vol, 1, plan, {
+      cancelled: () => false,
+      yieldControl: async () => {
+        yields++
+      },
+      chunkTexels: 3
+    })
+
+    expect(data).toEqual(buildTexData(vol, 1, plan))
+    expect(yields).toBeGreaterThan(0)
+  })
+
+  it('cooperative texture work releases an obsolete target at the next yield', async () => {
+    const buf = buildVolume({ dims: [4, 4, 2], dtype: 'uint8', value: (i: number) => i })
+    const vol = parseVolume('t.nii', toArrayBuffer(buf))
+    const plan = planTexture(vol.dims, vol.spacing)
+    let cancelled = false
+
+    const data = await buildTexDataCooperative(vol, 0, plan, {
+      cancelled: () => cancelled,
+      yieldControl: async () => {
+        cancelled = true
+      },
+      chunkTexels: 2
+    })
+
+    expect(data).toBeNull()
   })
 })

@@ -9,8 +9,9 @@ import {
 import { Raycaster } from './raycaster'
 import { createBrowserRenderScheduler, type RenderSchedulerCallbacks } from './renderScheduler'
 import type { Quality, RenderMode } from './types'
+import { WorkerFrameTextureBuilder, type FrameTextureBuilder } from './frameTextureClient'
 import { colorComponents, type Region } from '../segmentation/regions'
-import { initialTexOf } from '../volume/loadVolume'
+import { initialTexOf, releaseInitialTex } from '../volume/loadVolume'
 import type { Volume } from '../volume/types'
 
 export const LABEL_REBUILD_MS = 200
@@ -77,6 +78,8 @@ export interface VolumeViewControllerDependencies {
     clearTimeout(handle: number): void
   }
   initialTextureOf(volume: Volume): InitialTexture | null
+  releaseInitialTexture(volume: Volume): void
+  createFrameTextureBuilder(): FrameTextureBuilder
   planTexture(dims: Volume['dims'], spacing: Volume['spacing']): TexPlan
   buildTexture(volume: Volume, frame: number, plan: TexPlan, out?: Uint16Array): Uint16Array
   buildLabelTexture(
@@ -96,6 +99,8 @@ const browserDependencies: VolumeViewControllerDependencies = {
     clearTimeout: (handle) => window.clearTimeout(handle)
   },
   initialTextureOf: initialTexOf,
+  releaseInitialTexture: releaseInitialTex,
+  createFrameTextureBuilder: () => new WorkerFrameTextureBuilder(),
   planTexture,
   buildTexture: buildTexData,
   buildLabelTexture: buildLabelTexData,
@@ -121,16 +126,24 @@ export class VolumeViewController {
   private readonly camera: VolumeCamera
   private readonly dependencies: VolumeViewControllerDependencies
   private readonly scheduler: VolumeRenderScheduler
+  private readonly frameTextureBuilder: FrameTextureBuilder
   private state = EMPTY_STATE
   private plan: TexPlan | null = null
   private staging: Uint16Array | null = null
   private stagingIsWorkerInitial = false
+  private volumeTexturePresent = false
+  /** A target frame is still being built, so no earlier frame may render. */
+  private frameRenderBlocked = false
   private appliedFrame = 0
   private labelStaging: Uint8Array | null = null
   private labelTexturePresent = false
   private labelDirty = false
   private labelTimer: number | null = null
   private labelGeneration = 0
+  private frameGeneration = 0
+  /** Latest frame requested from the async builder but not yet applied. */
+  private requestedFrame: number | null = null
+  private frameFailure: string | null = null
   private paletteKey = ''
   private labelKey = ''
   private lastUnsupported: string | null | undefined
@@ -152,11 +165,12 @@ export class VolumeViewController {
       resize: (cssWidth, cssHeight, devicePixelRatio) =>
         this.renderer.resize(cssWidth, cssHeight, devicePixelRatio),
       render: (quality) => {
-        if (this.disposed) return
+        if (this.disposed || this.frameRenderBlocked) return
         this.applyCamera()
         this.renderer.render(quality)
       }
     })
+    this.frameTextureBuilder = this.dependencies.createFrameTextureBuilder()
     this.renderer.onContextRestored = this.handleContextRestored
     this.reportUnsupported()
   }
@@ -181,12 +195,29 @@ export class VolumeViewController {
 
     if (volumeChanged) {
       this.replaceVolume()
-      requestFull = next.volume !== null
+      requestFull = next.volume !== null && this.volumeTexturePresent
     }
 
-    if (next.volume && this.plan && this.staging && this.appliedFrame !== next.frame) {
-      this.applyFrame(next.frame)
-      requestInteractive = true
+    if (next.volume && this.plan) {
+      if (this.volumeTexturePresent && this.appliedFrame === next.frame) {
+        const needsRestoredFrame = this.frameRenderBlocked || this.frameFailure !== null
+        if (this.requestedFrame !== null) this.abandonFrameRequest()
+        this.frameRenderBlocked = false
+        this.frameFailure = null
+        if (needsRestoredFrame) requestFull = true
+      } else if (this.staging && this.appliedFrame === next.frame) {
+        if (this.requestedFrame !== null) this.abandonFrameRequest()
+        this.installFirstFrame(this.staging, this.plan)
+        this.frameRenderBlocked = false
+        this.frameFailure = null
+        requestFull = true
+      } else if (this.requestedFrame !== next.frame) {
+        const appliedSynchronously = this.queueFrame(next.frame)
+        if (appliedSynchronously) {
+          if (volumeChanged) requestFull = true
+          else requestInteractive = true
+        }
+      }
     }
 
     if (next.volume && (volumeChanged || rangeChanged || settingsChanged)) {
@@ -255,22 +286,34 @@ export class VolumeViewController {
     if (this.disposed) return
     this.disposed = true
     this.cancelLabelTimer()
+    this.frameGeneration++
+    this.requestedFrame = null
+    this.frameTextureBuilder.dispose()
     this.scheduler.dispose()
     this.renderer.onContextRestored = null
     this.renderer.dispose()
     this.plan = null
     this.staging = null
+    this.volumeTexturePresent = false
+    this.frameRenderBlocked = false
+    this.frameFailure = null
     this.labelStaging = null
   }
 
   private replaceVolume(): void {
     this.cancelLabelTimer()
+    this.frameGeneration++
+    this.frameTextureBuilder.reset()
     this.plan = null
     this.staging = null
+    this.volumeTexturePresent = false
+    this.frameRenderBlocked = false
+    this.frameFailure = null
     this.labelStaging = null
     this.labelTexturePresent = false
     this.labelDirty = false
-    this.appliedFrame = 0
+    this.appliedFrame = -1
+    this.requestedFrame = null
     this.stagingIsWorkerInitial = false
     const volume = this.state.volume
     if (!volume) {
@@ -279,21 +322,124 @@ export class VolumeViewController {
     }
     const initial = this.dependencies.initialTextureOf(volume)
     this.plan = initial?.plan ?? this.dependencies.planTexture(volume.dims, volume.spacing)
-    this.staging = initial?.data ?? this.dependencies.buildTexture(volume, 0, this.plan)
-    this.stagingIsWorkerInitial = initial !== null
-    this.renderer.setVolume(this.staging, this.plan.texDims, this.plan.texSpacing)
+    if (initial) {
+      this.staging = initial.data
+      this.stagingIsWorkerInitial = true
+      this.appliedFrame = 0
+    } else if (this.state.frame === 0) {
+      this.staging = this.dependencies.buildTexture(volume, 0, this.plan)
+      this.appliedFrame = 0
+    }
+    if (this.state.frame === 0 && this.staging) {
+      this.renderer.setVolume(this.staging, this.plan.texDims, this.plan.texSpacing)
+      this.volumeTexturePresent = true
+    } else {
+      // Do not flash or upload frame 0 when the first observed state already
+      // targets another frame. A late scheduled render is blocked as well.
+      this.frameRenderBlocked = true
+    }
     this.camera.reset()
   }
 
-  private applyFrame(frame: number): void {
+  /** Queue an off-thread frame build. Returns true only when the synchronous
+   * fallback had to apply immediately. */
+  private queueFrame(frame: number): boolean {
     const volume = this.state.volume
     const plan = this.plan
-    if (!volume || !plan || !this.staging) return
-    const reusable = this.stagingIsWorkerInitial ? undefined : this.staging
+    if (!volume || !plan) return false
+    const generation = ++this.frameGeneration
+    this.requestedFrame = frame
+    const posted = this.frameTextureBuilder.request(volume, frame, plan, (data) => {
+      if (
+        this.disposed ||
+        generation !== this.frameGeneration ||
+        this.state.volume !== volume ||
+        this.state.frame !== frame ||
+        this.plan !== plan
+      ) {
+        return
+      }
+      const needsFullRender = this.frameRenderBlocked || !this.volumeTexturePresent
+      if (data) {
+        this.applyBuiltFrame(volume, frame, plan, data)
+      } else {
+        // An accepted asynchronous build may represent a very large frame.
+        // Retrying that work synchronously would recreate the UI stall (and
+        // often the same allocation failure) the builder was introduced to
+        // avoid. Keep the prior texture and surface a recoverable 3D error.
+        this.frameRenderBlocked = true
+        this.frameFailure = 'Could not prepare this frame for the 3D view.'
+        this.reportUnsupported()
+        return
+      }
+      this.requestedFrame = null
+      this.frameFailure = null
+      this.reportUnsupported()
+      this.request(needsFullRender ? 'full' : 'interactive')
+    })
+    if (posted) return false
+    this.requestedFrame = null
+    this.applyFrameSync(frame)
+    return true
+  }
+
+  private applyFrameSync(frame: number): void {
+    const volume = this.state.volume
+    const plan = this.plan
+    if (!volume || !plan) return
+    this.releaseWorkerInitial(volume)
+    const reusable = this.staging ?? undefined
     this.staging = this.dependencies.buildTexture(volume, frame, plan, reusable)
-    this.stagingIsWorkerInitial = false
+    this.frameFailure = null
     this.appliedFrame = frame
-    this.renderer.setFrameData(this.staging)
+    if (this.volumeTexturePresent) {
+      this.renderer.setFrameData(this.staging)
+    } else {
+      this.installFirstFrame(this.staging, plan)
+    }
+    this.frameRenderBlocked = false
+  }
+
+  private applyBuiltFrame(volume: Volume, frame: number, plan: TexPlan, data: Uint16Array): void {
+    this.releaseWorkerInitial(volume)
+    this.staging = data
+    this.frameFailure = null
+    this.appliedFrame = frame
+    if (this.volumeTexturePresent) {
+      this.renderer.setFrameData(data)
+    } else {
+      this.installFirstFrame(data, plan)
+    }
+    this.frameRenderBlocked = false
+  }
+
+  private installFirstFrame(data: Uint16Array, plan: TexPlan): void {
+    this.renderer.setVolume(data, plan.texDims, plan.texSpacing)
+    this.volumeTexturePresent = true
+    // These calls are cheap state assignments in the backend and make a frame
+    // that completes after context restoration self-sufficient.
+    this.applyDisplayState()
+    this.applyRegionLut()
+    this.renderer.setLabelAlpha(this.state.regionOpacity)
+    if (!this.labelDirty) {
+      if (this.labelTexturePresent && this.labelStaging) {
+        this.renderer.setLabelVolume(this.labelStaging)
+      } else {
+        this.renderer.setLabelVolume(null)
+      }
+    }
+  }
+
+  private abandonFrameRequest(): void {
+    this.frameGeneration++
+    this.requestedFrame = null
+    this.frameTextureBuilder.abandon()
+  }
+
+  private releaseWorkerInitial(volume: Volume): void {
+    if (!this.stagingIsWorkerInitial) return
+    this.dependencies.releaseInitialTexture(volume)
+    this.stagingIsWorkerInitial = false
   }
 
   private applyDisplayState(): void {
@@ -400,7 +546,7 @@ export class VolumeViewController {
   private readonly handleContextRestored = (): void => {
     if (this.disposed) return
     const volume = this.state.volume
-    if (volume && this.plan && this.staging) {
+    if (volume && this.plan && this.staging && this.volumeTexturePresent) {
       this.renderer.setVolume(this.staging, this.plan.texDims, this.plan.texSpacing)
       this.applyDisplayState()
       this.applyRegionLut()
@@ -417,11 +563,13 @@ export class VolumeViewController {
   }
 
   private request(quality: Quality): void {
-    if (!this.disposed && !this.renderer.unsupportedReason) this.scheduler.request(quality)
+    if (!this.disposed && !this.frameRenderBlocked && !this.renderer.unsupportedReason) {
+      this.scheduler.request(quality)
+    }
   }
 
   private reportUnsupported(): void {
-    const reason = this.renderer.unsupportedReason
+    const reason = this.frameFailure ?? this.renderer.unsupportedReason
     if (reason === this.lastUnsupported) return
     this.lastUnsupported = reason
     this.dependencies.onUnsupported(reason)

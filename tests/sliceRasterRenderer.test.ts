@@ -224,10 +224,96 @@ describe('slice raster renderer', () => {
     const h = harness()
     h.renderer.render(h.input)
     const created = h.created.length
+    const calls = {
+      base: vi.mocked(h.extractors.base).mock.calls.length,
+      overlay: vi.mocked(h.extractors.overlay).mock.calls.length,
+      regions: vi.mocked(h.extractors.regions).mock.calls.length,
+      preview: vi.mocked(h.extractors.preview).mock.calls.length
+    }
     h.input.canvasSize = [600, 400]
+    h.input.fit = { ...h.input.fit, dw: 560, dh: 320 }
+    h.input.overlays = h.input.overlays.map((layer) => ({ ...layer, opacity: 0.25 }))
+    h.input.regionOpacity = 0.8
     h.renderer.render(h.input)
     expect(h.created).toHaveLength(created)
     expect([h.target.width, h.target.height]).toEqual([600, 400])
+    expect(vi.mocked(h.extractors.base)).toHaveBeenCalledTimes(calls.base)
+    expect(vi.mocked(h.extractors.overlay)).toHaveBeenCalledTimes(calls.overlay)
+    expect(vi.mocked(h.extractors.regions)).toHaveBeenCalledTimes(calls.regions)
+    expect(vi.mocked(h.extractors.preview)).toHaveBeenCalledTimes(calls.preview)
+  })
+
+  it('invalidates only the overlay whose pixel settings changed', () => {
+    const h = harness()
+    h.renderer.render(h.input)
+    h.input.overlays = [
+      { ...h.input.overlays[0], range: { lo: 0.2, hi: 0.9 } },
+      h.input.overlays[1]
+    ]
+    h.renderer.render(h.input)
+
+    expect(vi.mocked(h.extractors.base)).toHaveBeenCalledTimes(1)
+    expect(vi.mocked(h.extractors.overlay).mock.calls.map(([layer]) => layer.id)).toEqual([1, 2, 1])
+    expect(vi.mocked(h.extractors.regions)).toHaveBeenCalledTimes(1)
+    expect(vi.mocked(h.extractors.preview)).toHaveBeenCalledTimes(1)
+  })
+
+  it('reuses a single-frame overlay while the base plays later frames', () => {
+    const h = harness()
+    h.input.overlays = [overlay(1)]
+    h.input.volume.frames = 3
+    h.renderer.render(h.input)
+    h.input.frame = 1
+    h.renderer.render(h.input)
+    h.input.frame = 2
+    h.renderer.render(h.input)
+
+    expect(vi.mocked(h.extractors.base)).toHaveBeenCalledTimes(3)
+    expect(vi.mocked(h.extractors.overlay)).toHaveBeenCalledTimes(1)
+    expect(vi.mocked(h.extractors.overlay).mock.calls[0][4]).toBe(0)
+  })
+
+  it('invalidates a multi-frame overlay only when its resolved frame changes', () => {
+    const h = harness()
+    const layer = overlay(1)
+    layer.volume.frames = 2
+    h.input.overlays = [layer]
+    h.input.volume.frames = 3
+    h.renderer.render(h.input)
+    h.input.frame = 1
+    h.renderer.render(h.input)
+    h.input.frame = 2
+    h.renderer.render(h.input)
+
+    expect(vi.mocked(h.extractors.overlay)).toHaveBeenCalledTimes(2)
+    expect(vi.mocked(h.extractors.overlay).mock.calls.map((call) => call[4])).toEqual([0, 1])
+  })
+
+  it('uses the label-map revision to invalidate only region pixels', () => {
+    const h = harness()
+    h.renderer.render(h.input)
+    h.input.labelMapRevision++
+    h.renderer.render(h.input)
+
+    expect(vi.mocked(h.extractors.base)).toHaveBeenCalledTimes(1)
+    expect(vi.mocked(h.extractors.overlay)).toHaveBeenCalledTimes(2)
+    expect(vi.mocked(h.extractors.regions)).toHaveBeenCalledTimes(2)
+    expect(vi.mocked(h.extractors.preview)).toHaveBeenCalledTimes(1)
+  })
+
+  it('drops preview ownership when inactive while retaining the pixel allocation', () => {
+    const h = harness()
+    const oldPreview = h.input.preview
+    h.renderer.render(h.input)
+    const created = h.created.length
+
+    h.input.preview = null
+    h.renderer.render(h.input)
+    h.input.preview = oldPreview
+    h.renderer.render(h.input)
+
+    expect(h.created).toHaveLength(created)
+    expect(vi.mocked(h.extractors.preview)).toHaveBeenCalledTimes(2)
   })
 
   it('rebuilds buffers and releases old ones when volume or grid changes', () => {

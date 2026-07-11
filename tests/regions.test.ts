@@ -125,8 +125,11 @@ describe('label-map edits', () => {
 
   it('paintStroke leaves no gaps along the segment', () => {
     const labelMap = new Uint16Array(N)
-    paintStroke(labelMap, DIMS, PLANES[0], 0, [0, 0], [3, 0], 1, 1, false)
+    expect(paintStroke(labelMap, DIMS, PLANES[0], 0, [0, 0], [3, 0], 1, 1, false)).toBeGreaterThan(
+      0
+    )
     for (let i = 0; i < 4; i++) expect(labelMap[i]).toBe(1)
+    expect(paintStroke(labelMap, DIMS, PLANES[0], 0, [0, 0], [3, 0], 1, 1, false)).toBe(0)
   })
 })
 

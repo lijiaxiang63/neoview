@@ -14,6 +14,9 @@ import type { ViewportFit } from './viewport'
 interface RasterBuffer {
   canvas: HTMLCanvasElement
   image: ImageData
+  /** Pixel-content signature; target geometry and compositing alpha are
+   * deliberately excluded so those changes can redraw without re-extracting. */
+  key: readonly unknown[] | null
 }
 
 export interface RasterFactory {
@@ -67,6 +70,16 @@ function contextOf(canvas: HTMLCanvasElement): CanvasRenderingContext2D {
   return context
 }
 
+function sameKey(a: readonly unknown[] | null, b: readonly unknown[]): boolean {
+  return (
+    a !== null && a.length === b.length && a.every((value, index) => Object.is(value, b[index]))
+  )
+}
+
+function regionStyleKey(regions: readonly Region[]): string {
+  return regions.map((region) => `${region.id}:${region.visible ? 1 : 0}:${region.color}`).join('|')
+}
+
 export class SliceRasterRenderer {
   private readonly factory: RasterFactory
   private readonly extractors: RasterExtractors
@@ -104,18 +117,30 @@ export class SliceRasterRenderer {
     }
 
     const base = this.baseBuffer ?? (this.baseBuffer = this.createBuffer())
-    const baseLut = input.baseColormap === 'gray' ? null : buildMapLUT(input.baseColormap).pos
-    this.extractors.base(
+    const baseKey = [
       input.volume,
       input.plane,
       input.sliceIndex,
       input.frame,
       input.range.lo,
       input.range.hi,
-      base.image,
-      baseLut
-    )
-    contextOf(base.canvas).putImageData(base.image, 0, 0)
+      input.baseColormap
+    ] as const
+    if (!sameKey(base.key, baseKey)) {
+      const baseLut = input.baseColormap === 'gray' ? null : buildMapLUT(input.baseColormap).pos
+      this.extractors.base(
+        input.volume,
+        input.plane,
+        input.sliceIndex,
+        input.frame,
+        input.range.lo,
+        input.range.hi,
+        base.image,
+        baseLut
+      )
+      contextOf(base.canvas).putImageData(base.image, 0, 0)
+      base.key = baseKey
+    }
 
     this.dropRemovedOverlays(input.overlays)
     const context = contextOf(input.canvas)
@@ -134,15 +159,31 @@ export class SliceRasterRenderer {
           buffer = this.createBuffer()
           this.overlayBuffers.set(layer.id, buffer)
         }
-        this.extractors.overlay(
-          layer,
+        const overlayFrame = Math.min(input.frame, layer.volume.frames - 1)
+        const overlayKey = [
+          layer.volume,
           input.volume,
           input.plane,
           input.sliceIndex,
-          input.frame,
-          buffer.image
-        )
-        contextOf(buffer.canvas).putImageData(buffer.image, 0, 0)
+          overlayFrame,
+          layer.kind,
+          layer.range.lo,
+          layer.range.hi,
+          layer.colormap,
+          layer.hiddenLabels
+        ] as const
+        if (!sameKey(buffer.key, overlayKey)) {
+          this.extractors.overlay(
+            layer,
+            input.volume,
+            input.plane,
+            input.sliceIndex,
+            overlayFrame,
+            buffer.image
+          )
+          contextOf(buffer.canvas).putImageData(buffer.image, 0, 0)
+          buffer.key = overlayKey
+        }
         context.imageSmoothingEnabled = layer.kind === 'map'
         context.globalAlpha = layer.opacity
         context.drawImage(buffer.canvas, input.fit.dx, input.fit.dy, input.fit.dw, input.fit.dh)
@@ -154,15 +195,25 @@ export class SliceRasterRenderer {
         input.regions.some((region) => region.visible)
       ) {
         const buffer = this.regionBuffer ?? (this.regionBuffer = this.createBuffer())
-        this.extractors.regions(
+        const regionKey = [
           input.labelMap,
-          input.volume.dims,
+          input.labelMapRevision,
           input.plane,
           input.sliceIndex,
-          this.regionColors(input.regions),
-          buffer.image
-        )
-        contextOf(buffer.canvas).putImageData(buffer.image, 0, 0)
+          regionStyleKey(input.regions)
+        ] as const
+        if (!sameKey(buffer.key, regionKey)) {
+          this.extractors.regions(
+            input.labelMap,
+            input.volume.dims,
+            input.plane,
+            input.sliceIndex,
+            this.regionColors(input.regions),
+            buffer.image
+          )
+          contextOf(buffer.canvas).putImageData(buffer.image, 0, 0)
+          buffer.key = regionKey
+        }
         context.imageSmoothingEnabled = false
         context.globalAlpha = input.regionOpacity
         context.drawImage(buffer.canvas, input.fit.dx, input.fit.dy, input.fit.dw, input.fit.dh)
@@ -173,19 +224,33 @@ export class SliceRasterRenderer {
         const previewColor =
           input.regions.find((region) => region.id === input.editRegionId)?.color ??
           defaultRegionColor(input.nextRegionId)
-        this.extractors.preview(
-          input.preview.mask,
-          input.preview.bounds,
-          input.volume.dims,
+        const packedPreviewColor = packColor(previewColor)
+        const previewKey = [
+          input.preview,
           input.plane,
           input.sliceIndex,
-          packColor(previewColor),
-          buffer.image
-        )
-        contextOf(buffer.canvas).putImageData(buffer.image, 0, 0)
+          packedPreviewColor
+        ] as const
+        if (!sameKey(buffer.key, previewKey)) {
+          this.extractors.preview(
+            input.preview.mask,
+            input.preview.bounds,
+            input.volume.dims,
+            input.plane,
+            input.sliceIndex,
+            packedPreviewColor,
+            buffer.image
+          )
+          contextOf(buffer.canvas).putImageData(buffer.image, 0, 0)
+          buffer.key = previewKey
+        }
         context.imageSmoothingEnabled = false
         context.globalAlpha = 0.7
         context.drawImage(buffer.canvas, input.fit.dx, input.fit.dy, input.fit.dw, input.fit.dh)
+      } else if (this.previewBuffer) {
+        // Keep the reusable pixel allocation, but release the old preview and
+        // its potentially large mask as soon as store ownership ends.
+        this.previewBuffer.key = null
       }
     } finally {
       context.restore()
@@ -225,7 +290,7 @@ export class SliceRasterRenderer {
     const canvas = this.factory.createCanvas()
     canvas.width = this.width
     canvas.height = this.height
-    return { canvas, image: this.factory.createImageData(this.width, this.height) }
+    return { canvas, image: this.factory.createImageData(this.width, this.height), key: null }
   }
 
   private releaseBuffer(buffer: RasterBuffer | null): void {

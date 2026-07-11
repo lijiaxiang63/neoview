@@ -133,6 +133,18 @@ export function sameViewMenuSnapshot(a: FilePanelState | null, b: FilePanelState
   )
 }
 
+/** Return the next playback frame only while the interval still owns the
+ * current lightweight volume session. A stale tick is inert without retaining
+ * the prior Volume and its raw buffer. */
+export function playbackFrameTarget(
+  state: Pick<AppState, 'volume' | 'volumeSession' | 'frame'>,
+  ownerSession: number
+): number | null {
+  const volume = state.volume
+  if (!volume || state.volumeSession !== ownerSession || volume.frames <= 1) return null
+  return (state.frame + 1) % volume.frames
+}
+
 export const UNSAVED_WARNING =
   'There are region edits that have not been exported. They will be lost. Continue?'
 export const UNCOMMITTED_WARNING =

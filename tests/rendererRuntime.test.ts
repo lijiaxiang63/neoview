@@ -80,14 +80,23 @@ interface BridgeHarness {
   listenerCount(name: string): number
   unsubscribes: Array<ReturnType<typeof vi.fn>>
   openDialog: ReturnType<typeof vi.fn<RendererBridge['openDialog']>>
+  openOverlayDialog: ReturnType<typeof vi.fn<RendererBridge['openOverlayDialog']>>
+  beginBaseIntent: ReturnType<typeof vi.fn<RendererBridge['beginBaseIntent']>>
+  acceptBaseIntent: ReturnType<typeof vi.fn<RendererBridge['acceptBaseIntent']>>
   openFolderScan: ReturnType<typeof vi.fn<RendererBridge['openFolderScan']>>
   scanDroppedFolder: ReturnType<typeof vi.fn<RendererBridge['scanDroppedFolder']>>
   isDirectory: ReturnType<typeof vi.fn<RendererBridge['isDirectory']>>
   pathForFile: ReturnType<typeof vi.fn<RendererBridge['pathForFile']>>
+  readFile: ReturnType<typeof vi.fn<RendererBridge['readFile']>>
+  readFileWithin: ReturnType<typeof vi.fn<RendererBridge['readFileWithin']>>
+  cancelFileRead: ReturnType<typeof vi.fn<RendererBridge['cancelFileRead']>>
   sendViewState: ReturnType<typeof vi.fn<RendererBridge['sendViewState']>>
   releaseFolderAccess: ReturnType<typeof vi.fn<RendererBridge['releaseFolderAccess']>>
   confirmClose: ReturnType<typeof vi.fn<RendererBridge['confirmClose']>>
   cancelClose: ReturnType<typeof vi.fn<RendererBridge['cancelClose']>>
+  claimCloseResponder: ReturnType<typeof vi.fn<RendererBridge['claimCloseResponder']>>
+  activateCloseResponder: ReturnType<typeof vi.fn<RendererBridge['activateCloseResponder']>>
+  releaseCloseResponder: ReturnType<typeof vi.fn<RendererBridge['releaseCloseResponder']>>
 }
 
 function bridgeHarness(): BridgeHarness {
@@ -102,19 +111,37 @@ function bridgeHarness(): BridgeHarness {
     return off
   }
   const openDialog = vi.fn<RendererBridge['openDialog']>(async () => null)
+  const openOverlayDialog = vi.fn<RendererBridge['openOverlayDialog']>(async () => null)
+  let nextIntent = 0
+  const beginBaseIntent = vi.fn<RendererBridge['beginBaseIntent']>(async () => ++nextIntent)
+  const acceptBaseIntent = vi.fn<RendererBridge['acceptBaseIntent']>()
   const openFolderScan = vi.fn<RendererBridge['openFolderScan']>(async () => null)
   const scanDroppedFolder = vi.fn<RendererBridge['scanDroppedFolder']>(async () => null)
   const isDirectory = vi.fn<RendererBridge['isDirectory']>(async () => false)
   const pathForFile = vi.fn<RendererBridge['pathForFile']>(() => '')
+  const readFile = vi.fn<RendererBridge['readFile']>(async (path) => ({ ...opened(), path }))
+  const readFileWithin = vi.fn<RendererBridge['readFileWithin']>(async () => null)
+  const cancelFileRead = vi.fn<RendererBridge['cancelFileRead']>()
   const sendViewState = vi.fn<RendererBridge['sendViewState']>()
   const releaseFolderAccess = vi.fn<RendererBridge['releaseFolderAccess']>()
   const confirmClose = vi.fn<RendererBridge['confirmClose']>()
   const cancelClose = vi.fn<RendererBridge['cancelClose']>()
+  let nextCloseLease = 0
+  const claimCloseResponder = vi.fn<RendererBridge['claimCloseResponder']>(
+    async () => ++nextCloseLease
+  )
+  const activateCloseResponder = vi.fn<RendererBridge['activateCloseResponder']>()
+  const releaseCloseResponder = vi.fn<RendererBridge['releaseCloseResponder']>()
   const bridge: RendererBridge = {
     platform: 'darwin',
     openDialog,
+    openOverlayDialog,
+    beginBaseIntent,
+    acceptBaseIntent,
     onFileOpened: (callback) => listen('file-opened', callback as Callback),
+    onOverlayOpenStarted: (callback) => listen('overlay-started', callback as Callback),
     onOverlayOpened: (callback) => listen('overlay-opened', callback as Callback),
+    onOverlayOpenError: (callback) => listen('overlay-error', callback as Callback),
     onFileOpenError: (callback) => listen('file-error', callback as Callback),
     onOpenFolderRequest: (callback) => listen('open-folder', callback as Callback),
     onShowShortcuts: (callback) => listen('show-shortcuts', callback as Callback),
@@ -128,13 +155,17 @@ function bridgeHarness(): BridgeHarness {
     scanDroppedFolder,
     isDirectory,
     pathForFile,
-    readFile: vi.fn(async (path) => ({ ...opened(), path })),
-    readFileWithin: vi.fn(async () => null),
+    readFile,
+    readFileWithin,
+    cancelFileRead,
     noteFileOpened: vi.fn(),
     sendViewState,
     confirmFolderScan: vi.fn(),
     cancelFolderScan: vi.fn(),
     releaseFolderAccess,
+    claimCloseResponder,
+    activateCloseResponder,
+    releaseCloseResponder,
     confirmClose,
     cancelClose
   }
@@ -146,14 +177,23 @@ function bridgeHarness(): BridgeHarness {
     listenerCount: (name) => listeners.get(name)?.size ?? 0,
     unsubscribes,
     openDialog,
+    openOverlayDialog,
+    beginBaseIntent,
+    acceptBaseIntent,
     openFolderScan,
     scanDroppedFolder,
     isDirectory,
     pathForFile,
+    readFile,
+    readFileWithin,
+    cancelFileRead,
     sendViewState,
     releaseFolderAccess,
     confirmClose,
-    cancelClose
+    cancelClose,
+    claimCloseResponder,
+    activateCloseResponder,
+    releaseCloseResponder
   }
 }
 
@@ -189,6 +229,7 @@ function windowHarness(): WindowHarness {
 function coordinator(): RuntimeCoordinator {
   return {
     openBase: vi.fn(async () => {}),
+    reportBaseError: vi.fn(),
     openOverlay: vi.fn(async () => {}),
     requestEntry: vi.fn(),
     navigate: vi.fn(),
@@ -237,6 +278,7 @@ function runtimeHarness(ownedCoordinator = coordinator()): RuntimeHarness {
   const storeUnsubscribe = vi.fn()
   const storeApi = {
     getState: store.getState,
+    openIntentGate: store.openIntentGate,
     subscribe: vi.fn(
       (
         listener: (
@@ -299,14 +341,18 @@ function dragEvent(file?: File, zone: 'base' | 'overlay' | 'auto' = 'auto'): obj
 }
 
 describe('renderer runtime lifecycle', () => {
-  it('initializes once, owns every subscription, and disposes repeatably', () => {
+  it('initializes once, owns every subscription and responder lease, and disposes repeatably', async () => {
     const h = runtimeHarness()
     h.runtime.init()
     h.runtime.init()
+    await tick()
 
     expect(h.coordinatorFactory).toHaveBeenCalledTimes(1)
-    expect(h.bridge.unsubscribes).toHaveLength(11)
+    expect(h.coordinatorFactory.mock.calls[0][1].intentGate).toBe(h.store.openIntentGate)
+    expect(h.bridge.unsubscribes).toHaveLength(13)
     expect(h.window.add).toHaveBeenCalledTimes(5)
+    expect(h.bridge.claimCloseResponder).toHaveBeenCalledTimes(1)
+    expect(h.bridge.activateCloseResponder).toHaveBeenCalledWith(1)
     expect(h.bridge.sendViewState).toHaveBeenCalledTimes(1)
     expect(h.document.title).toBe('neoview')
 
@@ -316,17 +362,24 @@ describe('renderer runtime lifecycle', () => {
     expect(h.bridge.unsubscribes.every((off) => off.mock.calls.length === 1)).toBe(true)
     expect(h.window.remove).toHaveBeenCalledTimes(5)
     expect(h.storeUnsubscribe).toHaveBeenCalledTimes(1)
+    expect(h.bridge.releaseCloseResponder).toHaveBeenCalledWith(1)
+    expect(h.bridge.releaseCloseResponder).toHaveBeenCalledTimes(1)
   })
 
-  it('mount, unmount, and mount again leaves only the new listeners active', () => {
+  it('mount, unmount, and mount again leaves only the new listeners and lease active', async () => {
     const h = runtimeHarness()
     h.runtime.init()
+    await tick()
     h.runtime.dispose()
 
     const nextCoordinator = coordinator()
     const next = createRendererRuntime({ ...h.deps, createCoordinator: () => nextCoordinator })
     runtimes.push(next)
     next.init()
+    await tick()
+
+    expect(h.bridge.activateCloseResponder.mock.calls).toEqual([[1], [2]])
+    expect(h.bridge.releaseCloseResponder).toHaveBeenCalledWith(1)
 
     for (const name of ['file-opened', 'overlay-opened', 'close', 'toggle-files']) {
       expect(h.bridge.listenerCount(name)).toBe(1)
@@ -334,9 +387,56 @@ describe('renderer runtime lifecycle', () => {
     for (const type of ['keydown', 'dragenter', 'dragleave', 'dragover', 'drop']) {
       expect(h.window.listenerCount(type)).toBe(1)
     }
-    h.bridge.emit('file-opened', opened())
+    h.bridge.emit('file-opened', 1, opened())
     expect(h.ownedCoordinator.openBase).not.toHaveBeenCalled()
     expect(nextCoordinator.openBase).toHaveBeenCalledTimes(1)
+  })
+
+  it('releases a responder claim that resolves after runtime disposal', async () => {
+    const h = runtimeHarness()
+    const claim = deferred<number>()
+    h.bridge.claimCloseResponder.mockReturnValueOnce(claim.promise)
+    h.runtime.init()
+    h.runtime.dispose()
+
+    claim.resolve(9)
+    await tick()
+    expect(h.bridge.activateCloseResponder).not.toHaveBeenCalled()
+    expect(h.bridge.releaseCloseResponder).toHaveBeenCalledWith(9)
+  })
+
+  it('continues disposal when responder activation or release IPC throws', async () => {
+    const h = runtimeHarness()
+    h.bridge.activateCloseResponder.mockImplementation(() => {
+      throw new Error('sender gone')
+    })
+    h.bridge.releaseCloseResponder.mockImplementation(() => {
+      throw new Error('sender gone')
+    })
+    h.runtime.init()
+    await tick()
+
+    expect(() => h.runtime.dispose()).not.toThrow()
+    expect(h.ownedCoordinator.dispose).toHaveBeenCalledTimes(1)
+    expect(h.bridge.unsubscribes.every((off) => off.mock.calls.length === 1)).toBe(true)
+    expect(h.window.remove).toHaveBeenCalledTimes(5)
+    expect(h.storeUnsubscribe).toHaveBeenCalledTimes(1)
+    expect(h.bridge.releaseCloseResponder).toHaveBeenCalledWith(1)
+  })
+
+  it('absorbs a failed release for a responder claim that settles after disposal', async () => {
+    const h = runtimeHarness()
+    const claim = deferred<number>()
+    h.bridge.claimCloseResponder.mockReturnValueOnce(claim.promise)
+    h.bridge.releaseCloseResponder.mockImplementation(() => {
+      throw new Error('sender gone')
+    })
+    h.runtime.init()
+    h.runtime.dispose()
+
+    claim.resolve(7)
+    await tick()
+    expect(h.bridge.releaseCloseResponder).toHaveBeenCalledWith(7)
   })
 
   it('folder close releases prefetch and main-side folder access', () => {
@@ -369,18 +469,19 @@ describe('renderer runtime event routing', () => {
     const h = runtimeHarness()
     h.runtime.init()
     const file = opened('sample.nii', '')
-    h.bridge.emit('file-opened', file)
-    h.bridge.emit('overlay-opened', file)
-    h.bridge.emit('file-error', 'Read failed')
+    h.bridge.emit('file-opened', 7, file)
+    h.bridge.emit('overlay-started', 4)
+    h.bridge.emit('overlay-opened', 4, file)
+    h.bridge.emit('file-error', 'Read failed', 6)
     h.bridge.emit('scan-progress', 3, '/r', scan('/r').files)
     h.bridge.emit('toggle-files')
     h.bridge.emit('toggle-side')
     h.bridge.emit('show-shortcuts')
 
-    expect(h.ownedCoordinator.openBase).toHaveBeenCalledWith(file.name, file.bytes, null)
+    expect(h.ownedCoordinator.openBase).toHaveBeenCalledWith(file.name, file.bytes, null, 7)
     expect(h.ownedCoordinator.openOverlay).toHaveBeenCalledWith(file.name, file.bytes)
     expect(h.ownedCoordinator.onScanBatch).toHaveBeenCalledWith(3, '/r', scan('/r').files)
-    expect(h.store.getState().errorMessage).toBe('Read failed')
+    expect(h.ownedCoordinator.reportBaseError).toHaveBeenCalledWith('Read failed', 6)
     expect(h.store.getState().filePanelOpen).toBe(false)
     expect(h.store.getState().sidePanelOpen).toBe(false)
     expect(h.store.getState().shortcutsOpen).toBe(true)
@@ -390,22 +491,66 @@ describe('renderer runtime event routing', () => {
     const h = runtimeHarness()
     const file = opened()
     h.bridge.openDialog.mockResolvedValue(file)
+    h.bridge.openOverlayDialog.mockResolvedValue(file)
     h.runtime.init()
     await h.runtime.openFileDialog()
     await h.runtime.addOverlayDialog()
-    expect(h.ownedCoordinator.openBase).toHaveBeenCalledWith(file.name, file.bytes, file.path)
+    expect(h.ownedCoordinator.openBase).toHaveBeenCalledWith(file.name, file.bytes, file.path, 1)
     expect(h.ownedCoordinator.openOverlay).toHaveBeenCalledWith(file.name, file.bytes)
   })
 
-  it('routes close confirmation to confirm and cancel branches', () => {
+  it('drops an overlay dialog result when the base session changed during the picker read', async () => {
+    const h = runtimeHarness()
+    const selected = deferred<OpenedFile | null>()
+    h.store.getState().setVolume(volume('first.nii'))
+    h.bridge.openOverlayDialog.mockReturnValueOnce(selected.promise)
+    h.runtime.init()
+
+    const adding = h.runtime.addOverlayDialog()
+    h.store.getState().setVolume(volume('replacement.nii'))
+    expect(h.bridge.cancelFileRead).toHaveBeenCalledTimes(1)
+    selected.resolve(opened('late.nii'))
+    await adding
+
+    expect(h.ownedCoordinator.openOverlay).not.toHaveBeenCalled()
+  })
+
+  it('binds a main-side overlay read to the base session visible at its start', () => {
+    const h = runtimeHarness()
+    h.store.getState().setVolume(volume('first.nii'))
+    h.runtime.init()
+    h.bridge.emit('overlay-started', 9)
+    h.store.getState().setVolume(volume('replacement.nii'))
+    h.bridge.emit('overlay-opened', 9, opened('late.nii'))
+    h.bridge.emit('overlay-error', 9, 'late error')
+
+    expect(h.ownedCoordinator.openOverlay).not.toHaveBeenCalled()
+    expect(h.store.getState().errorMessage).toBeNull()
+  })
+
+  it('routes close confirmation through the active responder lease', async () => {
     const h = runtimeHarness()
     h.runtime.init()
+    await tick()
     h.store.setState({ segDirty: true })
     h.confirm.mockReturnValueOnce(false).mockReturnValueOnce(true)
-    h.bridge.emit('close')
-    h.bridge.emit('close')
-    expect(h.bridge.cancelClose).toHaveBeenCalledTimes(1)
-    expect(h.bridge.confirmClose).toHaveBeenCalledTimes(1)
+    h.bridge.emit('close', 11, 1)
+    h.bridge.emit('close', 12, 1)
+    expect(h.bridge.cancelClose).toHaveBeenCalledWith(11, 1)
+    expect(h.bridge.confirmClose).toHaveBeenCalledWith(12, 1)
+  })
+
+  it('ignores a close request addressed to a replaced responder lease', async () => {
+    const h = runtimeHarness()
+    h.runtime.init()
+    await tick()
+    h.store.setState({ segDirty: true })
+
+    h.bridge.emit('close', 11, 2)
+
+    expect(h.confirm).not.toHaveBeenCalled()
+    expect(h.bridge.confirmClose).not.toHaveBeenCalled()
+    expect(h.bridge.cancelClose).not.toHaveBeenCalled()
   })
 
   it('keeps text undo native and routes other menu history to regions', () => {
@@ -449,7 +594,7 @@ describe('renderer runtime event routing', () => {
     expect(h.ownedCoordinator.navigate).not.toHaveBeenCalled()
   })
 
-  it('routes global region, brush, undo, folder, and shortcuts commands', () => {
+  it('routes global region, brush, undo, folder, and shortcuts commands', async () => {
     const h = runtimeHarness()
     const cancelSeg = vi.fn()
     const setBrushRadius = vi.fn()
@@ -469,10 +614,11 @@ describe('renderer runtime event routing', () => {
     h.window.dispatch('keydown', { key: 'z', ctrlKey: true, target: null, preventDefault: vi.fn() })
     h.window.dispatch('keydown', { key: 'ArrowUp', target: null, preventDefault: vi.fn() })
     h.window.dispatch('keydown', { key: '?', target: null, preventDefault: vi.fn() })
+    await tick()
     expect(cancelSeg).toHaveBeenCalledTimes(1)
     expect(setBrushRadius).toHaveBeenCalledWith(3)
     expect(undo).toHaveBeenCalledTimes(1)
-    expect(h.ownedCoordinator.navigate).toHaveBeenCalledWith(-1)
+    expect(h.ownedCoordinator.navigate).toHaveBeenCalledWith(-1, 1)
     expect(h.store.getState().shortcutsOpen).toBe(true)
   })
 })
@@ -486,6 +632,7 @@ describe('folder and drop flows', () => {
 
     const one = h.runtime.openFolderDialog()
     const duplicate = h.runtime.openFolderDialog()
+    await tick()
     expect(h.ownedCoordinator.scanFolder).toHaveBeenCalledTimes(1)
     first.resolve(scan())
     await Promise.all([one, duplicate])
@@ -495,18 +642,44 @@ describe('folder and drop flows', () => {
     expect(h.ownedCoordinator.scanFolder).toHaveBeenCalledTimes(2)
   })
 
-  it('releases the folder lock after failure and cleans its message', async () => {
+  it('releases the folder lock and routes failure through its original intent', async () => {
     const h = runtimeHarness()
-    h.bridge.openFolderScan.mockRejectedValueOnce(
-      new Error("Error invoking remote method 'open-folder-scan': Error: Scan failed")
-    )
+    const failure = new Error("Error invoking remote method 'open-folder-scan': Error: Scan failed")
+    h.bridge.openFolderScan.mockRejectedValueOnce(failure)
     h.runtime.init()
     await h.runtime.openFolderDialog()
-    expect(h.store.getState().errorMessage).toBe('Scan failed')
+    expect(h.ownedCoordinator.reportBaseError).toHaveBeenCalledWith(failure, 1)
 
     h.bridge.openFolderScan.mockResolvedValueOnce(null)
     await h.runtime.openFolderDialog()
     expect(h.ownedCoordinator.scanFolder).toHaveBeenCalledTimes(2)
+  })
+
+  it('does not let a scan outer catch overwrite newer base loading feedback', async () => {
+    const h = runtimeHarness()
+    h.runtime.dispose()
+    const scanResult = deferred<FolderScan | null>()
+    const parse = deferred<Volume>()
+    h.bridge.openFolderScan.mockReturnValueOnce(scanResult.promise)
+    const runtime = createRendererRuntime({
+      ...h.deps,
+      createCoordinator: undefined,
+      loadVolume: () => parse.promise
+    })
+    runtimes.push(runtime)
+    runtime.init()
+    const folderOpen = runtime.openFolderDialog()
+    await tick()
+
+    scanResult.reject(new Error('Older scan failed.'))
+    queueMicrotask(() => h.bridge.emit('file-opened', 2, opened('newer.nii')))
+    await folderOpen
+
+    expect(h.store.getState().loadState).toBe('loading')
+    expect(h.store.getState().errorMessage).toBeNull()
+    parse.resolve(volume('newer.nii'))
+    await tick()
+    expect(h.store.getState().volume?.name).toBe('newer.nii')
   })
 
   it('publishes drag state and resolves split drop zones', () => {
@@ -544,6 +717,44 @@ describe('folder and drop flows', () => {
     expect(h.ownedCoordinator.openBase).toHaveBeenCalledTimes(2)
   })
 
+  it('does not read base-drop bytes after a newer intent wins during the path probe', async () => {
+    const h = runtimeHarness()
+    const probe = deferred<boolean>()
+    const file = dropFile('slow.nii')
+    h.bridge.pathForFile.mockReturnValue('/x/slow.nii')
+    h.bridge.isDirectory.mockReturnValueOnce(probe.promise)
+    h.runtime.init()
+
+    h.window.dispatch('drop', dragEvent(file, 'base'))
+    await tick()
+    h.store.openIntentGate.accept(2)
+    probe.resolve(false)
+    await tick()
+
+    expect(file.arrayBuffer).not.toHaveBeenCalled()
+    expect(h.ownedCoordinator.openBase).not.toHaveBeenCalled()
+  })
+
+  it('drops overlay bytes that finish after the base session is replaced', async () => {
+    const h = runtimeHarness()
+    const data = deferred<ArrayBuffer>()
+    const file = {
+      name: 'late.nii',
+      size: 8,
+      arrayBuffer: vi.fn(() => data.promise)
+    } as unknown as File
+    h.store.getState().setVolume(volume('first.nii'))
+    h.runtime.init()
+
+    h.window.dispatch('drop', dragEvent(file, 'overlay'))
+    await vi.waitFor(() => expect(file.arrayBuffer).toHaveBeenCalledTimes(1))
+    h.store.getState().setVolume(volume('replacement.nii'))
+    data.resolve(bytes())
+    await tick()
+
+    expect(h.ownedCoordinator.openOverlay).not.toHaveBeenCalled()
+  })
+
   it('routes a directory drop into scanning without opening it as a file', async () => {
     const h = runtimeHarness()
     const file = dropFile('folder', 0)
@@ -564,14 +775,32 @@ describe('folder and drop flows', () => {
     const wrong = dropFile('a.zip')
     h.window.dispatch('drop', dragEvent(wrong))
     await tick()
-    expect(h.store.getState().errorMessage).toContain('.nii')
+    expect(h.ownedCoordinator.reportBaseError).toHaveBeenCalledWith(
+      expect.stringContaining('.nii'),
+      1
+    )
 
     const large = dropFile('a.nii', 10)
     h.deps.maxBytes = 5
     h.window.dispatch('drop', dragEvent(large))
     await tick()
-    expect(h.store.getState().errorMessage).toContain('larger than 2 GB')
+    expect(h.ownedCoordinator.reportBaseError).toHaveBeenLastCalledWith(
+      expect.stringContaining('larger than 2 GB'),
+      2
+    )
     expect(large.arrayBuffer).not.toHaveBeenCalled()
+  })
+
+  it('preserves a direct base rejection message through the ordering coordinator', async () => {
+    const h = runtimeHarness()
+    h.runtime.dispose()
+    const runtime = createRendererRuntime({ ...h.deps, createCoordinator: undefined })
+    runtimes.push(runtime)
+    runtime.init()
+
+    h.window.dispatch('drop', dragEvent(dropFile('a.zip')))
+    await tick()
+    expect(h.store.getState().errorMessage).toContain('.nii')
   })
 })
 
@@ -588,25 +817,156 @@ describe('disposed async work', () => {
     expect(h.ownedCoordinator.openBase).not.toHaveBeenCalled()
   })
 
+  it('cancels an overlay dialog read when its runtime is disposed', async () => {
+    const h = runtimeHarness()
+    const result = deferred<OpenedFile | null>()
+    h.bridge.openOverlayDialog.mockReturnValueOnce(result.promise)
+    h.runtime.init()
+
+    const pending = h.runtime.addOverlayDialog()
+    await vi.waitFor(() => expect(h.bridge.openOverlayDialog).toHaveBeenCalledTimes(1))
+    h.runtime.dispose()
+
+    expect(h.bridge.cancelFileRead).toHaveBeenCalledWith(expect.any(Number))
+    result.resolve(opened())
+    await pending
+    expect(h.ownedCoordinator.openOverlay).not.toHaveBeenCalled()
+  })
+
+  it('cancels an obsolete main-side folder read before starting the new target', async () => {
+    const h = runtimeHarness()
+    h.runtime.dispose()
+    const reads: Array<{
+      path: string
+      requestId: number
+      result: Deferred<OpenedFile>
+    }> = []
+    h.bridge.readFile.mockImplementation((path, requestId) => {
+      const result = deferred<OpenedFile>()
+      reads.push({ path, requestId, result })
+      return result.promise
+    })
+    h.store.setState({
+      sourcePath: '/r/a.nii',
+      folder: {
+        root: '/r',
+        files: [
+          { name: 'a.nii', path: '/r/a.nii', relDir: '' },
+          { name: 'b.nii', path: '/r/b.nii', relDir: '' },
+          { name: 'c.nii', path: '/r/c.nii', relDir: '' }
+        ],
+        truncated: false
+      }
+    })
+    const runtime = createRendererRuntime({ ...h.deps, createCoordinator: undefined })
+    runtimes.push(runtime)
+    runtime.init()
+
+    runtime.requestEntry('/r/b.nii')
+    await tick()
+    expect(reads.map((read) => read.path)).toEqual(['/r/b.nii'])
+    runtime.requestEntry('/r/c.nii')
+    await tick()
+
+    expect(h.bridge.cancelFileRead).toHaveBeenCalledWith(reads[0].requestId)
+    expect(reads.map((read) => read.path)).toEqual(['/r/b.nii', '/r/c.nii'])
+    expect(reads[1].requestId).not.toBe(reads[0].requestId)
+
+    runtime.dispose()
+    expect(h.bridge.cancelFileRead).toHaveBeenCalledWith(reads[1].requestId)
+    for (const read of reads) read.result.resolve(opened(read.path.split('/').at(-1), read.path))
+    await tick()
+  })
+
+  it('cancels a main-side prefetch when the runtime is disposed', async () => {
+    const h = runtimeHarness()
+    h.runtime.dispose()
+    const result = deferred<OpenedFile | null>()
+    let requestId = 0
+    h.bridge.readFileWithin.mockImplementation((_path, _maxBytes, ownedRequestId) => {
+      requestId = ownedRequestId
+      return result.promise
+    })
+    h.store.setState({
+      sourcePath: '/r/a.nii',
+      folder: {
+        root: '/r',
+        files: [
+          { name: 'a.nii', path: '/r/a.nii', relDir: '' },
+          { name: 'b.nii', path: '/r/b.nii', relDir: '' }
+        ],
+        truncated: false
+      }
+    })
+    const runtime = createRendererRuntime({ ...h.deps, createCoordinator: undefined })
+    runtimes.push(runtime)
+    runtime.init()
+
+    runtime.requestEntry('/r/a.nii')
+    await tick()
+    expect(h.bridge.readFileWithin).toHaveBeenCalledWith('/r/b.nii', expect.any(Number), requestId)
+
+    runtime.dispose()
+    expect(h.bridge.cancelFileRead).toHaveBeenCalledWith(requestId)
+    result.resolve(null)
+    await tick()
+  })
+
   it('invalidates a parse and settles loading when dispose happens first', async () => {
     const h = runtimeHarness()
     h.runtime.dispose()
     const parse = deferred<Volume>()
+    let signal: AbortSignal | undefined
     const runtime = createRendererRuntime({
       ...h.deps,
       createCoordinator: undefined,
-      loadVolume: () => parse.promise
+      loadVolume: (_name, _bytes, options) => {
+        signal = options?.signal
+        return parse.promise
+      }
     })
     runtimes.push(runtime)
     runtime.init()
-    h.bridge.emit('file-opened', opened())
+    h.bridge.emit('file-opened', 1, opened())
     await tick()
     expect(h.store.getState().loadState).toBe('loading')
+    expect(signal?.aborted).toBe(false)
     runtime.dispose()
+    expect(signal?.aborted).toBe(true)
     expect(h.store.getState().loadState).not.toBe('loading')
     parse.resolve(volume('late.nii'))
     await tick()
     expect(h.store.getState().volume).toBe(null)
+  })
+
+  it('passes cancellation ownership to an overlay worker and aborts it on dispose', async () => {
+    const h = runtimeHarness()
+    h.runtime.dispose()
+    const parse = deferred<Volume>()
+    let options: { skipTex?: true; signal?: AbortSignal } | undefined
+    const runtime = createRendererRuntime({
+      ...h.deps,
+      createCoordinator: undefined,
+      loadVolume: (_name, _bytes, loadOptions) => {
+        options = loadOptions
+        return parse.promise
+      }
+    })
+    runtimes.push(runtime)
+    h.store.getState().setVolume(volume())
+    runtime.init()
+    h.bridge.emit('overlay-started', 20)
+    h.bridge.emit('overlay-opened', 20, opened('layer.nii'))
+    await tick()
+
+    expect(options?.skipTex).toBe(true)
+    expect(options?.signal?.aborted).toBe(false)
+    runtime.dispose()
+    expect(options?.signal?.aborted).toBe(true)
+
+    parse.reject(new Error('aborted'))
+    await tick()
+    expect(h.store.getState().overlays).toEqual([])
   })
 
   it('drops a layer parse that settles after the base identity changes', async () => {
@@ -624,7 +984,8 @@ describe('disposed async work', () => {
     h.store.getState().setVolume(original)
     runtime.init()
 
-    h.bridge.emit('overlay-opened', opened('layer.nii'))
+    h.bridge.emit('overlay-started', 21)
+    h.bridge.emit('overlay-opened', 21, opened('layer.nii'))
     await tick()
     expect(h.store.getState().loadState).toBe('loading')
     h.store.getState().setVolume(volume('replacement.nii'))
@@ -649,7 +1010,8 @@ describe('disposed async work', () => {
     h.store.getState().setVolume(volume('original.nii'))
     runtime.init()
 
-    h.bridge.emit('overlay-opened', opened('layer.nii'))
+    h.bridge.emit('overlay-started', 22)
+    h.bridge.emit('overlay-opened', 22, opened('layer.nii'))
     await tick()
     h.store.getState().setVolume(volume('replacement.nii'))
     h.store.getState().fail('Replacement failed.')
@@ -674,7 +1036,8 @@ describe('disposed async work', () => {
     h.store.getState().setVolume(volume('original.nii'))
     runtime.init()
 
-    h.bridge.emit('overlay-opened', opened('layer.nii'))
+    h.bridge.emit('overlay-started', 23)
+    h.bridge.emit('overlay-opened', 23, opened('layer.nii'))
     await tick()
     h.store.getState().setVolume(volume('replacement.nii'))
     h.store.getState().fail('Replacement failed.')

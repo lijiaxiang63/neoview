@@ -4,9 +4,27 @@ import { describe, expect, it, vi } from 'vitest'
 import type { FolderEntry, FolderScan } from '../src/shared/files'
 import { FileAccessAuthorizer } from '../src/main/files/access'
 import { registerFileIpc, type FileIpcDependencies } from '../src/main/files/ipc'
+import { OpenJobCoordinator } from '../src/main/openJobs'
+import { createRendererMainFrameGate } from '../src/main/rendererProtocol'
 
 type InvokeHandler = (event: IpcMainInvokeEvent, ...args: unknown[]) => unknown
 type EventHandler = (event: IpcMainEvent, ...args: unknown[]) => void
+
+interface Deferred<T> {
+  promise: Promise<T>
+  resolve(value: T): void
+  reject(error: unknown): void
+}
+
+function deferred<T>(): Deferred<T> {
+  let resolve!: (value: T) => void
+  let reject!: (error: unknown) => void
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res
+    reject = rej
+  })
+  return { promise, resolve, reject }
+}
 
 class FakeIpc {
   readonly handlers = new Map<string, InvokeHandler>()
@@ -32,14 +50,30 @@ class FakeIpc {
   }
 
   async invoke(channel: string, sender: FakeSender, ...args: unknown[]): Promise<unknown> {
+    return this.invokeFrom(channel, sender, sender.mainFrame, ...args)
+  }
+
+  async invokeFrom(
+    channel: string,
+    sender: FakeSender,
+    senderFrame: object,
+    ...args: unknown[]
+  ): Promise<unknown> {
     const handler = this.handlers.get(channel)
     if (!handler) throw new Error(`missing handler: ${channel}`)
-    return handler({ sender: sender as unknown as WebContents } as IpcMainInvokeEvent, ...args)
+    return handler(
+      { sender: sender as unknown as WebContents, senderFrame } as IpcMainInvokeEvent,
+      ...args
+    )
   }
 
   emit(channel: string, sender: FakeSender, ...args: unknown[]): void {
+    this.emitFrom(channel, sender, sender.mainFrame, ...args)
+  }
+
+  emitFrom(channel: string, sender: FakeSender, senderFrame: object, ...args: unknown[]): void {
     for (const handler of this.listeners.get(channel) ?? []) {
-      handler({ sender: sender as unknown as WebContents } as IpcMainEvent, ...args)
+      handler({ sender: sender as unknown as WebContents, senderFrame } as IpcMainEvent, ...args)
     }
   }
 
@@ -51,6 +85,7 @@ class FakeIpc {
 class FakeSender extends EventEmitter {
   readonly id: number
   readonly sent: Array<{ channel: string; payload: unknown }> = []
+  mainFrame: { url: string } = { url: 'app://renderer/index.html' }
   private destroyed = false
 
   constructor(id: number) {
@@ -85,6 +120,7 @@ function makeDependencies(
     ipc: ipc as unknown as FileIpcDependencies['ipc'],
     access,
     dialogs: {
+      pickFilePath: async () => null,
       pickAndRead: async () => null,
       pickScanRoot: async () => '/root',
       pickExportDirectory: async () => '/export'
@@ -116,6 +152,8 @@ function makeDependencies(
     exporter: {
       write: async (request) => ({ path: `${request.dir}/${request.fileName}`, sidecarPath: null })
     },
+    openJobs: new OpenJobCoordinator<WebContents>(),
+    isTrustedMainFrame: createRendererMainFrameGate(null),
     windowFromSender: () => ({}) as BrowserWindow,
     isDirectory: async () => true,
     revealInFolder: () => {},
@@ -154,10 +192,10 @@ describe('file IPC registration', () => {
     ])
     expect(access.activeRoot(owner.id)).toBe('/root')
     ipc.emit('confirm-folder-scan', owner, 44)
-    await expect(ipc.invoke('read-file', owner, '/root/a.nii')).resolves.toMatchObject({
+    await expect(ipc.invoke('read-file', owner, '/root/a.nii', 1)).resolves.toMatchObject({
       path: '/root/a.nii'
     })
-    await expect(ipc.invoke('read-file', other, '/root/a.nii')).rejects.toThrow('outside')
+    await expect(ipc.invoke('read-file', other, '/root/a.nii', 1)).rejects.toThrow('outside')
     ipc.emit('release-folder-access', owner)
     expect(access.activeRoot(owner.id)).toBeNull()
     dispose()
@@ -171,6 +209,7 @@ describe('file IPC registration', () => {
     const dispose = registerFileIpc(
       makeDependencies(ipc, access, {
         dialogs: {
+          pickFilePath: async () => null,
           pickAndRead: async () => null,
           pickScanRoot: async () => null,
           pickExportDirectory: async () => null
@@ -183,24 +222,26 @@ describe('file IPC registration', () => {
 
     sender.destroy()
     expect(access.activeRoot(sender.id)).toBeNull()
-    expect(sender.listenerCount('did-start-navigation')).toBe(0)
+    expect(sender.listenerCount('did-navigate')).toBe(0)
     expect(sender.listenerCount('render-process-gone')).toBe(0)
     dispose()
   })
 
-  it('releases access on a new main-frame document but not same-document or subframe navigation', async () => {
+  it('keeps access through failed navigation and releases it only after a new document commits', async () => {
     const ipc = new FakeIpc()
     const access = new FileAccessAuthorizer({ realpath: async (path) => path })
     const dispose = registerFileIpc(makeDependencies(ipc, access))
     const sender = new FakeSender(14)
     await ipc.invoke('scan-folder', sender, '/root', 1)
 
-    sender.emit('did-start-navigation', { isMainFrame: true, isSameDocument: true })
+    sender.emit('did-start-navigation', { isMainFrame: true, isSameDocument: false })
     expect(access.activeRoot(sender.id)).toBe('/root')
-    sender.emit('did-start-navigation', { isMainFrame: false, isSameDocument: false })
+    sender.emit('will-redirect', { url: 'https://remote.test/' })
+    expect(access.activeRoot(sender.id)).toBe('/root')
+    sender.emit('did-fail-load', { isMainFrame: true })
     expect(access.activeRoot(sender.id)).toBe('/root')
 
-    sender.emit('did-start-navigation', { isMainFrame: true, isSameDocument: false })
+    sender.emit('did-navigate')
     expect(access.activeRoot(sender.id)).toBeNull()
     dispose()
   })
@@ -218,6 +259,34 @@ describe('file IPC registration', () => {
     dispose()
   })
 
+  it('rejects a remote document even when it is the current main frame', async () => {
+    const ipc = new FakeIpc()
+    const access = new FileAccessAuthorizer({ realpath: async (path) => path })
+    const write = vi.fn(async () => ({ path: '/export/item.nii', sidecarPath: null }))
+    const reveal = vi.fn()
+    const note = vi.fn()
+    const dispose = registerFileIpc(
+      makeDependencies(ipc, access, {
+        exporter: { write },
+        revealInFolder: reveal,
+        noteFileOpened: note
+      })
+    )
+    const sender = new FakeSender(17)
+    sender.mainFrame = { url: 'https://remote.test/' }
+
+    await expect(ipc.invoke('export-file', sender, {})).rejects.toThrow(
+      'File operation is unavailable.'
+    )
+    ipc.emit('reveal-in-folder', sender, '/export/item.nii')
+    ipc.emit('note-file-opened', sender, '/export/item.nii')
+
+    expect(write).not.toHaveBeenCalled()
+    expect(reveal).not.toHaveBeenCalled()
+    expect(note).not.toHaveBeenCalled()
+    dispose()
+  })
+
   it('does not carry access into a different webContents object with the same id', async () => {
     const ipc = new FakeIpc()
     const access = new FileAccessAuthorizer({ realpath: async (path) => path })
@@ -227,7 +296,7 @@ describe('file IPC registration', () => {
     await ipc.invoke('scan-folder', original, '/root', 1)
     expect(access.activeRoot(12)).toBe('/root')
 
-    await expect(ipc.invoke('read-file', replacement, '/root/a.nii')).rejects.toThrow('outside')
+    await expect(ipc.invoke('read-file', replacement, '/root/a.nii', 1)).rejects.toThrow('outside')
     expect(access.activeRoot(12)).toBeNull()
     dispose()
   })
@@ -312,6 +381,221 @@ describe('file IPC registration', () => {
     dispose()
   })
 
+  it('cancels only the owned read request and aborts remaining reads on sender loss', async () => {
+    const ipc = new FakeIpc()
+    const access = new FileAccessAuthorizer({ realpath: async (path) => path })
+    const operations: Array<{
+      path: string
+      signal: AbortSignal
+      result: Deferred<{ name: string; path: string; bytes: ArrayBuffer }>
+    }> = []
+    const read: FileIpcDependencies['reader']['read'] = async (
+      _source,
+      openedPath = _source,
+      signal
+    ) => {
+      const result = deferred<{ name: string; path: string; bytes: ArrayBuffer }>()
+      const ownedSignal = signal ?? new AbortController().signal
+      const onAbort = (): void => result.reject(ownedSignal.reason)
+      if (ownedSignal.aborted) onAbort()
+      else ownedSignal.addEventListener('abort', onAbort, { once: true })
+      operations.push({ path: openedPath, signal: ownedSignal, result })
+      return result.promise.finally(() => ownedSignal.removeEventListener('abort', onAbort))
+    }
+    const dispose = registerFileIpc(
+      makeDependencies(ipc, access, {
+        reader: {
+          read,
+          readWithin: async () => null,
+          readNamed: async (_source, name, openedPath = '') => ({
+            name,
+            path: openedPath,
+            bytes: new ArrayBuffer(1)
+          })
+        }
+      })
+    )
+    const sender = new FakeSender(21)
+    await activate(access, sender.id, '/root')
+
+    const first = ipc.invoke('read-file', sender, '/root/a.nii', 101)
+    const second = ipc.invoke('read-file', sender, '/root/b.nii', 102)
+    await vi.waitFor(() => expect(operations).toHaveLength(2))
+    ipc.emit('cancel-file-read', sender, 101)
+
+    await expect(first).rejects.toMatchObject({ name: 'AbortError' })
+    expect(operations.map(({ path }) => path)).toEqual(['/root/a.nii', '/root/b.nii'])
+    expect(operations.map(({ signal }) => signal.aborted)).toEqual([true, false])
+    operations[1].result.resolve({
+      name: 'b.nii',
+      path: '/root/b.nii',
+      bytes: new ArrayBuffer(1)
+    })
+    await expect(second).resolves.toMatchObject({ path: '/root/b.nii' })
+
+    const third = ipc.invoke('read-file', sender, '/root/c.nii', 103)
+    await vi.waitFor(() => expect(operations).toHaveLength(3))
+    sender.destroy()
+    await expect(third).rejects.toMatchObject({ name: 'AbortError' })
+    expect(operations[2].signal.aborted).toBe(true)
+    dispose()
+  })
+
+  it('passes cancellation ownership through the size-limited read channel', async () => {
+    const ipc = new FakeIpc()
+    const access = new FileAccessAuthorizer({ realpath: async (path) => path })
+    let signal: AbortSignal | undefined
+    const pending = deferred<never>()
+    const dispose = registerFileIpc(
+      makeDependencies(ipc, access, {
+        reader: {
+          read: async () => ({ name: 'a.nii', path: '/root/a.nii', bytes: new ArrayBuffer(1) }),
+          readWithin: async (_source, _maxBytes, _openedPath, ownedSignal) => {
+            signal = ownedSignal
+            const onAbort = (): void => pending.reject(ownedSignal?.reason)
+            ownedSignal?.addEventListener('abort', onAbort, { once: true })
+            return pending.promise.finally(() => ownedSignal?.removeEventListener('abort', onAbort))
+          },
+          readNamed: async (_source, name, openedPath = '') => ({
+            name,
+            path: openedPath,
+            bytes: new ArrayBuffer(1)
+          })
+        }
+      })
+    )
+    const sender = new FakeSender(22)
+    await activate(access, sender.id, '/root')
+
+    const read = ipc.invoke('read-file-limited', sender, '/root/a.nii', 1024, 201)
+    await vi.waitFor(() => expect(signal).toBeDefined())
+    ipc.emit('cancel-file-read', sender, 201)
+
+    await expect(read).rejects.toMatchObject({ name: 'AbortError' })
+    expect(signal?.aborted).toBe(true)
+    dispose()
+  })
+
+  it('cancels an overlay picker/read when its renderer owner releases the request', async () => {
+    const ipc = new FakeIpc()
+    const access = new FileAccessAuthorizer({ realpath: async (path) => path })
+    let signal: AbortSignal | undefined
+    const pending = deferred<never>()
+    const dispose = registerFileIpc(
+      makeDependencies(ipc, access, {
+        dialogs: {
+          pickFilePath: async () => null,
+          pickAndRead: async (_window, ownedSignal) => {
+            signal = ownedSignal
+            const onAbort = (): void => pending.reject(ownedSignal?.reason)
+            ownedSignal?.addEventListener('abort', onAbort, { once: true })
+            return pending.promise.finally(() => ownedSignal?.removeEventListener('abort', onAbort))
+          },
+          pickScanRoot: async () => null,
+          pickExportDirectory: async () => null
+        }
+      })
+    )
+    const sender = new FakeSender(25)
+
+    const opening = ipc.invoke('open-overlay-dialog', sender, 301)
+    await vi.waitFor(() => expect(signal).toBeDefined())
+    ipc.emit('cancel-file-read', sender, 301)
+
+    await expect(opening).resolves.toBeNull()
+    expect(signal?.aborted).toBe(true)
+    dispose()
+  })
+
+  it('rejects stale document cancel and release messages after request-id reuse', async () => {
+    const ipc = new FakeIpc()
+    const access = new FileAccessAuthorizer({ realpath: async (path) => path })
+    let signal: AbortSignal | undefined
+    const pending = deferred<{ name: string; path: string; bytes: ArrayBuffer }>()
+    const dispose = registerFileIpc(
+      makeDependencies(ipc, access, {
+        reader: {
+          read: async (_source, _openedPath = _source, ownedSignal) => {
+            void _openedPath
+            signal = ownedSignal
+            const onAbort = (): void => pending.reject(ownedSignal?.reason)
+            ownedSignal?.addEventListener('abort', onAbort, { once: true })
+            return pending.promise.finally(() => ownedSignal?.removeEventListener('abort', onAbort))
+          },
+          readWithin: async () => null,
+          readNamed: async (_source, name, openedPath = '') => ({
+            name,
+            path: openedPath,
+            bytes: new ArrayBuffer(1)
+          })
+        }
+      })
+    )
+    const sender = new FakeSender(23)
+    const oldFrame = sender.mainFrame
+    await ipc.invoke('scan-folder', sender, '/old', 1)
+    ipc.emit('confirm-folder-scan', sender, 1)
+
+    sender.emit('did-navigate')
+    sender.mainFrame = { url: 'app://renderer/reloaded.html' }
+    await ipc.invoke('scan-folder', sender, '/new', 2)
+    ipc.emit('confirm-folder-scan', sender, 2)
+    const read = ipc.invoke('read-file', sender, '/new/a.nii', 1)
+    await vi.waitFor(() => expect(signal).toBeDefined())
+
+    ipc.emitFrom('cancel-file-read', sender, oldFrame, 1)
+    ipc.emitFrom('release-folder-access', sender, oldFrame)
+    expect(signal?.aborted).toBe(false)
+    expect(access.activeRoot(sender.id)).toBe('/new')
+
+    ipc.emit('cancel-file-read', sender, 1)
+    await expect(read).rejects.toMatchObject({ name: 'AbortError' })
+    dispose()
+  })
+
+  it('drops a picked base file when its originating document navigated', async () => {
+    const ipc = new FakeIpc()
+    const access = new FileAccessAuthorizer({ realpath: async (path) => path })
+    const picked = deferred<string | null>()
+    const read = vi.fn(async () => ({
+      name: 'a.nii',
+      path: '/root/a.nii',
+      bytes: new ArrayBuffer(1)
+    }))
+    const openJobs = new OpenJobCoordinator<WebContents>()
+    const dispose = registerFileIpc(
+      makeDependencies(ipc, access, {
+        openJobs,
+        dialogs: {
+          pickFilePath: () => picked.promise,
+          pickAndRead: async () => null,
+          pickScanRoot: async () => null,
+          pickExportDirectory: async () => null
+        },
+        reader: {
+          read,
+          readWithin: async () => null,
+          readNamed: async (_source, name, openedPath = '') => ({
+            name,
+            path: openedPath,
+            bytes: new ArrayBuffer(1)
+          })
+        }
+      })
+    )
+    const sender = new FakeSender(24)
+    const opening = ipc.invoke('open-dialog', sender, 1)
+    await Promise.resolve()
+    openJobs.invalidateOwner(sender as unknown as WebContents)
+    sender.mainFrame = { url: 'app://renderer/reloaded.html' }
+    picked.resolve('/root/a.nii')
+
+    await expect(opening).resolves.toBeNull()
+    expect(read).not.toHaveBeenCalled()
+    expect(openJobs.current()).toBe(0)
+    dispose()
+  })
+
   it('rolls back duplicate registration and disposes handlers, listeners, and access once', async () => {
     const ipc = new FakeIpc()
     const access = new FileAccessAuthorizer({ realpath: async (path) => path })
@@ -321,10 +605,10 @@ describe('file IPC registration', () => {
     await ipc.invoke('scan-folder', sender, '/root', 1)
 
     expect(() => registerFileIpc(deps)).toThrow('duplicate handler')
-    expect(ipc.handlers.size).toBe(8)
-    expect(ipc.listenerCount()).toBe(5)
+    expect(ipc.handlers.size).toBe(9)
+    expect(ipc.listenerCount()).toBe(6)
     expect(access.activeRoot(sender.id)).toBe('/root')
-    expect(sender.listenerCount('did-start-navigation')).toBe(1)
+    expect(sender.listenerCount('did-navigate')).toBe(1)
     expect(sender.listenerCount('render-process-gone')).toBe(1)
 
     dispose()
@@ -332,8 +616,10 @@ describe('file IPC registration', () => {
     expect(ipc.handlers.size).toBe(0)
     expect(ipc.listenerCount()).toBe(0)
     expect(access.activeRoot(sender.id)).toBeNull()
-    expect(sender.listenerCount('did-start-navigation')).toBe(0)
+    expect(sender.listenerCount('did-navigate')).toBe(0)
     expect(sender.listenerCount('render-process-gone')).toBe(0)
-    await expect(ipc.invoke('read-file', sender, '/root/a.nii')).rejects.toThrow('missing handler')
+    await expect(ipc.invoke('read-file', sender, '/root/a.nii', 1)).rejects.toThrow(
+      'missing handler'
+    )
   })
 })

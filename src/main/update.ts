@@ -4,146 +4,91 @@ import { createWriteStream, readFileSync, promises as fs } from 'fs'
 import { createHash } from 'crypto'
 import { once } from 'events'
 import { finished } from 'stream/promises'
-import { join } from 'path'
+import { dirname, join } from 'path'
 import { findUpdate, type UpdateInfo } from './updateCheck'
-import type { UpdateInstallResult, UpdateProgress, UpdateStatus } from '../shared/updates'
+import {
+  createUpdateController,
+  FinalQuitInstaller,
+  PendingTasks,
+  prepareSavedProduct,
+  releaseFailedDownload,
+  RetainedCleanup,
+  settleUpdateShutdown,
+  type UpdateSettings
+} from './updateService'
+import type { UpdateInstallResult, UpdateSnapshot } from '../shared/updates'
+import { sendIfAlive } from './windowLifecycle'
+import { createUpdateIpcPort, registerUpdateIpc } from './updateIpc'
+import type { RendererMainFrameGate } from './rendererProtocol'
 
 const RELEASE_API = 'https://api.github.com/repos/lijiaxiang63/neoview/releases/latest'
 const CHECK_TIMEOUT_MS = 15_000
-// Late enough that the first check never competes with app startup.
 const STARTUP_CHECK_DELAY_MS = 10_000
 const PROGRESS_INTERVAL_MS = 150
 
-interface UpdateSettings {
-  autoCheck: boolean
-  /** Version the user chose to skip; auto-checks stay quiet about it. */
-  skippedVersion: string | null
+export interface UpdateService {
+  autoCheckEnabled(): boolean
+  setAutoCheck(enabled: boolean): void
+  checkForUpdates(manual: boolean): Promise<void>
+  closeCancelled(): void
+  finalizeQuit(): void
+  dispose(): Promise<void>
 }
 
-let settingsPath = ''
-let settings: UpdateSettings = { autoCheck: true, skippedVersion: null }
-
-function loadSettings(): void {
+function loadSettings(path: string): UpdateSettings {
   try {
-    const raw = JSON.parse(readFileSync(settingsPath, 'utf8'))
-    settings = {
+    const raw = JSON.parse(readFileSync(path, 'utf8'))
+    return {
       autoCheck: typeof raw.autoCheck === 'boolean' ? raw.autoCheck : true,
       skippedVersion: typeof raw.skippedVersion === 'string' ? raw.skippedVersion : null
     }
   } catch {
-    // First run or unreadable file: keep defaults.
-  }
-}
-
-function saveSettings(): void {
-  void fs.writeFile(settingsPath, JSON.stringify(settings, null, 2)).catch(() => {})
-}
-
-export function autoCheckEnabled(): boolean {
-  return settings.autoCheck
-}
-
-export function setAutoCheck(enabled: boolean): void {
-  settings.autoCheck = enabled
-  saveSettings()
-}
-
-function sendStatus(win: BrowserWindow, status: UpdateStatus): void {
-  if (!win.isDestroyed() && !win.webContents.isDestroyed()) {
-    win.webContents.send('update-status', status)
+    return { autoCheck: true, skippedVersion: null }
   }
 }
 
 const userAgent = (): string => `neoview/${app.getVersion()}`
 
-let checking = false
-// Whether the in-flight check must report its result to a manual caller. A
-// silent auto-check only speaks up on an available update, so a manual request
-// that arrives mid-flight promotes this — otherwise the user gets no reply.
-let reportManual = false
-let pendingUpdate: UpdateInfo | null = null
-
-export async function checkForUpdates(win: BrowserWindow, manual: boolean): Promise<void> {
-  if (checking) {
-    if (manual && !reportManual) {
-      reportManual = true
-      sendStatus(win, { kind: 'checking', manual: true })
-    }
-    return
-  }
-  checking = true
-  reportManual = manual
-  if (reportManual) sendStatus(win, { kind: 'checking', manual: true })
-  try {
-    // net.fetch (here and in downloadUpdate) goes through Chromium's network
-    // stack, so system proxy settings apply — Node's global fetch ignores them.
-    const res = await net.fetch(RELEASE_API, {
-      headers: { 'User-Agent': userAgent(), Accept: 'application/vnd.github+json' },
-      signal: AbortSignal.timeout(CHECK_TIMEOUT_MS)
-    })
-    if (!res.ok) throw new Error(`release lookup returned HTTP ${res.status}`)
-    const release = await res.json()
-    const update = findUpdate(release, app.getVersion(), process.platform, process.arch)
-    if (!update) {
-      if (reportManual) sendStatus(win, { kind: 'none', manual: true, version: app.getVersion() })
-    } else if (!reportManual && update.version === settings.skippedVersion) {
-      // The user skipped this version; stay quiet until the next one.
-    } else {
-      pendingUpdate = update
-      sendStatus(win, {
-        kind: 'available',
-        manual: reportManual,
-        version: update.version,
-        notesUrl: update.notesUrl,
-        assetName: update.asset.name,
-        assetSize: update.asset.size
-      })
-    }
-  } catch (err) {
-    if (reportManual) {
-      const message = err instanceof Error ? err.message : 'update check failed'
-      sendStatus(win, { kind: 'error', manual: true, message })
-    }
-  } finally {
-    checking = false
-    reportManual = false
-  }
+async function findAvailableUpdate(signal: AbortSignal): Promise<UpdateInfo | null> {
+  const response = await net.fetch(RELEASE_API, {
+    headers: { 'User-Agent': userAgent(), Accept: 'application/vnd.github+json' },
+    signal: AbortSignal.any([signal, AbortSignal.timeout(CHECK_TIMEOUT_MS)])
+  })
+  if (!response.ok) throw new Error(`release lookup returned HTTP ${response.status}`)
+  return findUpdate(await response.json(), app.getVersion(), process.platform, process.arch)
 }
 
-let downloadAbort: AbortController | null = null
-
-/** Resolves with the downloaded file path, or null when cancelled. */
-async function downloadUpdate(win: BrowserWindow): Promise<string | null> {
-  const update = pendingUpdate
-  if (!update) throw new Error('No update available to download.')
-  downloadAbort?.abort()
-  const abort = new AbortController()
-  downloadAbort = abort
+async function downloadUpdate(
+  update: UpdateInfo,
+  signal: AbortSignal,
+  onProgress: (received: number, total: number) => void,
+  releaseDirectory: (path: string) => Promise<void>
+): Promise<string | null> {
   const dir = await fs.mkdtemp(join(app.getPath('temp'), 'neoview-update-'))
   const filePath = join(dir, update.asset.name)
   let out: ReturnType<typeof createWriteStream> | null = null
   try {
-    const res = await net.fetch(update.asset.url, {
+    const response = await net.fetch(update.asset.url, {
       headers: { 'User-Agent': userAgent() },
-      signal: abort.signal
+      signal
     })
-    if (!res.ok || !res.body) throw new Error(`download returned HTTP ${res.status}`)
-    const total = Number(res.headers.get('content-length')) || update.asset.size
+    if (!response.ok || !response.body) {
+      throw new Error(`download returned HTTP ${response.status}`)
+    }
+    const total = Number(response.headers.get('content-length')) || update.asset.size
     const hash = update.asset.digest?.startsWith('sha256:') ? createHash('sha256') : null
     out = createWriteStream(filePath)
-    // Swallow raw 'error' events; once()/finished() below still surface them.
     out.on('error', () => {})
     let received = 0
     let lastProgress = 0
-    for await (const chunk of res.body as unknown as AsyncIterable<Uint8Array>) {
+    for await (const chunk of response.body as unknown as AsyncIterable<Uint8Array>) {
       hash?.update(chunk)
       received += chunk.byteLength
       if (!out.write(chunk)) await once(out, 'drain')
       const now = Date.now()
       if (now - lastProgress >= PROGRESS_INTERVAL_MS) {
         lastProgress = now
-        const progress: UpdateProgress = { received, total }
-        if (!win.isDestroyed()) win.webContents.send('update-progress', progress)
+        onProgress(received, total)
       }
     }
     out.end()
@@ -151,87 +96,117 @@ async function downloadUpdate(win: BrowserWindow): Promise<string | null> {
     if (hash && `sha256:${hash.digest('hex')}` !== update.asset.digest) {
       throw new Error('Downloaded file failed its integrity check.')
     }
-    const progress: UpdateProgress = { received, total: received }
-    if (!win.isDestroyed()) win.webContents.send('update-progress', progress)
-    downloadedPath = filePath
+    onProgress(received, received)
     return filePath
-  } catch (err) {
-    out?.destroy()
-    await fs.rm(dir, { recursive: true, force: true }).catch(() => {})
-    if (abort.signal.aborted) return null
-    throw err
-  } finally {
-    if (downloadAbort === abort) downloadAbort = null
+  } catch (error) {
+    const output = out
+    await releaseFailedDownload(output, () => releaseDirectory(dir))
+    if (signal.aborted) return null
+    throw error
   }
 }
 
-/** Set only by a completed download; the renderer never supplies paths. */
-let downloadedPath: string | null = null
+/** Owns updater state, IPC, startup scheduling, cancellation and install
+ * hand-off as one disposable application service. */
+export function createUpdateService(
+  getWindow: () => BrowserWindow | null,
+  isTrustedMainFrame: RendererMainFrameGate
+): UpdateService {
+  const settingsPath = join(app.getPath('userData'), 'update-settings.json')
+  let disposePromise: Promise<void> | null = null
+  const installer = new FinalQuitInstaller()
+  const installTasks = new PendingTasks()
+  const directoryCleanup = new RetainedCleanup((path) =>
+    fs.rm(path, {
+      recursive: true,
+      force: true,
+      maxRetries: 3,
+      retryDelay: 100
+    })
+  )
 
-let installerPath: string | null = null
+  const publish = (snapshot: UpdateSnapshot): void => {
+    const window = getWindow()
+    if (window) sendIfAlive(window, 'update-state', snapshot)
+  }
 
-/**
- * Hand off to the downloaded installer as the app quits, so it never races
- * the running instance. Runs on 'will-quit', i.e. only after the renderer's
- * unsaved-edits veto has let the quit through. If that veto cancels the quit,
- * 'close-cancelled' disarms this first so a later unrelated quit stays inert.
- */
-function launchInstallerOnQuit(): void {
-  if (!installerPath) return
-  const path = installerPath
-  installerPath = null
-  const child =
-    process.platform === 'darwin'
-      ? spawn('open', [path], { detached: true, stdio: 'ignore' })
-      : spawn(path, [], { detached: true, stdio: 'ignore' })
-  child.on('error', () => {})
-  child.unref()
-}
-
-export function initUpdater(getWindow: () => BrowserWindow | null): void {
-  settingsPath = join(app.getPath('userData'), 'update-settings.json')
-  loadSettings()
-
-  ipcMain.handle('update-download', async (event) => {
-    const win = BrowserWindow.fromWebContents(event.sender)
-    if (!win) return null
-    return downloadUpdate(win)
+  const controller = createUpdateController({
+    currentVersion: app.getVersion(),
+    settings: loadSettings(settingsPath),
+    check: findAvailableUpdate,
+    download: (update, signal, onProgress) =>
+      downloadUpdate(update, signal, onProgress, directoryCleanup.release.bind(directoryCleanup)),
+    saveSettings: (settings) => fs.writeFile(settingsPath, JSON.stringify(settings, null, 2)),
+    releaseDownloaded: (path) => directoryCleanup.release(dirname(path)),
+    onState: publish
   })
 
-  ipcMain.on('update-download-cancel', () => downloadAbort?.abort())
-
-  ipcMain.handle('update-install', async (): Promise<UpdateInstallResult> => {
-    const path = downloadedPath
-    if (!path) throw new Error('No downloaded update to install.')
-    if (process.platform === 'linux') {
-      // No self-install story here: make the file runnable and reveal it.
-      if (path.toLowerCase().endsWith('.appimage')) await fs.chmod(path, 0o755).catch(() => {})
-      shell.showItemInFolder(path)
-      return { quits: false }
-    }
-    installerPath = path
-    app.quit()
-    return { quits: true }
+  const port = createUpdateIpcPort(ipcMain, isTrustedMainFrame)
+  const disposeIpc = registerUpdateIpc({
+    port,
+    controller,
+    publish,
+    install: (commandId): Promise<UpdateInstallResult> =>
+      installTasks.track(
+        Promise.resolve().then(async (): Promise<UpdateInstallResult> => {
+          const path = controller.downloadedPath()
+          if (!path) throw new Error('No downloaded update to install.')
+          if (process.platform === 'linux') {
+            const saved = await prepareSavedProduct(controller, commandId, path, {
+              prepare: async (ownedPath) => {
+                if (ownedPath.toLowerCase().endsWith('.appimage')) await fs.chmod(ownedPath, 0o755)
+              },
+              reveal: (ownedPath) => shell.showItemInFolder(ownedPath)
+            })
+            if (!saved) throw new Error('Downloaded update is no longer available.')
+            return { quits: false }
+          }
+          installer.arm(path)
+          app.quit()
+          return { quits: true }
+        })
+      )
   })
 
-  ipcMain.on('update-skip', (_event, version: string) => {
-    if (typeof version === 'string' && version) {
-      settings.skippedVersion = version
-      saveSettings()
-    }
-  })
+  const finalizeQuit = (): void => {
+    // Cleanup marks the hand-off ready before main performs its explicit final
+    // exit. Taking the path is one-shot, including repeated callback attempts.
+    if (!installer.isReady()) return
+    const path = installer.take()
+    if (!path) return
+    const child =
+      process.platform === 'darwin'
+        ? spawn('open', [path], { detached: true, stdio: 'ignore' })
+        : spawn(path, [], { detached: true, stdio: 'ignore', cwd: dirname(path) })
+    child.on('error', () => {})
+    child.unref()
+  }
 
-  // The install hand-off quits via the renderer's close flow; if the user
-  // vetoes that quit, drop the armed installer so it never fires on a later one.
-  ipcMain.on('close-cancelled', () => {
-    installerPath = null
-  })
-
-  app.on('will-quit', launchInstallerOnQuit)
-
-  setTimeout(() => {
-    if (!settings.autoCheck) return
-    const win = getWindow()
-    if (win) void checkForUpdates(win, false)
+  const startupTimer = setTimeout(() => {
+    if (controller.autoCheckEnabled()) void controller.check(false)
   }, STARTUP_CHECK_DELAY_MS)
+
+  return {
+    autoCheckEnabled: controller.autoCheckEnabled,
+    setAutoCheck: controller.setAutoCheck,
+    checkForUpdates: controller.check,
+    closeCancelled() {
+      installer.cancel()
+    },
+    finalizeQuit,
+    dispose() {
+      if (disposePromise) return disposePromise
+      clearTimeout(startupTimer)
+      installer.prepare(controller.handoffDownloaded)
+      disposeIpc()
+      controller.dispose()
+      disposePromise = settleUpdateShutdown(
+        controller.settingsSettled(),
+        Promise.all([controller.resourcesSettled(), installTasks.settle()]).then(() => undefined),
+        directoryCleanup,
+        () => installer.markReady()
+      )
+      return disposePromise
+    }
+  }
 }

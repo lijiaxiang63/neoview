@@ -1,5 +1,6 @@
 import { adjacentIndex, isUnderRoot, sortEntries, type FolderEntry } from './folderList'
 import type { FolderScan, OpenedFile } from '../../../shared/files'
+import { OpenIntentGate } from '../../../shared/openIntents'
 
 // All load/scan orchestration lives in this one pure module so its
 // interleavings are unit-testable (tests/loadCoordinator.test.ts): every
@@ -39,16 +40,23 @@ export interface CoordinatorSnapshot {
 export interface CoordinatorEffects<V> {
   snapshot(): CoordinatorSnapshot
   /** Read one folder entry's bytes. */
-  read(path: string): Promise<OpenedBytes>
+  read(path: string, signal: AbortSignal): Promise<OpenedBytes>
   /** Read a folder entry only when its size is within maxBytes; null
    * otherwise. The gate must sit on the far side of the boundary so an
    * oversized file is never read or transferred at all. */
-  readWithin(path: string, maxBytes: number): Promise<OpenedBytes | null>
-  parseBase(name: string, bytes: ArrayBuffer): Promise<V>
+  readWithin(path: string, maxBytes: number, signal: AbortSignal): Promise<OpenedBytes | null>
+  parseBase(name: string, bytes: ArrayBuffer, signal: AbortSignal): Promise<V>
+  /** Release resources attached to a parsed base that lost ownership before commit. */
+  releaseBase?(volume: V): void
   /** Commit data without settling the shared loading/error status. */
   commitBase(volume: V, path: string | null): void
   /** Parse and attach an overlay layer without settling shared status. */
-  parseAndAddOverlay(name: string, bytes: ArrayBuffer, isCurrent: () => boolean): Promise<void>
+  parseAndAddOverlay(
+    name: string,
+    bytes: ArrayBuffer,
+    isCurrent: () => boolean,
+    signal: AbortSignal
+  ): Promise<void>
   /** May veto replacing the base (unsaved region work). */
   confirmReplaceBase(): boolean
   raiseLoading(): void
@@ -70,6 +78,21 @@ export interface CoordinatorEffects<V> {
 // transferred): pinning buffers that big buys less than it costs.
 export const PREFETCH_KEEP_MAX = 512 * 1024 * 1024
 
+type BaseLoadResult = 'settled' | 'cancelled'
+
+interface ActiveBaseParse {
+  id: number
+  kind: 'explicit' | 'navigation'
+  path: string | null
+  abort: AbortController
+}
+
+interface ActiveNavigationRead {
+  id: number
+  path: string
+  abort: AbortController
+}
+
 export class LoadCoordinator<V> {
   private readonly fx: CoordinatorEffects<V>
   private readonly prefetchMax: number
@@ -86,6 +109,25 @@ export class LoadCoordinator<V> {
   // Base replacement/folder confirmation invalidates overlays parsing
   // against the prior base without making concurrent same-base layers race.
   private overlaySessionGen = 0
+  private readonly overlayParses = new Map<AbortController, number>()
+  private nextBaseOperationId = 0
+  private activeBaseParse: ActiveBaseParse | null = null
+  private nextReadOperationId = 0
+  private activeNavigationRead: ActiveNavigationRead | null = null
+  /** One accepted discard decision covers a coalesced navigation batch, so
+   * key repeat can keep moving the target without reopening the prompt. */
+  private navigationAuthorized = false
+  // Cross-process user-intent ordering is issued before any outer I/O. The
+  // coordinator accepts the token only when that operation reaches it, so a
+  // cancelled picker has no effect while an older slow result cannot arrive
+  // after and claim newer ownership.
+  private readonly intentGate: OpenIntentGate
+  private readonly onIntentAccepted: (token: number) => void
+  private syntheticIntent = 0
+  /** Intent reserved by the current folder picker/scan. It remains
+   * provisional until a batch or non-null final result proves that the user
+   * selected a folder; cancellation therefore advances no global gate. */
+  private scanIntent = 0
 
   // Navigation is a queue of one: key presses only move the target; the pump
   // loads whatever the target is once the current load settles, discarding
@@ -100,6 +142,7 @@ export class LoadCoordinator<V> {
   private prefetched: { path: string; bytes: ArrayBuffer } | null = null
   private prefetchGen = 0
   private prefetchActiveGen: number | null = null
+  private prefetchAbort: AbortController | null = null
   private lastDelta: 1 | -1 = 1
 
   // Scan generation, echoed by the scanner in every progress batch: anything
@@ -119,6 +162,11 @@ export class LoadCoordinator<V> {
     fx: CoordinatorEffects<V>,
     opts?: {
       prefetchMax?: number
+      /** Store-lifetime ordering gate shared by runtime replacements. */
+      intentGate?: OpenIntentGate
+      /** Promote a provisional application token after this coordinator has
+       * accepted it, allowing main-side obsolete reads to abort early. */
+      onIntentAccepted?: (token: number) => void
       /** Entries the snapshot may still drop as more of the scan streams in
        * (e.g. a region export whose source volume has not arrived yet). While
        * one of these heads the list, a partial batch cannot know the folder's
@@ -130,18 +178,54 @@ export class LoadCoordinator<V> {
     this.fx = fx
     this.prefetchMax = opts?.prefetchMax ?? PREFETCH_KEEP_MAX
     this.deferAutoLoad = opts?.deferAutoLoad ?? (() => false)
+    this.intentGate = opts?.intentGate ?? new OpenIntentGate()
+    this.onIntentAccepted = opts?.onIntentAccepted ?? (() => {})
   }
 
   /** Explicit base open (dialog, menu, drop): supersedes a running scan and
    * any load in flight. */
-  async openBase(name: string, bytes: ArrayBuffer, path: string | null): Promise<void> {
+  async openBase(
+    name: string,
+    bytes: ArrayBuffer,
+    path: string | null,
+    intent?: number
+  ): Promise<void> {
     if (this.disposed) return
+    const token = this.intentToken(intent)
+    if (token < this.intentGate.current()) return
     // Confirm before any side effect: declining must leave the world exactly
     // as it was — including a scan still streaming its batches.
     if (!this.fx.confirmReplaceBase()) return
+    if (!this.acceptIntent(token)) return
+    // An accepted explicit open permanently supersedes the folder read that
+    // was current at this instant. A transient "explicit parse active" check
+    // after the read settles is insufficient: the explicit operation may
+    // already have succeeded or failed by then, including at the same path.
+    this.queued = null
+    this.navigationAuthorized = false
+    this.abortNavigationRead()
+    this.cancelPrefetchRead()
+    this.fx.setPending(null)
     // The user's confirmed pick wins over a folder scan still in flight.
-    if (this.fx.snapshot().scanning) this.abandonScan()
+    // An older result may arrive while a newer picker is still provisional;
+    // let that load proceed without cancelling the newer picker. A confirmed
+    // scan will invalidate it when its first result arrives.
+    if (this.fx.snapshot().scanning && token >= this.scanIntent) this.abandonScan()
     await this.runBaseLoad(name, bytes, path)
+  }
+
+  /** Complete a base intent with an error. Errors participate in the same
+   * ordering as successes so an older failure cannot replace newer feedback,
+   * while a picker cancellation never calls this and remains inert. */
+  reportBaseError(error: unknown, intent?: number): void {
+    if (this.disposed) return
+    if (intent !== undefined && !this.acceptFailedIntent(intent)) return
+    if (intent !== undefined && this.fx.snapshot().scanning && intent >= this.scanIntent) {
+      this.abandonScan()
+    }
+    // Direct bridge and validation failures may already be plain display
+    // strings. Preserve them through the shared IPC-error cleanup boundary.
+    this.fx.failRead(typeof error === 'string' ? new Error(error) : error)
   }
 
   /** Overlay data may attach alongside another layer, but its shared loading
@@ -150,68 +234,121 @@ export class LoadCoordinator<V> {
     if (this.disposed) return
     const session = this.overlaySessionGen
     const loadId = this.beginLoading()
+    const abort = new AbortController()
+    this.overlayParses.set(abort, loadId)
     try {
       await this.fx.parseAndAddOverlay(
         name,
         bytes,
-        () => !this.disposed && session === this.overlaySessionGen
+        () => !this.disposed && session === this.overlaySessionGen,
+        abort.signal
       )
       if (this.disposed) return
       this.finishLoad(loadId, false)
     } catch (err) {
       if (this.disposed) return
-      if (session !== this.overlaySessionGen) return
+      if (abort.signal.aborted || session !== this.overlaySessionGen) return
       this.finishLoad(loadId, true, err)
+    } finally {
+      this.overlayParses.delete(abort)
     }
   }
 
   /** Move the navigation target to this folder entry. */
-  requestEntry(path: string): void {
+  requestEntry(path: string, intent?: number): void {
     if (this.disposed) return
-    // A pick from the CURRENT scan's list claims its view: the auto-load may
-    // still be armed (it waits while the list's head entry is ambiguous), and
-    // a later batch firing it would override the choice — disarm it. Confirmed
-    // is the gate: before it, the visible list is still the previous folder's,
-    // and a pick there is doomed to be invalidated by the confirmation anyway —
-    // it must not eat the incoming folder's one auto-load. (The auto-load's own
-    // picks route through here after confirmation, consuming the flag.)
+    const token = this.intentToken(intent)
+    const snapshot = this.fx.snapshot()
+    if (path === snapshot.sourcePath) {
+      // The active row is a no-op replacement, but it is also the user's way
+      // back from a queued/ parsing navigation target. It must cancel that
+      // work without asking to discard the very volume that remains active.
+      this.queued = null
+      this.abortNavigationRead()
+      this.abortStaleNavigationParse(path)
+      this.navigationAuthorized = false
+      this.fx.setPending(null)
+      if (!this.pumpActive) this.schedulePrefetch()
+      return
+    }
+    const provisionalScan = snapshot.scanning && this.confirmedScanGen !== this.scanGen
+    if (token < this.intentGate.current()) return
+    // Disarm before asking: a declined folder auto-load is still a completed
+    // user decision and later scan batches must not reopen the same prompt.
     if (this.confirmedScanGen === this.scanGen) this.autoLoadArmed = false
+    // The first target in one queue-of-one batch owns the discard decision.
+    // Repeated key targets reuse it until the pump settles, preserving fast
+    // scrubbing without accepting anything when that first prompt is declined.
+    let authorizedNow = false
+    if (!this.navigationAuthorized) {
+      if (!this.fx.confirmReplaceBase()) return
+      this.navigationAuthorized = true
+      authorizedNow = true
+    }
+    if (!this.acceptIntent(token)) {
+      if (authorizedNow) this.navigationAuthorized = false
+      return
+    }
+    // Until a selected folder produces a result, the previous list remains
+    // interactive. A later click there is a later base-open intent: cancel
+    // the provisional scan so main and renderer share one total ordering.
+    if (provisionalScan) this.abandonScan()
+    // A pick from the confirmed current list claims its view: the auto-load
+    // may still be waiting on an ambiguous head, and a later batch must not
+    // override the explicit choice. The provisional case was canceled above.
     this.queued = path
+    this.abortStaleNavigationRead(path)
+    this.abortStaleNavigationParse(path)
     this.fx.setPending(path)
     void this.pump()
   }
 
   /** Move the navigation target to the previous/next file (no wrap). */
-  navigate(delta: 1 | -1): void {
+  navigate(delta: 1 | -1, intent?: number): void {
     if (this.disposed) return
     const snap = this.fx.snapshot()
     if (!snap.folderFiles) return
     this.lastDelta = delta
     const idx = adjacentIndex(snap.folderFiles, this.queued ?? snap.sourcePath, delta)
-    if (idx !== null) this.requestEntry(snap.folderFiles[idx].path)
+    if (idx !== null) this.requestEntry(snap.folderFiles[idx].path, intent)
   }
 
   /** Run a scan into folder mode; false when the source is not a directory
    * (or the picker was canceled). The list fills from streamed batches while
    * the scan runs; the resolved scan is the authoritative final state. */
-  async scanFolder(scan: (token: number) => Promise<ScanResult | null>): Promise<boolean> {
+  async scanFolder(
+    scan: (token: number) => Promise<ScanResult | null>,
+    intent?: number
+  ): Promise<boolean> {
     if (this.disposed) return false
+    const token = this.intentToken(intent)
+    if (token < this.intentGate.current()) return true
+    if (this.fx.snapshot().scanning && token < this.scanIntent) return true
     // A directory drop may replace a scan even though the picker flow itself
     // prevents re-entry. Settle its main-side candidate before issuing the new
     // request, preserving it only if this renderer already confirmed a batch.
     if (this.fx.snapshot().scanning) {
       this.fx.cancelScan(this.scanGen)
     }
-    const gen = ++this.scanGen
+    // The base intent is issued outside the runtime before any picker/probe.
+    // Reuse it across IPC so a replacement coordinator cannot recycle a
+    // small local generation and accept an old runtime's queued batch (ABA).
+    const gen = token
+    this.scanGen = gen
+    this.scanIntent = token
     this.autoLoadArmed = true
     this.fx.setScanning(true)
     try {
       const result = await scan(gen)
       if (this.disposed) return false
       if (gen !== this.scanGen) return true // superseded by an explicit action
-      if (!result) return false
+      if (!result) {
+        this.abandonScan()
+        return false
+      }
       // Covers scans that produced no batches (e.g. an empty folder).
-      this.confirmScan()
+      const activation = this.activateScan()
+      if (activation === 'stale') return true
       this.fx.setFolder({
         root: result.root,
         files: sortEntries(result.files),
@@ -222,7 +359,13 @@ export class LoadCoordinator<V> {
     } catch (error) {
       if (this.disposed) return false
       if (gen !== this.scanGen) return true
-      this.fx.cancelScan(gen)
+      // A real scan failure is a terminal result, unlike picker cancellation.
+      // It therefore suppresses older operations and their late errors.
+      if (!this.acceptFailedIntent(token)) {
+        this.abandonScan()
+        return true
+      }
+      this.abandonScan()
       throw error
     } finally {
       if (!this.disposed && gen === this.scanGen) {
@@ -238,7 +381,9 @@ export class LoadCoordinator<V> {
    * cannot resurrect entries that no longer exist. */
   onScanBatch(token: number, root: string, files: FolderEntry[]): void {
     if (this.disposed || token !== this.scanGen) return
-    if (this.confirmScan()) {
+    const activation = this.activateScan()
+    if (activation === 'stale') return
+    if (activation === 'first') {
       this.fx.setFolder({ root, files: sortEntries(files), truncated: false })
     } else {
       this.fx.appendFolder(root, files)
@@ -252,7 +397,8 @@ export class LoadCoordinator<V> {
   abandonScan(): void {
     if (this.disposed) return
     const token = this.scanGen
-    this.scanGen++
+    this.scanGen = 0
+    this.scanIntent = 0
     this.autoLoadArmed = false
     this.fx.setScanning(false)
     this.fx.cancelScan(token)
@@ -262,6 +408,8 @@ export class LoadCoordinator<V> {
    * cached bytes instead of pinning them until the next navigation. */
   releasePrefetch(): void {
     this.prefetchGen++
+    this.prefetchAbort?.abort()
+    this.prefetchAbort = null
     this.prefetchActiveGen = null
     this.prefetched = null
   }
@@ -277,8 +425,10 @@ export class LoadCoordinator<V> {
     this.disposed = true
     this.baseGen++
     this.invalidateOverlaySession()
-    this.scanGen++
+    this.scanGen = 0
     this.queued = null
+    this.navigationAuthorized = false
+    this.abortNavigationRead()
     this.autoLoadArmed = false
     this.releasePrefetch()
     this.invalidateLoadGroup()
@@ -300,30 +450,56 @@ export class LoadCoordinator<V> {
     bytes: ArrayBuffer,
     path: string | null,
     isStaleTarget?: () => boolean
-  ): Promise<void> {
-    if (this.disposed) return
+  ): Promise<BaseLoadResult> {
+    if (this.disposed) return 'cancelled'
     const gen = ++this.baseGen
     this.invalidateOverlaySession()
     this.invalidateLoadGroup()
     const loadId = this.beginLoading()
+    const operation: ActiveBaseParse = {
+      id: ++this.nextBaseOperationId,
+      kind: isStaleTarget ? 'navigation' : 'explicit',
+      path,
+      abort: new AbortController()
+    }
+    this.activeBaseParse = operation
     try {
-      const volume = await this.fx.parseBase(name, bytes)
-      if (this.disposed) return
-      if (gen !== this.baseGen || isStaleTarget?.()) {
+      const volume = await this.fx.parseBase(name, bytes, operation.abort.signal)
+      if (
+        this.disposed ||
+        operation.abort.signal.aborted ||
+        gen !== this.baseGen ||
+        isStaleTarget?.()
+      ) {
+        this.fx.releaseBase?.(volume)
         this.finishLoad(loadId, false)
-        return
+        return 'cancelled'
       }
+      // A layer started while this base was pending necessarily parsed
+      // against the previously committed base. Once replacement succeeds it
+      // is obsolete: terminate any still-running workers and discard failures
+      // that completed while the base kept the shared group open.
+      this.invalidateOverlaySession()
+      this.loadFailures = []
       this.fx.commitBase(volume, path)
       this.finishLoad(loadId, false)
+      return 'settled'
     } catch (err) {
-      if (this.disposed) return
-      if (gen !== this.baseGen || isStaleTarget?.()) {
+      if (
+        this.disposed ||
+        operation.abort.signal.aborted ||
+        gen !== this.baseGen ||
+        isStaleTarget?.()
+      ) {
         // A superseded target's failure (e.g. a corrupt file the user
         // already scrubbed past) is not the current view's problem.
         this.finishLoad(loadId, false)
-        return
+        return 'cancelled'
       }
       this.finishLoad(loadId, true, err)
+      return 'settled'
+    } finally {
+      if (this.activeBaseParse?.id === operation.id) this.activeBaseParse = null
     }
   }
 
@@ -350,11 +526,43 @@ export class LoadCoordinator<V> {
 
   private invalidateOverlaySession(): void {
     this.overlaySessionGen++
+    for (const [abort, loadId] of this.overlayParses) {
+      this.activeLoads.delete(loadId)
+      abort.abort()
+    }
+    this.overlayParses.clear()
   }
 
   private invalidateLoadGroup(): void {
+    this.activeBaseParse?.abort.abort()
     this.activeLoads.clear()
     this.loadFailures = []
+  }
+
+  private abortStaleNavigationParse(path: string): void {
+    const active = this.activeBaseParse
+    if (active?.kind === 'navigation' && active.path !== path) active.abort.abort()
+  }
+
+  private abortStaleNavigationRead(path: string): void {
+    const active = this.activeNavigationRead
+    if (active && active.path !== path) active.abort.abort()
+  }
+
+  private abortNavigationRead(): void {
+    this.activeNavigationRead?.abort.abort()
+  }
+
+  private cancelPrefetchRead(): void {
+    if (!this.prefetchAbort) return
+    this.prefetchGen++
+    this.prefetchAbort.abort()
+    this.prefetchAbort = null
+    this.prefetchActiveGen = null
+  }
+
+  private hasActiveExplicitBaseParse(): boolean {
+    return this.activeBaseParse?.kind === 'explicit' && !this.activeBaseParse.abort.signal.aborted
   }
 
   /** First contact with a scan's results makes it real: exactly once per
@@ -362,11 +570,17 @@ export class LoadCoordinator<V> {
    * parse still in flight, so neither can publish over the new folder.
    * Returns true on that first confirmation (the caller starts a fresh
    * list); false when this scan was already confirmed. */
-  private confirmScan(): boolean {
-    if (this.confirmedScanGen === this.scanGen) return false
+  private activateScan(): 'first' | 'active' | 'stale' {
+    if (this.confirmedScanGen === this.scanGen) return 'active'
+    if (!this.acceptIntent(this.scanIntent)) {
+      this.abandonScan()
+      return 'stale'
+    }
     this.confirmedScanGen = this.scanGen
     this.fx.confirmScan(this.scanGen)
     this.queued = null
+    this.navigationAuthorized = false
+    this.abortNavigationRead()
     // A confirmed scan starts a new folder session even when its root and
     // paths match the previous one. Never carry bytes across that boundary.
     this.releasePrefetch()
@@ -376,8 +590,10 @@ export class LoadCoordinator<V> {
     // ownerless — settle it here rather than leaving it raised forever
     // (this scan may trigger no load of its own).
     this.invalidateLoadGroup()
-    if (this.fx.snapshot().loading) this.fx.dismissLoading()
-    return true
+    // This confirmed newer intent owns feedback too: clear either an active
+    // loading flag or an older read error left by the provisional old list.
+    this.fx.dismissLoading()
+    return 'first'
   }
 
   private maybeAutoLoad(final: boolean): void {
@@ -400,7 +616,33 @@ export class LoadCoordinator<V> {
     // pick in before the final result settles the head's fate.
     const first = snap.folderFiles[0]
     if (!final && this.deferAutoLoad(first)) return
-    this.requestEntry(first.path)
+    this.requestEntry(first.path, this.intentGate.current())
+  }
+
+  private intentToken(intent: number | undefined): number {
+    if (intent !== undefined) return intent
+    this.syntheticIntent = Math.max(this.syntheticIntent, this.intentGate.current()) + 1
+    return this.syntheticIntent
+  }
+
+  private acceptFailedIntent(token: number): boolean {
+    if (!this.acceptIntent(token)) return false
+    // A newer terminal failure keeps the current displayed volume, but any
+    // older base parse still in flight must not publish after that failure.
+    this.baseGen++
+    this.activeBaseParse?.abort.abort()
+    this.queued = null
+    this.navigationAuthorized = false
+    this.abortNavigationRead()
+    this.fx.setPending(null)
+    return true
+  }
+
+  private acceptIntent(token: number): boolean {
+    const previous = this.intentGate.current()
+    if (!this.intentGate.accept(token)) return false
+    if (token > previous) this.onIntentAccepted(token)
+    return true
   }
 
   private async pump(): Promise<void> {
@@ -416,16 +658,34 @@ export class LoadCoordinator<V> {
         // sits before the prefetch branch: cached bytes skip the read (and
         // its post-await re-checks), and without it a cache hit would grab a
         // newer generation and stale the user's own open.
-        if (snap.loading) break
+        if (this.hasActiveExplicitBaseParse()) break
         const entry = snap.folderFiles?.find((f) => f.path === path)
         if (!entry) break
+        let readSignal: AbortSignal | null = null
         try {
           let opened: OpenedBytes
           if (this.prefetched?.path === path) {
             opened = { name: entry.name, bytes: this.prefetched.bytes }
             this.prefetched = null // the load transfers the buffer away
           } else {
-            opened = await this.fx.read(path)
+            // A navigation read owns the target now; do not let an older
+            // opportunistic read keep allocating the same or another file.
+            this.cancelPrefetchRead()
+            const readOperation: ActiveNavigationRead = {
+              id: ++this.nextReadOperationId,
+              path,
+              abort: new AbortController()
+            }
+            this.activeNavigationRead = readOperation
+            readSignal = readOperation.abort.signal
+            try {
+              opened = await this.fx.read(path, readOperation.abort.signal)
+            } finally {
+              if (this.activeNavigationRead?.id === readOperation.id) {
+                this.activeNavigationRead = null
+              }
+            }
+            if (readOperation.abort.signal.aborted) continue
             // A same-root rescan may put the identical path back into the
             // one-slot queue. Path equality alone cannot distinguish that
             // ABA case: bytes from the previous folder session must drop.
@@ -438,18 +698,24 @@ export class LoadCoordinator<V> {
             // stale folder navigation.
             const now = this.fx.snapshot()
             if (
-              now.loading ||
+              this.hasActiveExplicitBaseParse() ||
               now.sourcePath !== snap.sourcePath ||
               !now.folderFiles?.some((f) => f.path === path)
             ) {
               break
             }
           }
-          // Navigation replaces the base too, so it gets the same veto over
-          // discarding unexported region work as an explicit open.
-          if (!this.fx.confirmReplaceBase()) break
-          await this.runBaseLoad(opened.name, opened.bytes, path, () => this.queued !== path)
+          const result = await this.runBaseLoad(
+            opened.name,
+            opened.bytes,
+            path,
+            () => this.queued !== path
+          )
+          if (result === 'cancelled') continue
         } catch (err) {
+          // Cancellation is operation-owned, not path-owned. A→B→A must
+          // restart A instead of surfacing AbortError from its first read.
+          if (readSignal?.aborted) continue
           if (folderSession !== this.confirmedScanGen) continue
           // A stale read's failure mirrors a stale read's success: when the
           // target moved on, chase it instead of reporting an error for a
@@ -458,7 +724,7 @@ export class LoadCoordinator<V> {
           if (this.queued !== path) continue
           const now = this.fx.snapshot()
           if (
-            now.loading ||
+            this.hasActiveExplicitBaseParse() ||
             now.sourcePath !== snap.sourcePath ||
             !now.folderFiles?.some((f) => f.path === path)
           ) {
@@ -471,10 +737,11 @@ export class LoadCoordinator<V> {
       }
     } finally {
       this.queued = null
+      this.navigationAuthorized = false
       this.pumpActive = false
       if (!this.disposed) {
         this.fx.setPending(null)
-        this.schedulePrefetch()
+        if (!this.hasActiveExplicitBaseParse()) this.schedulePrefetch()
       }
     }
   }
@@ -491,8 +758,10 @@ export class LoadCoordinator<V> {
     if (this.prefetched?.path === target.path) return
     const gen = this.prefetchGen
     this.prefetchActiveGen = gen
+    const abort = new AbortController()
+    this.prefetchAbort = abort
     this.fx
-      .readWithin(target.path, this.prefetchMax)
+      .readWithin(target.path, this.prefetchMax, abort.signal)
       .then((opened) => {
         if (this.disposed || gen !== this.prefetchGen || !opened) return
         // Keep the bytes only if the entry still belongs to the open folder.
@@ -505,6 +774,7 @@ export class LoadCoordinator<V> {
         // Prefetch is opportunistic; the real read will surface any error.
       })
       .finally(() => {
+        if (this.prefetchAbort === abort) this.prefetchAbort = null
         if (this.prefetchActiveGen === gen) this.prefetchActiveGen = null
       })
   }

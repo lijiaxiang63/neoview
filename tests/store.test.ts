@@ -10,6 +10,7 @@ import {
   hasUnsavedRegions,
   pickInitialPreset,
   presetRange,
+  REGION_STATS_DEBOUNCE_MS,
   type AppStore,
   type PagehideTarget,
   type PreviewController,
@@ -83,6 +84,17 @@ describe('pickInitialPreset', () => {
 })
 
 describe('store instances and lifecycle', () => {
+  it('advances a lightweight volume session on every base replacement', () => {
+    const first = baseVolume()
+    const second = baseVolume()
+    expect(useStore.getState().volumeSession).toBe(0)
+    useStore.getState().setVolume(first)
+    expect(useStore.getState().volumeSession).toBe(1)
+    useStore.getState().setVolume(second)
+    expect(useStore.getState().volumeSession).toBe(2)
+    expect(useStore.getState().volume).toBe(second)
+  })
+
   it('keeps state, ids, and subscriptions isolated between two instances', () => {
     const a = createAppStore({ storage: null, pagehideTarget: null })
     const b = createAppStore({ storage: null, pagehideTarget: null })
@@ -512,13 +524,147 @@ describe('regions', () => {
     expect(region.color).toBe('#00ff00')
   })
 
-  it('setFrame recomputes region stats for the new frame', () => {
+  it('setFrame defers region stats until the latest target is refreshed', () => {
     seedRegion()
     useStore.getState().setFrame(1)
+    expect(useStore.getState().regions[0].stats?.mean).toBe(0.5)
+    useStore.getState().refreshRegionStats()
     const region = useStore.getState().regions[0]
     expect(region.stats).toEqual({ min: 100, max: 101, mean: 100.5 })
     // Stats refresh alone is not an edit.
     expect(useStore.getState().segDirty).toBe(false)
+  })
+
+  it('reuses bounded per-frame stats while the label revision is unchanged', () => {
+    seedRegion()
+    useStore.getState().refreshRegionStats()
+    const raw = useStore.getState().volume!.raw as Float32Array
+    // Volume samples are immutable in production; changing them here makes a
+    // cache hit distinguishable from another full scan.
+    raw[0] = 50
+    raw[1] = 60
+
+    useStore.getState().setFrame(1)
+    useStore.getState().refreshRegionStats()
+    expect(useStore.getState().regions[0].stats?.mean).toBe(100.5)
+    useStore.getState().setFrame(0)
+    useStore.getState().refreshRegionStats()
+    expect(useStore.getState().regions[0].stats?.mean).toBe(0.5)
+  })
+
+  it('collapses repeated frame targets into one debounced refresh', () => {
+    vi.useFakeTimers()
+    seedRegion()
+    const before = useStore.getState().regions
+    useStore.getState().setFrame(1)
+    useStore.getState().setFrame(0)
+    useStore.getState().setFrame(1)
+    expect(useStore.getState().regions).toBe(before)
+    expect(useStore.getState().regions[0].stats?.mean).toBe(0.5)
+    vi.advanceTimersByTime(REGION_STATS_DEBOUNCE_MS - 1)
+    expect(useStore.getState().regions[0].stats?.mean).toBe(0.5)
+    vi.advanceTimersByTime(1)
+    expect(useStore.getState().regions[0].stats?.mean).toBe(100.5)
+  })
+
+  it('cancels a pending frame-stat refresh when stroke completion already refreshes it', () => {
+    vi.useFakeTimers()
+    seedRegion()
+    useStore.getState().setFrame(1)
+    expect(vi.getTimerCount()).toBe(1)
+    useStore.getState().setActiveRegion(1)
+    useStore.getState().paintAt(0, [0, 0], [0, 0], false)
+    expect(vi.getTimerCount()).toBe(0)
+    vi.advanceTimersByTime(REGION_STATS_DEBOUNCE_MS)
+    // The long gesture did not refresh midway; pointer-up owns the scan.
+    expect(useStore.getState().regions[0].stats?.mean).toBe(0.5)
+    useStore.getState().endStroke()
+    expect(vi.getTimerCount()).toBe(0)
+    expect(useStore.getState().regions[0].stats?.mean).toBeGreaterThan(100)
+  })
+
+  it('defers a frame-stat refresh scheduled after a brush stroke began', () => {
+    vi.useFakeTimers()
+    seedRegion()
+    useStore.getState().setActiveRegion(1)
+    useStore.getState().paintAt(0, [0, 0], [0, 0], false)
+    useStore.getState().setFrame(1)
+
+    expect(vi.getTimerCount()).toBe(0)
+    vi.advanceTimersByTime(REGION_STATS_DEBOUNCE_MS)
+    expect(useStore.getState().regions[0].stats?.mean).toBe(0.5)
+
+    useStore.getState().endStroke()
+    expect(useStore.getState().regions[0].stats?.mean).toBeGreaterThan(100)
+  })
+
+  it('refreshes the deferred frame after a no-op stroke ends', () => {
+    vi.useFakeTimers()
+    seedRegion()
+    const before = useStore.getState()
+    before.setActiveRegion(1)
+    // The crosshair is on slice 1 while region 1 occupies slice 0, so this
+    // erase opens a gesture collector without changing a voxel.
+    before.paintAt(0, [0, 0], [0, 0], true)
+    before.setFrame(1)
+
+    expect(vi.getTimerCount()).toBe(0)
+    before.endStroke()
+    expect(useStore.getState().regions[0].stats?.mean).toBe(100.5)
+    expect(useStore.getState().segDirty).toBe(before.segDirty)
+    expect(useStore.getState().segRevision).toBe(before.segRevision)
+  })
+
+  it('cancels a pending frame-stat refresh when commit already refreshes it', () => {
+    vi.useFakeTimers()
+    seedRegion()
+    useStore.getState().setFrame(1)
+    const params = useStore.getState().segParams
+    useStore.setState({ segParams: { ...params, low: 103, high: 103, minVoxels: 1 } })
+    useStore.getState().setSegBox({ min: [0, 0, 0], max: [1, 1, 1] })
+    expect(vi.getTimerCount()).toBe(2)
+    useStore.getState().commitPreview()
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('cancels a pending frame-stat refresh when history already refreshes it', () => {
+    vi.useFakeTimers()
+    seedRegion()
+    useStore.getState().setActiveRegion(1)
+    useStore.getState().paintAt(0, [0, 0], [0, 0], false)
+    useStore.getState().endStroke()
+    useStore.getState().setFrame(1)
+    expect(vi.getTimerCount()).toBe(1)
+    useStore.getState().undo()
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('keeps no-op brush erases clean and revision-stable', () => {
+    vi.useFakeTimers()
+    seedRegion()
+    const exported = useStore.getState()
+    exported.markExported(exported.volume!, exported.sourcePath, exported.segRevision)
+    useStore.setState({
+      segBox: { min: [0, 0, 0], max: [1, 1, 1] },
+      segParams: {
+        ...useStore.getState().segParams,
+        constraint: { type: 'region', regionId: 1 }
+      }
+    })
+    const before = useStore.getState()
+    const timerCount = vi.getTimerCount()
+    before.setActiveRegion(1)
+    // The default crosshair is on slice 1; region 1 occupies only slice 0.
+    before.paintAt(0, [0, 0], [0, 0], true)
+    before.endStroke()
+
+    const after = useStore.getState()
+    expect(after.segDirty).toBe(false)
+    expect(after.segRevision).toBe(before.segRevision)
+    expect(after.labelMapRev).toBe(before.labelMapRev)
+    expect(after.undoStack).toBe(before.undoStack)
+    expect(after.regions).toBe(before.regions)
+    expect(vi.getTimerCount()).toBe(timerCount)
   })
 
   it('deleteRegion clears a constraint pointing at the deleted region', () => {
@@ -533,7 +679,7 @@ describe('regions', () => {
   it('deleting the last region still counts as unsaved', () => {
     seedRegion()
     const s = useStore.getState()
-    s.markExported(s.volume!, s.sourcePath)
+    s.markExported(s.volume!, s.sourcePath, s.segRevision)
     expect(hasUnsavedRegions(useStore)).toBe(false)
     useStore.getState().deleteRegion(1)
     expect(useStore.getState().regions).toEqual([])
@@ -544,14 +690,16 @@ describe('regions', () => {
     seedRegion()
     useStore.setState({ sourcePath: '/data/a.nii.gz', segDirty: true })
     const s = useStore.getState()
-    s.markExported(s.volume!, s.sourcePath)
+    s.markExported(s.volume!, s.sourcePath, s.segRevision)
     expect(useStore.getState().exportedPaths.has('/data/a.nii.gz')).toBe(true)
     expect(useStore.getState().segDirty).toBe(false)
 
     // A pathless source (e.g. a bundled sample) records nothing.
     const before = useStore.getState().exportedPaths
     useStore.setState({ sourcePath: null, segDirty: true })
-    useStore.getState().markExported(useStore.getState().volume!, null)
+    useStore
+      .getState()
+      .markExported(useStore.getState().volume!, null, useStore.getState().segRevision)
     expect(useStore.getState().exportedPaths).toBe(before)
     expect(useStore.getState().segDirty).toBe(false)
   })
@@ -634,11 +782,26 @@ describe('regions', () => {
     seedRegion()
     useStore.setState({ sourcePath: '/data/b.nii.gz', segDirty: true })
 
-    useStore.getState().markExported(exportedVolume, exportedPath)
+    useStore.getState().markExported(exportedVolume, exportedPath, 0)
     const after = useStore.getState()
     expect(after.exportedPaths.has('/data/a.nii.gz')).toBe(true) // the real export
     expect(after.exportedPaths.has('/data/b.nii.gz')).toBe(false) // never exported
     expect(after.segDirty).toBe(true) // the new volume's edits stay unsaved
+  })
+
+  it('an older export cannot mark newer edits on the same volume as saved', () => {
+    seedRegion()
+    const started = useStore.getState()
+    const exportedVolume = started.volume!
+    const exportedRevision = started.segRevision
+
+    started.updateRegion(1, { name: 'newer edit' })
+    expect(useStore.getState().segRevision).toBeGreaterThan(exportedRevision)
+    useStore.getState().markExported(exportedVolume, '/data/a.nii.gz', exportedRevision)
+
+    const after = useStore.getState()
+    expect(after.segDirty).toBe(true)
+    expect(after.exportedPaths.has('/data/a.nii.gz')).toBe(true)
   })
 
   it('floodCap caps only floods whose bounds cover the whole volume', () => {

@@ -7,6 +7,7 @@ import {
   isTextEntry,
   keyCommand,
   menuHistoryTarget,
+  playbackFrameTarget,
   sameViewMenuSnapshot,
   UNCOMMITTED_WARNING,
   UNSAVED_WARNING,
@@ -86,6 +87,14 @@ describe('application event decisions', () => {
     expect(menuHistoryTarget(true, null)).toBe('blocked')
     expect(menuHistoryTarget(false, target('textarea'))).toBe('text')
     expect(menuHistoryTarget(false, target('button'))).toBe('regions')
+  })
+
+  it('makes a stale playback tick inert after the volume is replaced', () => {
+    const owner = { frames: 3 } as never
+    const replacement = { frames: 4 } as never
+    expect(playbackFrameTarget({ volume: owner, volumeSession: 4, frame: 1 }, 4)).toBe(2)
+    expect(playbackFrameTarget({ volume: owner, volumeSession: 4, frame: 2 }, 4)).toBe(0)
+    expect(playbackFrameTarget({ volume: replacement, volumeSession: 5, frame: 0 }, 4)).toBeNull()
   })
 
   it('creates comparable View menu snapshots', () => {

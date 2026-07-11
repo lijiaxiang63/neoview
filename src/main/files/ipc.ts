@@ -12,6 +12,8 @@ import type { ExportService } from './exports'
 import { isVolumeFileName } from './names'
 import type { FileReader } from './reader'
 import type { FolderScanner } from './scanner'
+import type { OpenJobCoordinator } from '../openJobs'
+import type { RendererMainFrameGate } from '../rendererProtocol'
 
 export interface FileIpcDependencies {
   ipc: Pick<IpcMain, 'handle' | 'removeHandler' | 'on' | 'removeListener'>
@@ -20,6 +22,8 @@ export interface FileIpcDependencies {
   reader: FileReader
   scanner: FolderScanner
   exporter: ExportService
+  openJobs: OpenJobCoordinator<WebContents>
+  isTrustedMainFrame: RendererMainFrameGate
   windowFromSender(sender: WebContents): BrowserWindow | null
   isDirectory(path: string): Promise<boolean>
   revealInFolder(path: string): void
@@ -28,12 +32,10 @@ export interface FileIpcDependencies {
 
 type InvokeHandler = (event: IpcMainInvokeEvent, ...args: unknown[]) => unknown
 type EventHandler = (event: IpcMainEvent, ...args: unknown[]) => void
-type NavigationDetails = { isMainFrame: boolean; isSameDocument: boolean }
-
 interface TrackedSender {
   sender: WebContents
   onDestroyed: () => void
-  onDidStartNavigation: (details: NavigationDetails) => void
+  onDidNavigate: () => void
   onRenderProcessGone: () => void
 }
 
@@ -53,16 +55,32 @@ export function registerFileIpc(deps: FileIpcDependencies): () => void {
   const eventHandlers: Array<{ channel: string; handler: EventHandler }> = []
   const tracked = new Map<number, TrackedSender>()
   const pendingScans = new Map<number, PendingScan>()
+  const pendingReads = new Map<number, Map<number, AbortController>>()
   let disposed = false
+
+  const isCurrentMainFrame = (event: IpcMainEvent | IpcMainInvokeEvent): boolean =>
+    deps.isTrustedMainFrame(event)
+
+  const requireCurrentMainFrame = (event: IpcMainInvokeEvent): void => {
+    if (!isCurrentMainFrame(event)) throw new Error('File operation is unavailable.')
+  }
 
   const removeSenderListeners = (entry: TrackedSender): void => {
     entry.sender.removeListener('destroyed', entry.onDestroyed)
-    entry.sender.removeListener('did-start-navigation', entry.onDidStartNavigation)
+    entry.sender.removeListener('did-navigate', entry.onDidNavigate)
     entry.sender.removeListener('render-process-gone', entry.onRenderProcessGone)
+  }
+
+  const abortOwnerReads = (ownerId: number): void => {
+    const reads = pendingReads.get(ownerId)
+    if (!reads) return
+    pendingReads.delete(ownerId)
+    for (const abort of reads.values()) abort.abort()
   }
 
   const releaseOwner = (ownerId: number): void => {
     pendingScans.delete(ownerId)
+    abortOwnerReads(ownerId)
     deps.access.release(ownerId)
   }
 
@@ -74,9 +92,9 @@ export function registerFileIpc(deps: FileIpcDependencies): () => void {
       // Never let a new WebContents object inherit access solely through an id reuse.
       releaseOwner(sender.id)
     }
-    const onDidStartNavigation = (details: NavigationDetails): void => {
-      if (details.isMainFrame && !details.isSameDocument) releaseOwner(sender.id)
-    }
+    // Provisional, blocked and failed navigations leave the current document
+    // alive. Revoke its access only after a new main document commits.
+    const onDidNavigate = (): void => releaseOwner(sender.id)
     const onRenderProcessGone = (): void => releaseOwner(sender.id)
     const onDestroyed = (): void => {
       const current = tracked.get(sender.id)
@@ -88,11 +106,11 @@ export function registerFileIpc(deps: FileIpcDependencies): () => void {
     tracked.set(sender.id, {
       sender,
       onDestroyed,
-      onDidStartNavigation,
+      onDidNavigate,
       onRenderProcessGone
     })
     sender.once('destroyed', onDestroyed)
-    sender.on('did-start-navigation', onDidStartNavigation)
+    sender.on('did-navigate', onDidNavigate)
     sender.on('render-process-gone', onRenderProcessGone)
   }
 
@@ -107,6 +125,7 @@ export function registerFileIpc(deps: FileIpcDependencies): () => void {
     }
     tracked.clear()
     pendingScans.clear()
+    pendingReads.clear()
   }
 
   const addHandle = (channel: string, handler: InvokeHandler): void => {
@@ -131,7 +150,13 @@ export function registerFileIpc(deps: FileIpcDependencies): () => void {
     let activated = false
     const activateCurrent = (): boolean => {
       if (!deps.access.isCurrent(prepared)) return false
-      if (!activated) activated = deps.access.activateScan(prepared)
+      if (!activated) {
+        activated = deps.access.activateScan(prepared)
+        if (activated && !deps.openJobs.accept(token)) {
+          deps.access.cancelScan(sender.id)
+          activated = false
+        }
+      }
       return activated
     }
     const scan = await deps.scanner.scan(
@@ -158,6 +183,28 @@ export function registerFileIpc(deps: FileIpcDependencies): () => void {
 
   const tokenOf = (token: unknown): number => (typeof token === 'number' ? token : 0)
 
+  const readIdOf = (value: unknown): number => {
+    if (typeof value === 'number' && Number.isSafeInteger(value) && value > 0) return value
+    throw new Error('Invalid file read request.')
+  }
+
+  const beginRead = (ownerId: number, requestId: number): AbortController => {
+    const reads = pendingReads.get(ownerId) ?? new Map<number, AbortController>()
+    const prior = reads.get(requestId)
+    prior?.abort()
+    const abort = new AbortController()
+    reads.set(requestId, abort)
+    pendingReads.set(ownerId, reads)
+    return abort
+  }
+
+  const finishRead = (ownerId: number, requestId: number, abort: AbortController): void => {
+    const reads = pendingReads.get(ownerId)
+    if (reads?.get(requestId) !== abort) return
+    reads.delete(requestId)
+    if (reads.size === 0) pendingReads.delete(ownerId)
+  }
+
   const beginScan = (sender: WebContents, token: number): ScanAccessRequest => {
     const request = deps.access.beginScan(sender.id)
     pendingScans.set(sender.id, { token, request, confirmed: false, completed: false })
@@ -181,12 +228,66 @@ export function registerFileIpc(deps: FileIpcDependencies): () => void {
   }
 
   try {
-    addHandle('open-dialog', async (event) => {
+    addHandle('open-dialog', async (event, intentValue: unknown) => {
+      requireCurrentMainFrame(event)
       const window = deps.windowFromSender(event.sender)
-      return window ? deps.dialogs.pickAndRead(window) : null
+      if (!window) return null
+      if (
+        typeof intentValue !== 'number' ||
+        !Number.isSafeInteger(intentValue) ||
+        intentValue <= 0
+      ) {
+        throw new Error('Invalid base-open intent.')
+      }
+
+      const scope = deps.openJobs.capture(event.sender)
+      let path: string | null
+      try {
+        path = await deps.dialogs.pickFilePath(window)
+      } catch (error) {
+        if (isCurrentMainFrame(event) && deps.openJobs.scopeIsCurrent(scope)) {
+          deps.openJobs.accept(intentValue)
+          throw error
+        }
+        return null
+      }
+      if (path === null || !isCurrentMainFrame(event) || !deps.openJobs.scopeIsCurrent(scope)) {
+        return null
+      }
+      const job = deps.openJobs.begin(intentValue, scope)
+      if (!job) return null
+      try {
+        const opened = await deps.reader.read(path, path, job.signal)
+        return deps.openJobs.isCurrent(job) && isCurrentMainFrame(event) ? opened : null
+      } catch (error) {
+        if (!deps.openJobs.isCurrent(job) || !isCurrentMainFrame(event)) return null
+        if (!deps.openJobs.accept(intentValue)) return null
+        throw error
+      } finally {
+        deps.openJobs.finish(job)
+      }
+    })
+
+    addHandle('open-overlay-dialog', async (event, requestIdValue: unknown) => {
+      requireCurrentMainFrame(event)
+      const window = deps.windowFromSender(event.sender)
+      if (!window) return null
+      trackSender(event.sender)
+      const requestId = readIdOf(requestIdValue)
+      const abort = beginRead(event.sender.id, requestId)
+      try {
+        const opened = await deps.dialogs.pickAndRead(window, abort.signal)
+        return !abort.signal.aborted && isCurrentMainFrame(event) ? opened : null
+      } catch (error) {
+        if (abort.signal.aborted || !isCurrentMainFrame(event)) return null
+        throw error
+      } finally {
+        finishRead(event.sender.id, requestId, abort)
+      }
     })
 
     addHandle('open-folder-scan', async (event, token: unknown) => {
+      requireCurrentMainFrame(event)
       const window = deps.windowFromSender(event.sender)
       if (!window) return null
       trackSender(event.sender)
@@ -209,10 +310,12 @@ export function registerFileIpc(deps: FileIpcDependencies): () => void {
 
     // Read-only metadata probe; it changes no authorization state.
     addHandle('is-directory', async (_event, path: unknown) => {
+      requireCurrentMainFrame(_event)
       return typeof path === 'string' && path !== '' ? deps.isDirectory(path) : false
     })
 
     addHandle('scan-folder', async (event, path: unknown, token: unknown) => {
+      requireCurrentMainFrame(event)
       if (typeof path !== 'string' || path === '') return null
       trackSender(event.sender)
       const scanToken = tokenOf(token)
@@ -227,32 +330,53 @@ export function registerFileIpc(deps: FileIpcDependencies): () => void {
       }
     })
 
-    addHandle('read-file', async (event, path: unknown) => {
+    addHandle('read-file', async (event, path: unknown, requestIdValue: unknown) => {
+      requireCurrentMainFrame(event)
       trackSender(event.sender)
-      const authorized = await deps.access.authorizeRead(event.sender.id, path)
-      return deps.reader.read(authorized.realPath, authorized.requestedPath)
+      const requestId = readIdOf(requestIdValue)
+      const abort = beginRead(event.sender.id, requestId)
+      try {
+        const authorized = await deps.access.authorizeRead(event.sender.id, path)
+        return await deps.reader.read(authorized.realPath, authorized.requestedPath, abort.signal)
+      } finally {
+        finishRead(event.sender.id, requestId, abort)
+      }
     })
 
-    addHandle('read-file-limited', async (event, path: unknown, maxBytes: unknown) => {
-      trackSender(event.sender)
-      const authorized = await deps.access.authorizeRead(event.sender.id, path)
-      return deps.reader.readWithin(
-        authorized.realPath,
-        typeof maxBytes === 'number' ? maxBytes : Number.NaN,
-        authorized.requestedPath
-      )
-    })
+    addHandle(
+      'read-file-limited',
+      async (event, path: unknown, maxBytes: unknown, requestIdValue: unknown) => {
+        requireCurrentMainFrame(event)
+        trackSender(event.sender)
+        const requestId = readIdOf(requestIdValue)
+        const abort = beginRead(event.sender.id, requestId)
+        try {
+          const authorized = await deps.access.authorizeRead(event.sender.id, path)
+          return await deps.reader.readWithin(
+            authorized.realPath,
+            typeof maxBytes === 'number' ? maxBytes : Number.NaN,
+            authorized.requestedPath,
+            abort.signal
+          )
+        } finally {
+          finishRead(event.sender.id, requestId, abort)
+        }
+      }
+    )
 
-    addHandle('export-file', async (_event, request: unknown) => {
+    addHandle('export-file', async (event, request: unknown) => {
+      requireCurrentMainFrame(event)
       return deps.exporter.write(request as ExportRequest)
     })
 
     addHandle('pick-directory', async (event) => {
+      requireCurrentMainFrame(event)
       const window = deps.windowFromSender(event.sender)
       return window ? deps.dialogs.pickExportDirectory(window) : null
     })
 
     addListener('confirm-folder-scan', (event, token: unknown) => {
+      if (!isCurrentMainFrame(event)) return
       trackSender(event.sender)
       const pending = pendingScans.get(event.sender.id)
       if (typeof token !== 'number' || pending?.token !== token) return
@@ -262,6 +386,7 @@ export function registerFileIpc(deps: FileIpcDependencies): () => void {
     })
 
     addListener('cancel-folder-scan', (event, token: unknown) => {
+      if (!isCurrentMainFrame(event)) return
       trackSender(event.sender)
       const pending = pendingScans.get(event.sender.id)
       if (typeof token !== 'number' || pending?.token !== token) return
@@ -270,15 +395,31 @@ export function registerFileIpc(deps: FileIpcDependencies): () => void {
     })
 
     addListener('release-folder-access', (event) => {
+      if (!isCurrentMainFrame(event)) return
       trackSender(event.sender)
       releaseOwner(event.sender.id)
     })
 
-    addListener('reveal-in-folder', (_event, path: unknown) => {
+    addListener('cancel-file-read', (event, requestIdValue: unknown) => {
+      if (!isCurrentMainFrame(event)) return
+      trackSender(event.sender)
+      if (
+        typeof requestIdValue !== 'number' ||
+        !Number.isSafeInteger(requestIdValue) ||
+        requestIdValue <= 0
+      ) {
+        return
+      }
+      pendingReads.get(event.sender.id)?.get(requestIdValue)?.abort()
+    })
+
+    addListener('reveal-in-folder', (event, path: unknown) => {
+      if (!isCurrentMainFrame(event)) return
       if (typeof path === 'string' && path !== '') deps.revealInFolder(path)
     })
 
-    addListener('note-file-opened', (_event, path: unknown) => {
+    addListener('note-file-opened', (event, path: unknown) => {
+      if (!isCurrentMainFrame(event)) return
       if (typeof path === 'string' && path !== '' && isVolumeFileName(path)) {
         deps.noteFileOpened(path)
       }

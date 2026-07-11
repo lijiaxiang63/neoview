@@ -3,6 +3,7 @@ import { useStore, type BaseColormap, type Preset } from '../store'
 import { RangeSlider } from './RangeSlider'
 import { NumberField } from './NumberField'
 import { fmt } from '../format'
+import { playbackFrameTarget } from '../runtime/appEvents'
 
 const PRESETS: { key: Exclude<Preset, 'custom' | 'suggested'>; label: string }[] = [
   { key: 'auto', label: 'Auto' },
@@ -21,23 +22,27 @@ const PLAYBACK_FPS = 8
 /** Loop the frame slider while playing; any volume change stops playback. */
 function FrameControls(): JSX.Element {
   const volume = useStore((s) => s.volume)!
+  const volumeSession = useStore((s) => s.volumeSession)
   const frame = useStore((s) => s.frame)
   const setFrame = useStore((s) => s.setFrame)
-  // Playback is bound to the volume it started on, so a file change stops it
-  // without an effect: the stored flag simply no longer applies.
-  const [playState, setPlayState] = useState<{ vol: unknown; playing: boolean } | null>(null)
-  const playing = playState?.vol === volume && playState.playing
-  const setPlaying = (p: boolean): void => setPlayState({ vol: volume, playing: p })
-
+  // Retain only a small store session, never the volume/raw buffer it names.
+  const [playingSession, setPlayingSession] = useState<number | null>(null)
+  const playing = playingSession === volumeSession
+  const setPlaying = (value: boolean): void => setPlayingSession(value ? volumeSession : null)
   useEffect(() => {
     if (!playing) return
+    const playbackSession = volumeSession
     const id = setInterval(() => {
       const s = useStore.getState()
-      if (!s.volume) return
-      s.setFrame((s.frame + 1) % s.volume.frames)
+      const frame = playbackFrameTarget(s, playbackSession)
+      if (frame !== null) s.setFrame(frame)
     }, 1000 / PLAYBACK_FPS)
-    return () => clearInterval(id)
-  }, [playing])
+    return () => {
+      clearInterval(id)
+      const s = useStore.getState()
+      if (s.volumeSession === playbackSession) s.refreshRegionStats()
+    }
+  }, [playing, volumeSession])
 
   return (
     <>
