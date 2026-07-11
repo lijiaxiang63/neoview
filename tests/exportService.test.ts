@@ -184,9 +184,9 @@ describe('export service', () => {
       sidecar: null
     })
 
-    expect(files.get('/export/sample.mask.nii')).toBe('foreign')
-    expect(files.get('/export/sample.mask-1.nii')).toBe('bytes')
-    expect(result.path).toBe('/export/sample.mask-1.nii')
+    expect(files.get(join('/export', 'sample.mask.nii'))).toBe('foreign')
+    expect(files.get(join('/export', 'sample.mask-1.nii'))).toBe('bytes')
+    expect(result.path).toBe(join('/export', 'sample.mask-1.nii'))
   })
 
   it('propagates non-collision open errors without writing or removing', async () => {

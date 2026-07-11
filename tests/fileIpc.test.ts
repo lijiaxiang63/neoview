@@ -1,4 +1,5 @@
 import { EventEmitter } from 'events'
+import { resolve } from 'path'
 import type { BrowserWindow, IpcMainEvent, IpcMainInvokeEvent, WebContents } from 'electron'
 import { describe, expect, it, vi } from 'vitest'
 import type { FolderEntry, FolderScan } from '../src/shared/files'
@@ -190,10 +191,10 @@ describe('file IPC registration', () => {
         payload: { token: 44, root: '/root', files: [file('/root')] }
       }
     ])
-    expect(access.activeRoot(owner.id)).toBe('/root')
+    expect(access.activeRoot(owner.id)).toBe(resolve('/root'))
     ipc.emit('confirm-folder-scan', owner, 44)
     await expect(ipc.invoke('read-file', owner, '/root/a.nii', 1)).resolves.toMatchObject({
-      path: '/root/a.nii'
+      path: resolve('/root/a.nii')
     })
     await expect(ipc.invoke('read-file', other, '/root/a.nii', 1)).rejects.toThrow('outside')
     ipc.emit('release-folder-access', owner)
@@ -218,7 +219,7 @@ describe('file IPC registration', () => {
     )
 
     await expect(ipc.invoke('open-folder-scan', sender, 1)).resolves.toBeNull()
-    expect(access.activeRoot(sender.id)).toBe('/old')
+    expect(access.activeRoot(sender.id)).toBe(resolve('/old'))
 
     sender.destroy()
     expect(access.activeRoot(sender.id)).toBeNull()
@@ -235,11 +236,11 @@ describe('file IPC registration', () => {
     await ipc.invoke('scan-folder', sender, '/root', 1)
 
     sender.emit('did-start-navigation', { isMainFrame: true, isSameDocument: false })
-    expect(access.activeRoot(sender.id)).toBe('/root')
+    expect(access.activeRoot(sender.id)).toBe(resolve('/root'))
     sender.emit('will-redirect', { url: 'https://remote.test/' })
-    expect(access.activeRoot(sender.id)).toBe('/root')
+    expect(access.activeRoot(sender.id)).toBe(resolve('/root'))
     sender.emit('did-fail-load', { isMainFrame: true })
-    expect(access.activeRoot(sender.id)).toBe('/root')
+    expect(access.activeRoot(sender.id)).toBe(resolve('/root'))
 
     sender.emit('did-navigate')
     expect(access.activeRoot(sender.id)).toBeNull()
@@ -294,7 +295,7 @@ describe('file IPC registration', () => {
     const original = new FakeSender(12)
     const replacement = new FakeSender(12)
     await ipc.invoke('scan-folder', original, '/root', 1)
-    expect(access.activeRoot(12)).toBe('/root')
+    expect(access.activeRoot(12)).toBe(resolve('/root'))
 
     await expect(ipc.invoke('read-file', replacement, '/root/a.nii', 1)).rejects.toThrow('outside')
     expect(access.activeRoot(12)).toBeNull()
@@ -309,15 +310,15 @@ describe('file IPC registration', () => {
     await activate(access, sender.id, '/old')
 
     await ipc.invoke('scan-folder', sender, '/candidate', 5)
-    expect(access.activeRoot(sender.id)).toBe('/candidate')
+    expect(access.activeRoot(sender.id)).toBe(resolve('/candidate'))
     ipc.emit('confirm-folder-scan', sender, 4)
     ipc.emit('cancel-folder-scan', sender, 5)
-    expect(access.activeRoot(sender.id)).toBe('/old')
+    expect(access.activeRoot(sender.id)).toBe(resolve('/old'))
 
     await ipc.invoke('scan-folder', sender, '/current', 6)
     ipc.emit('confirm-folder-scan', sender, 6)
     ipc.emit('cancel-folder-scan', sender, 6)
-    expect(access.activeRoot(sender.id)).toBe('/current')
+    expect(access.activeRoot(sender.id)).toBe(resolve('/current'))
     dispose()
   })
 
@@ -344,12 +345,12 @@ describe('file IPC registration', () => {
     await vi.waitFor(() => expect(scans).toHaveLength(2))
 
     scans[1].batch([file('/second')])
-    expect(access.activeRoot(sender.id)).toBe('/second')
+    expect(access.activeRoot(sender.id)).toBe(resolve('/second'))
     scans[0].batch([file('/first')])
     expect(sender.sent.map(({ payload }) => payload)).toEqual([
       { token: 2, root: '/second', files: [file('/second')] }
     ])
-    expect(access.activeRoot(sender.id)).toBe('/second')
+    expect(access.activeRoot(sender.id)).toBe(resolve('/second'))
 
     scans[1].resolve({ root: '/second', files: [file('/second')], truncated: false })
     scans[0].resolve({ root: '/first', files: [file('/first')], truncated: false })
@@ -375,9 +376,9 @@ describe('file IPC registration', () => {
     )
 
     await expect(ipc.invoke('scan-folder', sender, '/candidate', 8)).rejects.toThrow('scan failed')
-    expect(access.activeRoot(sender.id)).toBe('/old')
+    expect(access.activeRoot(sender.id)).toBe(resolve('/old'))
     ipc.emit('confirm-folder-scan', sender, 8)
-    expect(access.activeRoot(sender.id)).toBe('/old')
+    expect(access.activeRoot(sender.id)).toBe(resolve('/old'))
     dispose()
   })
 
@@ -424,7 +425,10 @@ describe('file IPC registration', () => {
     ipc.emit('cancel-file-read', sender, 101)
 
     await expect(first).rejects.toMatchObject({ name: 'AbortError' })
-    expect(operations.map(({ path }) => path)).toEqual(['/root/a.nii', '/root/b.nii'])
+    expect(operations.map(({ path }) => path)).toEqual([
+      resolve('/root/a.nii'),
+      resolve('/root/b.nii')
+    ])
     expect(operations.map(({ signal }) => signal.aborted)).toEqual([true, false])
     operations[1].result.resolve({
       name: 'b.nii',
@@ -546,7 +550,7 @@ describe('file IPC registration', () => {
     ipc.emitFrom('cancel-file-read', sender, oldFrame, 1)
     ipc.emitFrom('release-folder-access', sender, oldFrame)
     expect(signal?.aborted).toBe(false)
-    expect(access.activeRoot(sender.id)).toBe('/new')
+    expect(access.activeRoot(sender.id)).toBe(resolve('/new'))
 
     ipc.emit('cancel-file-read', sender, 1)
     await expect(read).rejects.toMatchObject({ name: 'AbortError' })
@@ -607,7 +611,7 @@ describe('file IPC registration', () => {
     expect(() => registerFileIpc(deps)).toThrow('duplicate handler')
     expect(ipc.handlers.size).toBe(9)
     expect(ipc.listenerCount()).toBe(6)
-    expect(access.activeRoot(sender.id)).toBe('/root')
+    expect(access.activeRoot(sender.id)).toBe(resolve('/root'))
     expect(sender.listenerCount('did-navigate')).toBe(1)
     expect(sender.listenerCount('render-process-gone')).toBe(1)
 

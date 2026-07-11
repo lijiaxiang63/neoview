@@ -1,3 +1,4 @@
+import { join } from 'path'
 import { describe, expect, it } from 'vitest'
 import { createFolderScanner, type DirectoryEntry } from '../src/main/files/scanner'
 
@@ -39,8 +40,8 @@ describe('folder scanner', () => {
     const reads: string[] = []
     const tree = new Map<string, DirectoryEntry[]>([
       ['/root', [entry('one', 'directory'), entry('root.nii', 'file')]],
-      ['/root/one', [entry('two', 'directory'), entry('one.nii', 'file')]],
-      ['/root/one/two', [entry('too-deep.nii', 'file')]]
+      [join('/root', 'one'), [entry('two', 'directory'), entry('one.nii', 'file')]],
+      [join('/root', 'one', 'two'), [entry('too-deep.nii', 'file')]]
     ])
     const scanner = createFolderScanner(
       {
@@ -55,7 +56,7 @@ describe('folder scanner', () => {
     const result = await scanner.scan('/root')
 
     expect(result.files.map((file) => file.name)).toEqual(['root.nii', 'one.nii'])
-    expect(reads).not.toContain('/root/one/two')
+    expect(reads).not.toContain(join('/root', 'one', 'two'))
   })
 
   it('enforces separate file and product limits and reports truncation', async () => {
@@ -91,7 +92,7 @@ describe('folder scanner', () => {
           if (path === '/root') {
             return [entry('good', 'directory'), entry('blocked', 'directory')]
           }
-          if (path === '/root/blocked') throw new Error('denied')
+          if (path === join('/root', 'blocked')) throw new Error('denied')
           return [entry('kept.nii', 'file')]
         }
       },
@@ -101,7 +102,7 @@ describe('folder scanner', () => {
     const result = await scanner.scan('/root')
 
     expect(result.files).toEqual([
-      { name: 'kept.nii', path: '/root/good/kept.nii', relDir: 'good' }
+      { name: 'kept.nii', path: join('/root', 'good', 'kept.nii'), relDir: 'good' }
     ])
     expect(result.truncated).toBe(false)
   })
