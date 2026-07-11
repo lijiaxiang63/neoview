@@ -11,6 +11,9 @@ import {
   pickInitialPreset,
   presetRange,
   REGION_STATS_DEBOUNCE_MS,
+  SIDE_PANEL_WIDTH_DEFAULT,
+  SIDE_PANEL_WIDTH_MAX,
+  SIDE_PANEL_WIDTH_MIN,
   type AppStore,
   type PagehideTarget,
   type PreviewController,
@@ -18,6 +21,7 @@ import {
 } from '../src/renderer/src/store'
 import { MAX_RESULT_VOXELS, type SegBox } from '../src/renderer/src/segmentation/segment'
 import { loadViewPref } from '../src/renderer/src/files/viewPrefs'
+import { defaultUiPrefs, loadUiPrefs } from '../src/renderer/src/files/uiPrefs'
 import type { Volume, VolumeStats } from '../src/renderer/src/volume/types'
 
 let useStore: AppStore
@@ -271,6 +275,107 @@ describe('render settings', () => {
     expect(useStore.getState().density).toBe(0.7)
     expect(useStore.getState().directionLabelsVisible).toBe(false)
     expect(useStore.getState().crosshairVisible).toBe(false)
+  })
+})
+
+describe('panel layout', () => {
+  it('defaults to the display tab at the default width with nothing collapsed', () => {
+    const s = useStore.getState()
+    expect(s.sidePanelTab).toBe('display')
+    expect(s.sidePanelWidth).toBe(SIDE_PANEL_WIDTH_DEFAULT)
+    expect(s.collapsedSections).toEqual({})
+  })
+
+  it('clamps the width and resets to the default', () => {
+    useStore.getState().setSidePanelWidth(10_000)
+    expect(useStore.getState().sidePanelWidth).toBe(SIDE_PANEL_WIDTH_MAX)
+    useStore.getState().setSidePanelWidth(1)
+    expect(useStore.getState().sidePanelWidth).toBe(SIDE_PANEL_WIDTH_MIN)
+    useStore.getState().resetSidePanelWidth()
+    expect(useStore.getState().sidePanelWidth).toBe(SIDE_PANEL_WIDTH_DEFAULT)
+  })
+
+  it('toggleSection flips ids without mutating the previous object', () => {
+    const before = useStore.getState().collapsedSections
+    useStore.getState().toggleSection('info.affine')
+    const after = useStore.getState().collapsedSections
+    expect(after).toEqual({ 'info.affine': true })
+    expect(before).toEqual({})
+    expect(after).not.toBe(before)
+    useStore.getState().toggleSection('info.affine')
+    expect(useStore.getState().collapsedSections).toEqual({})
+  })
+
+  it('persists tab, width, and collapsed sections through a debounced save', () => {
+    vi.useFakeTimers()
+    const mem = new Map<string, string>()
+    const storage = {
+      getItem: (key: string): string | null => mem.get(key) ?? null,
+      setItem: (key: string, value: string): void => void mem.set(key, value)
+    }
+    const a = createAppStore({ storage, pagehideTarget: null })
+    try {
+      a.getState().setSidePanelTab('regions')
+      a.getState().setSidePanelWidth(320)
+      a.getState().toggleSection('display.render')
+      expect(loadUiPrefs(storage)).toEqual(defaultUiPrefs())
+      vi.advanceTimersByTime(300)
+      expect(loadUiPrefs(storage)).toEqual({
+        tab: 'regions',
+        width: 320,
+        collapsed: ['display.render']
+      })
+    } finally {
+      a.dispose()
+    }
+
+    // A new store over the same storage restores the layout.
+    const b = createAppStore({ storage, pagehideTarget: null })
+    try {
+      expect(b.getState().sidePanelTab).toBe('regions')
+      expect(b.getState().sidePanelWidth).toBe(320)
+      expect(b.getState().collapsedSections).toEqual({ 'display.render': true })
+    } finally {
+      b.dispose()
+    }
+  })
+
+  it('flushes a pending layout save on pagehide and on dispose', () => {
+    vi.useFakeTimers()
+    const mem = new Map<string, string>()
+    const storage = {
+      getItem: (key: string): string | null => mem.get(key) ?? null,
+      setItem: (key: string, value: string): void => void mem.set(key, value)
+    }
+    let pagehide: (() => void) | null = null
+    const pagehideTarget: PagehideTarget = {
+      addEventListener: (_type, listener) => void (pagehide = listener),
+      removeEventListener: vi.fn()
+    }
+    const owned = createAppStore({ storage, pagehideTarget })
+    try {
+      owned.getState().setSidePanelTab('info')
+      pagehide!()
+      expect(loadUiPrefs(storage).tab).toBe('info')
+
+      owned.getState().setSidePanelWidth(400)
+      owned.dispose()
+      expect(loadUiPrefs(storage)).toEqual({ tab: 'info', width: 400, collapsed: [] })
+      expect(vi.getTimerCount()).toBe(0)
+    } finally {
+      owned.dispose()
+    }
+  })
+
+  it('ignores layout actions after dispose', () => {
+    const owned = createAppStore({ storage: null, pagehideTarget: null })
+    owned.dispose()
+    owned.getState().setSidePanelTab('layers')
+    owned.getState().setSidePanelWidth(400)
+    owned.getState().toggleSection('info.affine')
+    expect(owned.getState().sidePanelTab).toBe('display')
+    expect(owned.getState().sidePanelWidth).toBe(SIDE_PANEL_WIDTH_DEFAULT)
+    expect(owned.getState().collapsedSections).toEqual({})
   })
 })
 

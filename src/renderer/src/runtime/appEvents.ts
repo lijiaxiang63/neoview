@@ -1,5 +1,6 @@
 import type { ViewMenuState } from '../../../shared/files'
-import type { AppState } from '../store'
+import type { AppState, SidePanelTab } from '../store'
+import type { SegBox } from '../segmentation/segment'
 
 /** 'auto' follows the loaded-state snapshot captured when a drop happens. */
 export type LoadTarget = 'base' | 'overlay' | 'auto'
@@ -127,6 +128,18 @@ export function viewMenuSnapshot(
     directionLabels: state.directionLabelsVisible,
     crosshair: state.crosshairVisible
   }
+}
+
+/** A box appearing (drawn on a slice or restored by re-edit) summons the
+ * segmentation controls, so the panel switches to the regions tab exactly
+ * on that transition. Leaving the tab afterwards is the user's choice and
+ * is never undone; no other transition switches tabs. */
+export function autoPanelTab(
+  prevBox: SegBox | null,
+  nextBox: SegBox | null,
+  tab: SidePanelTab
+): SidePanelTab | null {
+  return prevBox === null && nextBox !== null && tab !== 'regions' ? 'regions' : null
 }
 
 export function sameViewMenuSnapshot(a: ViewMenuState | null, b: ViewMenuState): boolean {

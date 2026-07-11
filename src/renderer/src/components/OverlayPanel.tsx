@@ -1,6 +1,8 @@
 import { useState, type JSX } from 'react'
 import { useStore } from '../store'
 import { RangeSlider } from './RangeSlider'
+import { EyeIcon } from './EyeIcon'
+import { CollapsibleSection } from './CollapsibleSection'
 import { fmt } from '../format'
 import {
   labelColorCSS,
@@ -22,18 +24,6 @@ const COLORMAPS: { key: ColormapName; label: string }[] = [
   { key: 'cool', label: 'Cool' },
   { key: 'signed', label: 'Signed' }
 ]
-
-function EyeIcon({ off }: { off: boolean }): JSX.Element {
-  return (
-    <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true">
-      <g fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round">
-        <path d="M1.8 8C3.6 4.9 12.4 4.9 14.2 8C12.4 11.1 3.6 11.1 1.8 8Z" />
-        <circle cx="8" cy="8" r="1.9" />
-        {off && <line x1="3" y1="13.2" x2="13" y2="2.8" />}
-      </g>
-    </svg>
-  )
-}
 
 /**
  * Collapsible label list for the labels kind: color swatch, id + name
@@ -77,65 +67,71 @@ function LabelVisibility({
     if (hidden.has(id)) toggle(id)
   }
 
+  const badge = [
+    entries ? `${entries.length}` : null,
+    hidden.size > 0 ? `${hidden.size} hidden` : null
+  ]
+    .filter(Boolean)
+    .join(' · ')
+
   return (
     <div className="label-visibility">
-      <button className="preset-btn expander" aria-expanded={open} onClick={() => setOpen(!open)}>
-        {open ? '▾' : '▸'} Labels
-        {entries ? ` · ${entries.length}` : ''}
-        {hidden.size > 0 ? ` · ${hidden.size} hidden` : ''}
-      </button>
-      {open && entries && shown && (
-        <>
-          <div className="preset-row">
-            <button className="preset-btn" onClick={() => onPatch({ hiddenLabels: new Set() })}>
-              All
-            </button>
-            <button
-              className="preset-btn"
-              onClick={() => onPatch({ hiddenLabels: new Set(entries.map((e) => e.id)) })}
-            >
-              None
-            </button>
-            <input
-              className="label-filter mono"
-              type="text"
-              placeholder="filter…"
-              value={filter}
-              onChange={(e) => setFilter(e.target.value)}
-            />
-          </div>
-          <div className="label-list">
-            {shown.map(({ id, count, pos }) => {
-              const off = hidden.has(id)
-              const name = names?.get(id)
-              return (
-                <div key={id} className={`label-row${off ? ' off' : ''}`}>
-                  <span className="swatch" style={{ background: labelColorCSS(id) }} />
-                  <button
-                    className="label-jump"
-                    disabled={!pos}
-                    title={pos ? 'Jump to this label' : 'Not present in the data'}
-                    onClick={() => pos && jumpTo(id, pos)}
-                  >
-                    <span className="id-chip mono">{id}</span>
-                    <span className="label-name">{name ?? `label ${id}`}</span>
-                  </button>
-                  <span className="count mono">{count.toLocaleString('en-US')}</span>
-                  <button
-                    className="eye-btn"
-                    title={off ? 'Show label' : 'Hide label'}
-                    aria-pressed={!off}
-                    onClick={() => toggle(id)}
-                  >
-                    <EyeIcon off={off} />
-                  </button>
-                </div>
-              )
-            })}
-            {shown.length === 0 && <div className="label-empty mono">no match</div>}
-          </div>
-        </>
-      )}
+      {/* Controlled with local state: layer ids are session-scoped, so this
+          collapse is deliberately not persisted. */}
+      <CollapsibleSection title="Labels" badge={badge || undefined} open={open} onToggle={setOpen}>
+        {entries && shown && (
+          <>
+            <div className="preset-row" style={{ marginTop: 0 }}>
+              <button className="preset-btn" onClick={() => onPatch({ hiddenLabels: new Set() })}>
+                All
+              </button>
+              <button
+                className="preset-btn"
+                onClick={() => onPatch({ hiddenLabels: new Set(entries.map((e) => e.id)) })}
+              >
+                None
+              </button>
+              <input
+                className="label-filter mono"
+                type="text"
+                placeholder="filter…"
+                value={filter}
+                onChange={(e) => setFilter(e.target.value)}
+              />
+            </div>
+            <div className="label-list">
+              {shown.map(({ id, count, pos }) => {
+                const off = hidden.has(id)
+                const name = names?.get(id)
+                return (
+                  <div key={id} className={`label-row${off ? ' off' : ''}`}>
+                    <span className="swatch" style={{ background: labelColorCSS(id) }} />
+                    <button
+                      className="label-jump"
+                      disabled={!pos}
+                      title={pos ? 'Jump to this label' : 'Not present in the data'}
+                      onClick={() => pos && jumpTo(id, pos)}
+                    >
+                      <span className="id-chip mono">{id}</span>
+                      <span className="label-name">{name ?? `label ${id}`}</span>
+                    </button>
+                    <span className="count mono">{count.toLocaleString('en-US')}</span>
+                    <button
+                      className="eye-btn"
+                      title={off ? 'Show label' : 'Hide label'}
+                      aria-pressed={!off}
+                      onClick={() => toggle(id)}
+                    >
+                      <EyeIcon off={off} />
+                    </button>
+                  </div>
+                )
+              })}
+              {shown.length === 0 && <div className="label-empty mono">no match</div>}
+            </div>
+          </>
+        )}
+      </CollapsibleSection>
     </div>
   )
 }
@@ -161,12 +157,16 @@ export function OverlayPanel({ onAdd }: { onAdd: () => void }): JSX.Element | nu
 
   return (
     <div className="panel-section">
-      <div className="layer-head">
-        <h3>Overlays</h3>
+      <div className="tab-toolbar">
         <button className="preset-btn" onClick={onAdd}>
           Add layer
         </button>
       </div>
+      {overlays.length === 0 && (
+        <div className="seg-hint">
+          No layers yet — click Add layer, or drop a file onto the views.
+        </div>
+      )}
       {overlays.map((layer) => {
         const domain = mapDomain(layer)
         return (

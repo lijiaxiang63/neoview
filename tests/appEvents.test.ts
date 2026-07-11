@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   acceptsVolumeFileName,
+  autoPanelTab,
   discardWarning,
   dropTargetAt,
   ipcErrorMessage,
@@ -117,6 +118,18 @@ describe('application event decisions', () => {
     expect(sameViewMenuSnapshot(first, { ...first, directionLabels: false })).toBe(false)
     expect(sameViewMenuSnapshot(first, { ...first, crosshair: true })).toBe(false)
     expect(sameViewMenuSnapshot(null, first)).toBe(false)
+  })
+
+  it('switches to the regions tab only when a box appears elsewhere', () => {
+    const box = {} as never
+    expect(autoPanelTab(null, box, 'display')).toBe('regions')
+    expect(autoPanelTab(null, box, 'layers')).toBe('regions')
+    // Already looking at the controls: nothing to do.
+    expect(autoPanelTab(null, box, 'regions')).toBeNull()
+    // Box edits, removal, and steady state never switch tabs.
+    expect(autoPanelTab(box, box, 'display')).toBeNull()
+    expect(autoPanelTab(box, null, 'display')).toBeNull()
+    expect(autoPanelTab(null, null, 'display')).toBeNull()
   })
 
   it('prioritizes unsaved work over an uncommitted box', () => {

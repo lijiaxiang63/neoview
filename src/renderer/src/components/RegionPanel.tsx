@@ -8,6 +8,9 @@ import {
 } from '../store'
 import { fmt } from '../format'
 import { NumberField } from './NumberField'
+import { EyeIcon } from './EyeIcon'
+import { CollapsibleSection } from './CollapsibleSection'
+import { ModelMethodPlaceholder } from './ModelMethodPlaceholder'
 import type { RegionExportController } from '../runtime/regionExportController'
 import {
   boxExtent,
@@ -18,18 +21,6 @@ import {
   type SegBox
 } from '../segmentation/segment'
 import type { Region } from '../segmentation/regions'
-
-function EyeIcon({ off }: { off: boolean }): JSX.Element {
-  return (
-    <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true">
-      <g fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round">
-        <path d="M1.8 8C3.6 4.9 12.4 4.9 14.2 8C12.4 11.1 3.6 11.1 1.8 8Z" />
-        <circle cx="8" cy="8" r="1.9" />
-        {off && <line x1="3" y1="13.2" x2="13" y2="2.8" />}
-      </g>
-    </svg>
-  )
-}
 
 const TOOLS: { key: SegTool; label: string; title: string }[] = [
   {
@@ -220,6 +211,7 @@ function SegmentControls({ box }: { box: SegBox }): JSX.Element {
           Grow
         </button>
       </div>
+
       <div className="seg-hint">
         {params.method === 'threshold'
           ? 'Draw the box around the region; the result stays inside the box.'
@@ -564,16 +556,9 @@ function ExportSection({ controller }: { controller: RegionExportController }): 
         >
           Export mask
         </button>
-        <button
-          className={`preset-btn${showSettings ? ' active' : ''}`}
-          aria-expanded={showSettings}
-          title="Export settings"
-          onClick={() => setShowSettings(!showSettings)}
-        >
-          ⚙
-        </button>
       </div>
-      {showSettings && (
+      {/* Controlled (not persisted): a failed export must force it open. */}
+      <CollapsibleSection title="Export settings" open={showSettings} onToggle={setShowSettings}>
         <div className="export-settings">
           <div className="seg-field">
             <label>Format</label>
@@ -611,7 +596,7 @@ function ExportSection({ controller }: { controller: RegionExportController }): 
             </button>
           </div>
         </div>
-      )}
+      </CollapsibleSection>
       {regions.length > 0 && (
         <div className={`seg-status${segDirty ? ' dirty' : ''}`}>
           {segDirty ? 'Unsaved changes' : 'Exported ✓'}
@@ -634,24 +619,53 @@ export function RegionPanel({ exports }: { exports: RegionExportController }): J
   const setRegionOpacity = useStore((s) => s.setRegionOpacity)
 
   const [rowMenu, setRowMenu] = useState<{ id: number; x: number; y: number } | null>(null)
+  // Reserved whole-volume model tool: component-local so the store, gesture
+  // routing, and workers never see it — the real tool underneath stays
+  // 'crosshair' while the preview is shown.
+  const [modelTool, setModelTool] = useState(false)
+
+  // A store-driven tool change (re-segment restores a box and selects the
+  // box tool) takes over from the model preview. Render-time adjustment so
+  // the takeover happens in the same pass, without an effect cascade.
+  const [prevSegTool, setPrevSegTool] = useState(segTool)
+  if (segTool !== prevSegTool) {
+    setPrevSegTool(segTool)
+    if (segTool !== 'crosshair') setModelTool(false)
+  }
 
   if (!volume) return null
 
   return (
     <div className="panel-section region-panel">
-      <h3>Regions</h3>
       <div className="preset-row" style={{ marginTop: 0 }}>
         {TOOLS.map((t) => (
           <button
             key={t.key}
-            className={`preset-btn${segTool === t.key ? ' active' : ''}`}
+            className={`preset-btn${!modelTool && segTool === t.key ? ' active' : ''}`}
             title={t.title}
-            onClick={() => setSegTool(t.key)}
+            onClick={() => {
+              setModelTool(false)
+              setSegTool(t.key)
+            }}
           >
             {t.label}
           </button>
         ))}
+        <button
+          className={`preset-btn future${modelTool ? ' active' : ''}`}
+          title="Segment the whole volume with a model — not yet available"
+          onClick={() => {
+            // Navigate underneath: slice gestures stay predictable while the
+            // reserved layout is shown.
+            setSegTool('crosshair')
+            setModelTool(true)
+          }}
+        >
+          Model
+        </button>
       </div>
+
+      {modelTool && <ModelMethodPlaceholder />}
 
       {segTool === 'box' && !segBox && (
         <div className="seg-hint">

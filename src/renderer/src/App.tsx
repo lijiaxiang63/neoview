@@ -1,4 +1,4 @@
-import { useSyncExternalStore, type JSX } from 'react'
+import { useSyncExternalStore, type CSSProperties, type JSX } from 'react'
 import { useStore } from './store'
 import type { RendererRuntime } from './runtime/rendererRuntime'
 import { SliceView } from './components/SliceView'
@@ -33,6 +33,7 @@ export default function App({
   const folderLoading = useStore((state) => state.folderLoading)
   const filePanelOpen = useStore((state) => state.filePanelOpen)
   const sidebarOpen = useStore((state) => state.sidePanelOpen)
+  const sidePanelWidth = useStore((state) => state.sidePanelWidth)
   const shortcutsOpen = useStore((state) => state.shortcutsOpen)
   const setShortcutsOpen = useStore((state) => state.setShortcutsOpen)
   const { dragging, dropTarget } = useSyncExternalStore(
@@ -46,6 +47,7 @@ export default function App({
       {(loadState === 'loading' || folderLoading) && <div className="loading-bar" />}
       <main
         className={`workspace${folderOpen && filePanelOpen ? ' has-files' : ''}${sidebarOpen ? '' : ' sidebar-closed'}${hasMaximized ? ' has-max' : ''}`}
+        style={{ '--side-panel-w': `${sidePanelWidth}px` } as CSSProperties}
       >
         {folderOpen && filePanelOpen && (
           <FilePanel onSelect={(entry) => runtime.requestEntry(entry.path)} />

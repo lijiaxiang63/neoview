@@ -5,6 +5,14 @@ import type { Volume } from './volume/types'
 import { releaseFrameTextureSource } from './volume/loadVolume'
 import { sortEntries, type FolderEntry } from './files/folderList'
 import { loadViewPref, saveViewPref, type ViewPref } from './files/viewPrefs'
+import {
+  defaultUiPrefs,
+  loadUiPrefs,
+  saveUiPrefs,
+  type SidePanelTab,
+  type UiPrefs
+} from './files/uiPrefs'
+import { clampPanelWidth, SIDE_PANEL_WIDTH_DEFAULT } from './panelLayout'
 import { defaultLayerSettings, guessOverlayKind, type OverlayLayer } from './slicing/overlay'
 import { PreviewClient } from './segmentation/previewClient'
 import {
@@ -35,6 +43,9 @@ export type {
   ToastItem,
   ToastState
 } from './store/regionDomain'
+
+export type { SidePanelTab } from './files/uiPrefs'
+export { SIDE_PANEL_WIDTH_DEFAULT, SIDE_PANEL_WIDTH_MAX, SIDE_PANEL_WIDTH_MIN } from './panelLayout'
 
 export type Preset = 'auto' | 'full' | 'fixed-0-80' | 'suggested' | 'custom'
 
@@ -72,6 +83,12 @@ export interface AppState extends RegionState, RegionActions {
   filePanelOpen: boolean
   /** Side panel visibility (a viewing pref — survives file changes). */
   sidePanelOpen: boolean
+  /** Active side-panel tab (persisted with the panel layout prefs). */
+  sidePanelTab: SidePanelTab
+  /** Side panel width in pixels (persisted, clamped by panelLayout.ts). */
+  sidePanelWidth: number
+  /** Collapsed persisted sections by id; absent = open. */
+  collapsedSections: Record<string, true>
   /** Primary direction labels drawn at the left and top panel edges of every slice. */
   directionLabelsVisible: boolean
   /** Shared slice crosshair visibility. */
@@ -107,6 +124,10 @@ export interface AppState extends RegionState, RegionActions {
   setFolderLoading: (b: boolean) => void
   toggleFilePanel: () => void
   toggleSidePanel: () => void
+  setSidePanelTab: (tab: SidePanelTab) => void
+  setSidePanelWidth: (px: number) => void
+  resetSidePanelWidth: () => void
+  toggleSection: (id: string) => void
   toggleDirectionLabels: () => void
   toggleCrosshair: () => void
   setPendingFilePath: (p: string | null) => void
@@ -252,6 +273,51 @@ function createAppState(
     prefSaveTimer = timers.setTimeout(flushPrefSave, 300)
   }
 
+  let uiPrefSaveTimer: ReturnType<typeof setTimeout> | undefined
+  let pendingUiPrefSave: UiPrefs | null = null
+
+  function clearUiPrefSaveTimer(): void {
+    if (uiPrefSaveTimer === undefined) return
+    timers.clearTimeout(uiPrefSaveTimer)
+    uiPrefSaveTimer = undefined
+  }
+
+  function flushUiPrefSave(): void {
+    clearUiPrefSaveTimer()
+    if (!pendingUiPrefSave || !prefStorage) return
+    saveUiPrefs(pendingUiPrefSave, prefStorage)
+    pendingUiPrefSave = null
+  }
+
+  /** Debounced write of the panel layout (drag resizing fires per frame).
+   * The payload is captured NOW so the dispose/pagehide flush is exact. */
+  function scheduleUiPrefSave(): void {
+    if (disposed || !prefStorage) return
+    const s = get()
+    pendingUiPrefSave = {
+      tab: s.sidePanelTab,
+      width: s.sidePanelWidth,
+      collapsed: Object.keys(s.collapsedSections)
+    }
+    clearUiPrefSaveTimer()
+    uiPrefSaveTimer = timers.setTimeout(flushUiPrefSave, 300)
+  }
+
+  /** Both debouncers together: the pagehide/dispose barrier. */
+  function flushAllPrefSaves(): void {
+    flushPrefSave()
+    flushUiPrefSave()
+  }
+
+  function applyPanelWidth(px: number): void {
+    const width = clampPanelWidth(px)
+    if (get().sidePanelWidth === width) return
+    set({ sidePanelWidth: width })
+    scheduleUiPrefSave()
+  }
+
+  const initialUiPrefs = prefStorage ? loadUiPrefs(prefStorage) : defaultUiPrefs()
+
   const regionDomain = createRegionDomain({
     get: () => get(),
     set: (patch) => set(typeof patch === 'function' ? (state) => patch(state) : patch),
@@ -267,6 +333,9 @@ function createAppState(
     folderLoading: false,
     filePanelOpen: true,
     sidePanelOpen: true,
+    sidePanelTab: initialUiPrefs.tab,
+    sidePanelWidth: initialUiPrefs.width,
+    collapsedSections: Object.fromEntries(initialUiPrefs.collapsed.map((id) => [id, true])),
     directionLabelsVisible: true,
     crosshairVisible: true,
     pendingFilePath: null,
@@ -316,6 +385,26 @@ function createAppState(
     toggleFilePanel: () => set((s) => ({ filePanelOpen: !s.filePanelOpen })),
 
     toggleSidePanel: () => set((s) => ({ sidePanelOpen: !s.sidePanelOpen })),
+
+    setSidePanelTab: (tab) => {
+      if (get().sidePanelTab === tab) return
+      set({ sidePanelTab: tab })
+      scheduleUiPrefSave()
+    },
+
+    setSidePanelWidth: applyPanelWidth,
+
+    resetSidePanelWidth: () => applyPanelWidth(SIDE_PANEL_WIDTH_DEFAULT),
+
+    toggleSection: (id) => {
+      set((s) => {
+        const next = { ...s.collapsedSections }
+        if (next[id]) delete next[id]
+        else next[id] = true
+        return { collapsedSections: next }
+      })
+      scheduleUiPrefSave()
+    },
 
     toggleDirectionLabels: () =>
       set((s) => ({ directionLabelsVisible: !s.directionLabelsVisible })),
@@ -468,14 +557,14 @@ function createAppState(
   lifecycle.dispose = (): void => {
     if (disposed) return
     // Persistence is part of teardown: do not silently drop the last edit.
-    flushPrefSave()
+    flushAllPrefSaves()
     const volume = get().volume
     if (volume) releaseFrameTextureSource(volume)
     disposed = true
     regionDomain.dispose()
-    pagehideTarget?.removeEventListener('pagehide', flushPrefSave)
+    pagehideTarget?.removeEventListener('pagehide', flushAllPrefSaves)
   }
-  pagehideTarget?.addEventListener('pagehide', flushPrefSave)
+  pagehideTarget?.addEventListener('pagehide', flushAllPrefSaves)
 
   // `set` guards ordinary Zustand writes, but region actions also mutate
   // owned typed arrays before publishing a revision. Stable wrappers put the

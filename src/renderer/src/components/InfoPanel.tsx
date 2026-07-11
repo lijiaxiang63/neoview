@@ -1,5 +1,6 @@
 import { type JSX } from 'react'
 import { useStore } from '../store'
+import { CollapsibleSection } from './CollapsibleSection'
 import type { TransformSource } from '../volume/types'
 
 const SOURCE_LABELS: Record<TransformSource, string> = {
@@ -67,9 +68,10 @@ export function InfoPanel(): JSX.Element | null {
         </dl>
       </div>
       <div className="panel-section">
-        <h3>Affine</h3>
-        <span className="transform-pill">{SOURCE_LABELS[volume.transformSource]}</span>
-        <div className="affine-grid">{cells}</div>
+        <CollapsibleSection title="Affine" persistId="info.affine">
+          <span className="transform-pill">{SOURCE_LABELS[volume.transformSource]}</span>
+          <div className="affine-grid">{cells}</div>
+        </CollapsibleSection>
       </div>
     </>
   )
