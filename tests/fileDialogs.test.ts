@@ -75,4 +75,17 @@ describe('file dialogs', () => {
 
     expect(secondShowOpenDialog.mock.calls[0][1]).toMatchObject({ defaultPath: '/next' })
   })
+
+  it('offers volume and text files in the layer picker', async () => {
+    const showOpenDialog = vi.fn().mockResolvedValue({ canceled: true, filePaths: [] })
+    const dialogs = createFileDialogs({ showOpenDialog }, {} as FileReader)
+
+    await dialogs.pickLayerPath({} as BrowserWindow)
+
+    expect(showOpenDialog.mock.calls[0][1]).toMatchObject({ properties: ['openFile'] })
+    expect(showOpenDialog.mock.calls[0][1].filters?.[0]).toEqual({
+      name: 'Layer files',
+      extensions: ['nii', 'nii.gz', 'txt']
+    })
+  })
 })

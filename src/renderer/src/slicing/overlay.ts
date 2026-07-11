@@ -1,6 +1,7 @@
 import type { Volume } from '../volume/types'
 import { applyAffine, composeVoxelMap } from '../volume/affine'
 import type { PlaneSpec } from './extract'
+import type { LayerLabelTable } from './labelTable'
 
 export type OverlayKind = 'map' | 'mask' | 'labels'
 export type ColormapName = 'warm' | 'cool' | 'signed'
@@ -17,6 +18,10 @@ export interface OverlayLayer {
   colormap: ColormapName
   /** Label ids suppressed in the labels kind (empty = all visible). */
   hiddenLabels: ReadonlySet<number>
+  /** Renderer-visible source identity used to match an adjacent value table. */
+  sourcePath: string | null
+  /** Optional names and exact colors keyed by displayed integer value. */
+  labelTable: LayerLabelTable | null
 }
 
 // ---------------------------------------------------------------------------
@@ -48,6 +53,10 @@ export function voxelMapFor(base: Volume, overlay: Volume): Float64Array | null 
 
 function packRGB(r: number, g: number, b: number): number {
   return (0xff000000 | (b << 16) | (g << 8) | r) >>> 0
+}
+
+function packRGBA(r: number, g: number, b: number, a: number): number {
+  return ((a << 24) | (b << 16) | (g << 8) | r) >>> 0
 }
 
 type Stops = [number, number, number][]
@@ -148,6 +157,20 @@ export const MASK_COLOR = packRGB(255, 80, 40)
 export function labelColorCSS(id: number): string {
   const c = labelColor(id)
   return `rgb(${c & 0xff}, ${(c >>> 8) & 0xff}, ${(c >>> 16) & 0xff})`
+}
+
+export function layerLabelColor(layer: OverlayLayer, id: number): number {
+  const rgba = layer.labelTable?.get(id)?.rgba
+  return rgba ? packRGBA(rgba[0], rgba[1], rgba[2], rgba[3]) : labelColor(id)
+}
+
+export function layerLabelColorCSS(layer: OverlayLayer, id: number): string {
+  const rgba = layer.labelTable?.get(id)?.rgba
+  return rgba ? `rgba(${rgba[0]}, ${rgba[1]}, ${rgba[2]}, ${rgba[3] / 255})` : labelColorCSS(id)
+}
+
+export function layerLabelName(layer: OverlayLayer, id: number): string | null {
+  return layer.labelTable?.get(id)?.name ?? layer.volume.labels?.get(id) ?? null
 }
 
 /** Cap on enumerated ids for volumes without a name table. */
@@ -367,7 +390,7 @@ export function extractOverlayRGBA(
         px[p] = v !== 0 ? MASK_COLOR : 0
       } else if (kind === 'labels') {
         const id = Math.round(v)
-        px[p] = id !== 0 && !(anyHidden && hidden.has(id)) ? labelColor(id) : 0
+        px[p] = id !== 0 && !(anyHidden && hidden.has(id)) ? layerLabelColor(layer, id) : 0
       } else if (signed) {
         const a = Math.abs(v)
         if (a < lo) {

@@ -161,6 +161,7 @@ export interface RegionActions {
   toggleMaximized: (view: 0 | 1 | 2) => void
   updateRegion: (id: number, patch: Partial<Pick<Region, 'name' | 'color' | 'visible'>>) => void
   deleteRegion: (id: number) => void
+  clearRegions: (clean?: boolean) => boolean
   undo: () => void
   redo: () => void
   markExported: (volume: Volume, sourcePath: string | null, revision: number) => void
@@ -680,7 +681,7 @@ export function createRegionDomain(deps: {
         : stillThere(state.editRegionId)
           ? state.editRegionId
           : null,
-      segDirty: true,
+      segDirty: entry.dirty ? entry.dirty[direction === 'undo' ? 'before' : 'after'] : true,
       segRevision: state.segRevision + 1,
       toasts: dropUndoToasts(state.toasts)
     })
@@ -1255,6 +1256,58 @@ export function createRegionDomain(deps: {
       } else if (state.segBox && constraint.type === 'region') {
         schedulePreview()
       }
+    },
+    clearRegions: (clean = false) => {
+      if (strokeCollector) return false
+      const state = get()
+      if (!state.labelMap && state.regions.length === 0) return false
+      cancelScheduledPreview()
+      cancelModelRunNow()
+      clearRegionStatsTimer()
+      regionStatsCache = null
+      const entry: HistoryEntry<SegSnapshot> = {
+        patch: null,
+        mapSwap: { before: state.labelMap, after: null },
+        regions: { before: state.regions, after: [] },
+        nextId: { before: state.nextRegionId, after: 1 },
+        snapshots: { before: state.segSnapshots, after: {} },
+        selection: {
+          before: { active: state.activeRegionId, edit: state.editRegionId },
+          after: { active: null, edit: null }
+        },
+        dirty: { before: clean ? false : state.segDirty, after: clean ? false : true }
+      }
+      const segParams =
+        state.segParams.constraint.type === 'region'
+          ? { ...state.segParams, constraint: { type: 'none' } as const }
+          : state.segParams
+      set({
+        labelMap: null,
+        labelMapRev: state.labelMapRev + 1,
+        regions: [],
+        nextRegionId: 1,
+        activeRegionId: null,
+        segTool: 'crosshair',
+        segBox: null,
+        editRegionId: null,
+        segSnapshots: {},
+        segSlabAxis: null,
+        preview: null,
+        segParams,
+        segDirty: clean ? false : true,
+        segRevision: state.segRevision + 1,
+        undoStack: pushEntry(state.undoStack, entry),
+        redoStack: [],
+        toasts: [
+          ...dropUndoToasts(state.toasts),
+          {
+            id: nextToastId++,
+            text: 'Cleared all regions',
+            action: { label: 'Undo', kind: 'undo' }
+          }
+        ]
+      })
+      return true
     },
     undo: () => applyHistory('undo'),
     redo: () => applyHistory('redo'),

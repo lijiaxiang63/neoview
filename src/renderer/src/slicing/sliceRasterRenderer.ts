@@ -189,7 +189,8 @@ export class SliceRasterRenderer {
           layer.range.lo,
           layer.range.hi,
           layer.colormap,
-          layer.hiddenLabels
+          layer.hiddenLabels,
+          layer.labelTable
         ] as const
         if (!sameKey(buffer.key, overlayKey)) {
           this.extractors.overlay(

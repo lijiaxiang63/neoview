@@ -523,6 +523,7 @@ function ExportSection({ controller }: { controller: RegionExportController }): 
   const labelMap = useStore((s) => s.labelMap)
   const regions = useStore((s) => s.regions)
   const segDirty = useStore((s) => s.segDirty)
+  const clearRegions = useStore((s) => s.clearRegions)
   const { settings, busy } = useSyncExternalStore(
     controller.subscribe,
     controller.getSnapshot,
@@ -537,16 +538,21 @@ function ExportSection({ controller }: { controller: RegionExportController }): 
     if (!(await controller.export(kind))) setShowSettings(true)
   }
 
+  const exportToLayerAndClear = async (): Promise<void> => {
+    if (!labelMap || busy) return
+    if (!(await controller.exportToLayerAndClear())) setShowSettings(true)
+  }
+
   return (
     <div className="export-section">
       <div className="preset-row">
         <button
-          className="preset-btn"
-          disabled={busy || !labelMap}
-          title="One label value per region + a plain-text color table"
-          onClick={() => void doExport('labels')}
+          className="btn primary"
+          disabled={busy || !labelMap || regions.length === 0}
+          title="Save the multi-value result, add it as a layer, then clear editable regions"
+          onClick={() => void exportToLayerAndClear()}
         >
-          Export label map
+          Export to Layer &amp; Clear
         </button>
         <button
           className="preset-btn"
@@ -556,6 +562,17 @@ function ExportSection({ controller }: { controller: RegionExportController }): 
         >
           Export mask
         </button>
+        <button
+          className="preset-btn danger"
+          disabled={busy || !labelMap || regions.length === 0}
+          title="Clear all editable regions (Undo available)"
+          onClick={() => clearRegions()}
+        >
+          Clear all
+        </button>
+      </div>
+      <div className="seg-hint export-action-hint">
+        Saves files, adds a layer, then clears editable regions.
       </div>
       {/* Controlled (not persisted): a failed export must force it open. */}
       <CollapsibleSection title="Export settings" open={showSettings} onToggle={setShowSettings}>

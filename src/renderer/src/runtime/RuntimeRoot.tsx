@@ -26,7 +26,8 @@ export default function RuntimeRoot(): JSX.Element {
     const regionExports = new RegionExportController({
       store: useStore,
       bridge: window.neoview,
-      storage: localStorage
+      storage: localStorage,
+      loadVolume
     })
     const updates = new UpdatePresenter({
       bridge: window.neoview,

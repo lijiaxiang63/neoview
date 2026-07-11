@@ -1,5 +1,6 @@
 import type { Volume } from '../volume/types'
 import type { PlaneSpec } from '../slicing/extract'
+import { ESCAPED_LAYER_TABLE_MARKER_ROW, escapeLayerLabelName } from '../slicing/labelTable'
 import { boxExtent, type SegBox } from './segment'
 
 /** One user-created region; its voxels live in the shared label map. */
@@ -423,7 +424,7 @@ export function maskUnion(labelMap: Uint16Array, regions: Region[]): Uint8Array 
 export function buildColorTable(entries: ExportEntry[]): string {
   const lines = entries.map((e) => {
     const [r, g, b] = colorComponents(e.region.color)
-    return `${e.value}\t${r}\t${g}\t${b}\t255\t${e.region.name}`
+    return `${e.value}\t${r}\t${g}\t${b}\t255\t${escapeLayerLabelName(e.region.name)}`
   })
-  return lines.join('\n') + '\n'
+  return [ESCAPED_LAYER_TABLE_MARKER_ROW, ...lines].join('\n') + '\n'
 }

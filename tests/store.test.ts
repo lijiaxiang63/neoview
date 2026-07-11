@@ -497,6 +497,20 @@ describe('overlay layers', () => {
     expect(after[0].volume).toBe(target.volume)
   })
 
+  it('attaches a table only to the exact path match and switches it to labels', () => {
+    useStore.getState().setVolume(baseVolume())
+    useStore.getState().addOverlay(fakeVolume({ dataMin: 0, dataMax: 2000 }, 16), {
+      sourcePath: '/out/a.regions-2.nii.gz'
+    })
+    const table = new Map([[1, { name: 'One', rgba: [1, 2, 3, 255] as const }]])
+
+    expect(useStore.getState().attachOverlayTable('/elsewhere/a.regions-2.txt', table)).toBe(
+      'missing'
+    )
+    expect(useStore.getState().attachOverlayTable('/out/a.regions-2.txt', table)).toBe('attached')
+    expect(useStore.getState().overlays[0]).toMatchObject({ kind: 'labels', labelTable: table })
+  })
+
   it('setVolume clears all layers', () => {
     seedOverlays()
     expect(useStore.getState().overlays.length).toBeGreaterThan(0)
@@ -626,6 +640,49 @@ describe('regions', () => {
     useStore.setState({ segDirty: false })
     useStore.getState().updateRegion(1, { visible: false })
     expect(useStore.getState().segDirty).toBe(true)
+  })
+
+  it('clears every region as one undoable action and restores clean state', () => {
+    seedRegion()
+    useStore.setState({
+      activeRegionId: 1,
+      segDirty: false,
+      segSnapshots: {
+        1: {
+          box: { min: [0, 0, 0], max: [1, 1, 1] },
+          slabAxis: 2,
+          params: useStore.getState().segParams
+        }
+      }
+    })
+    const before = useStore.getState().labelMap
+
+    useStore.getState().clearRegions(true)
+    expect(useStore.getState()).toMatchObject({
+      labelMap: null,
+      regions: [],
+      nextRegionId: 1,
+      activeRegionId: null,
+      segDirty: false
+    })
+
+    useStore.getState().undo()
+    expect(useStore.getState().labelMap).toBe(before)
+    expect(useStore.getState().regions[0].name).toBe('Region 1')
+    expect(useStore.getState().segSnapshots[1]).toBeDefined()
+    expect(useStore.getState().segDirty).toBe(false)
+
+    useStore.getState().redo()
+    expect(useStore.getState().labelMap).toBeNull()
+    expect(useStore.getState().regions).toEqual([])
+    expect(useStore.getState().segDirty).toBe(false)
+  })
+
+  it('marks a standalone clear as unsaved and offers Undo', () => {
+    seedRegion()
+    useStore.getState().clearRegions()
+    expect(useStore.getState().segDirty).toBe(true)
+    expect(useStore.getState().toasts.at(-1)?.action).toEqual({ label: 'Undo', kind: 'undo' })
   })
 
   it('metadata edits clear the redo stack (a redo would drop them)', () => {

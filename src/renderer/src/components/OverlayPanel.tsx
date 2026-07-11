@@ -5,8 +5,10 @@ import { EyeIcon } from './EyeIcon'
 import { CollapsibleSection } from './CollapsibleSection'
 import { fmt } from '../format'
 import {
-  labelColorCSS,
+  layerLabelColorCSS,
+  layerLabelName,
   labelInventory,
+  MAX_LISTED_LABELS,
   overlayVoxelToBase,
   type ColormapName,
   type OverlayKind,
@@ -45,11 +47,27 @@ function LabelVisibility({
   const setCross = useStore((s) => s.setCross)
 
   const hidden = layer.hiddenLabels
-  const entries = open ? labelInventory(layer.volume) : null
-  const names = layer.volume.labels
+  const entries = open
+    ? (() => {
+        const inventory = labelInventory(layer.volume)
+        if (!layer.labelTable) return inventory
+        const seen = new Set(inventory.map((entry) => entry.id))
+        return [
+          ...inventory,
+          ...[...layer.labelTable.keys()]
+            .filter((id) => !seen.has(id))
+            .sort((a, b) => a - b)
+            .slice(0, Math.max(0, MAX_LISTED_LABELS - inventory.length))
+            .map((id) => ({ id, count: 0, pos: null }))
+        ]
+      })()
+    : null
   const q = filter.trim().toLowerCase()
   const shown = entries?.filter(
-    (e) => !q || String(e.id).includes(q) || (names?.get(e.id) ?? '').toLowerCase().includes(q)
+    (e) =>
+      !q ||
+      String(e.id).includes(q) ||
+      (layerLabelName(layer, e.id) ?? '').toLowerCase().includes(q)
   )
 
   const toggle = (id: number): void => {
@@ -102,10 +120,13 @@ function LabelVisibility({
             <div className="label-list">
               {shown.map(({ id, count, pos }) => {
                 const off = hidden.has(id)
-                const name = names?.get(id)
+                const name = layerLabelName(layer, id)
                 return (
                   <div key={id} className={`label-row${off ? ' off' : ''}`}>
-                    <span className="swatch" style={{ background: labelColorCSS(id) }} />
+                    <span
+                      className="swatch"
+                      style={{ background: layerLabelColorCSS(layer, id) }}
+                    />
                     <button
                       className="label-jump"
                       disabled={!pos}
@@ -197,7 +218,9 @@ export function OverlayPanel({ onAdd }: { onAdd: () => void }): JSX.Element | nu
             </div>
             <div className="mono layer-dims">
               {layer.volume.dims.join(' × ')}
-              {layer.volume.labels ? ` · ${layer.volume.labels.size} names` : ''}
+              {layer.labelTable || layer.volume.labels
+                ? ` · ${layer.labelTable?.size ?? layer.volume.labels?.size ?? 0} names`
+                : ''}
             </div>
             <div className="preset-row">
               {KINDS.map((k) => (

@@ -2,6 +2,7 @@ import { adjacentIndex, isUnderRoot, sortEntries, type FolderEntry } from './fol
 import type { FolderScan, OpenedFile } from '../../../shared/files'
 import { OpenIntentGate } from '../../../shared/openIntents'
 import { LoadFeedbackGroup, PrefetchSlot } from './loadOwnership'
+import type { LayerLabelTable } from '../slicing/labelTable'
 
 // All load/scan orchestration lives in this one pure module so its
 // interleavings are unit-testable (tests/loadCoordinator.test.ts): every
@@ -26,6 +27,11 @@ import { LoadFeedbackGroup, PrefetchSlot } from './loadOwnership'
 export type OpenedBytes = Pick<OpenedFile, 'name' | 'bytes'>
 
 export type ScanResult = FolderScan
+
+export interface OverlayLoadMetadata {
+  sourcePath: string | null
+  labelTable: LayerLabelTable | null
+}
 
 /** The slice of app state the coordinator's decisions depend on. */
 export interface CoordinatorSnapshot {
@@ -55,6 +61,7 @@ export interface CoordinatorEffects<V> {
   parseAndAddOverlay(
     name: string,
     bytes: ArrayBuffer,
+    metadata: OverlayLoadMetadata,
     isCurrent: () => boolean,
     signal: AbortSignal
   ): Promise<void>
@@ -226,7 +233,11 @@ export class LoadCoordinator<V> {
 
   /** Overlay data may attach alongside another layer, but its shared loading
    * status is operation-owned and a base/folder session invalidates its data. */
-  async openOverlay(name: string, bytes: ArrayBuffer): Promise<void> {
+  async openOverlay(
+    name: string,
+    bytes: ArrayBuffer,
+    metadata: OverlayLoadMetadata = { sourcePath: null, labelTable: null }
+  ): Promise<void> {
     if (this.disposed) return
     const session = this.overlaySessionGen
     const loadId = this.beginLoading()
@@ -236,6 +247,7 @@ export class LoadCoordinator<V> {
       await this.fx.parseAndAddOverlay(
         name,
         bytes,
+        metadata,
         () => !this.disposed && session === this.overlaySessionGen,
         abort.signal
       )

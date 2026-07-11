@@ -11,6 +11,7 @@ import {
   type FolderScan,
   type FolderScanProgress
 } from '../../shared/files'
+import type { OpenedLayerTable } from '../../shared/files'
 import type { FileAccessAuthorizer, ScanAccessRequest } from './access'
 import type { FileDialogs } from './dialogs'
 import type { ExportService } from './exports'
@@ -20,6 +21,39 @@ import type { FolderScanner } from './scanner'
 import type { OpenJobCoordinator } from '../openJobs'
 import type { RendererMainFrameGate } from '../rendererProtocol'
 import { FileSenderSessionRegistry } from './sessionRegistry'
+
+const LAYER_TABLE_MAX_BYTES = 8 * 1024 * 1024
+
+function isTableFileName(path: string): boolean {
+  return path.toLowerCase().endsWith('.txt')
+}
+
+function companionTablePath(path: string): string {
+  return path.replace(/(\.nii\.gz|\.nii)$/i, '.txt')
+}
+
+function isMissingFile(error: unknown): boolean {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    'code' in error &&
+    (error as { code?: unknown }).code === 'ENOENT'
+  )
+}
+
+async function readLayerTable(
+  reader: FileReader,
+  path: string,
+  signal: AbortSignal
+): Promise<OpenedLayerTable> {
+  const opened = await reader.readWithin(path, LAYER_TABLE_MAX_BYTES, path, signal)
+  if (!opened) throw new Error('Layer table is larger than 8 MB, which is not supported.')
+  return {
+    name: opened.name,
+    path: opened.path,
+    text: new TextDecoder().decode(opened.bytes)
+  }
+}
 
 export interface FileIpcDependencies {
   ipc: Pick<IpcMain, 'handle' | 'removeHandler' | 'on' | 'removeListener'>
@@ -172,8 +206,28 @@ export function registerFileIpc(deps: FileIpcDependencies): () => void {
       const requestId = readIdOf(requestIdValue)
       const abort = sessions.beginRead(event.sender.id, requestId)
       try {
-        const opened = await deps.dialogs.pickAndRead(window, abort.signal)
-        return !abort.signal.aborted && isCurrentMainFrame(event) ? opened : null
+        const path = await deps.dialogs.pickLayerPath(window)
+        if (path === null || abort.signal.aborted || !isCurrentMainFrame(event)) return null
+        if (isTableFileName(path)) {
+          const table = await readLayerTable(deps.reader, path, abort.signal)
+          return !abort.signal.aborted && isCurrentMainFrame(event)
+            ? { kind: 'table' as const, table }
+            : null
+        }
+        if (!isVolumeFileName(path)) throw new Error('Select a .nii, .nii.gz, or .txt file.')
+        const file = await deps.reader.read(path, path, abort.signal)
+        let table: OpenedLayerTable | null = null
+        let tableError: string | null = null
+        try {
+          table = await readLayerTable(deps.reader, companionTablePath(path), abort.signal)
+        } catch (error) {
+          if (!isMissingFile(error)) {
+            tableError = error instanceof Error ? error.message : 'Could not read the layer table.'
+          }
+        }
+        return !abort.signal.aborted && isCurrentMainFrame(event)
+          ? { kind: 'volume' as const, file, table, tableError }
+          : null
       } catch (error) {
         if (abort.signal.aborted || !isCurrentMainFrame(event)) return null
         throw error

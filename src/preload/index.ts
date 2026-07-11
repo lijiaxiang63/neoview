@@ -5,6 +5,7 @@ import type {
   FolderEntry,
   FolderScan,
   FolderScanProgress,
+  OpenedLayer,
   OpenedFile,
   ViewMenuState
 } from '../shared/files'
@@ -18,6 +19,7 @@ export type {
   FolderEntry,
   FolderScan,
   FolderScanProgress,
+  OpenedLayer,
   OpenedFile,
   ViewMenuState
 } from '../shared/files'
@@ -46,7 +48,7 @@ const api = {
   /** Overlay picker/read owned by a renderer request id. Base replacement,
    * runtime disposal, or document teardown can cancel it through the same
    * read-cancellation channel used by folder navigation. */
-  openOverlayDialog: (requestId: number): Promise<OpenedFile | null> =>
+  openOverlayDialog: (requestId: number): Promise<OpenedLayer | null> =>
     ipcRenderer.invoke(FILE_CHANNELS.openOverlayDialog, requestId),
   /** Reserve ordering before renderer-side path probes or reads begin. */
   beginBaseIntent: (): Promise<number> => ipcRenderer.invoke('begin-base-intent'),

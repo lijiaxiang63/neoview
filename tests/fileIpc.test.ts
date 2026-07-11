@@ -122,6 +122,7 @@ function makeDependencies(
     access,
     dialogs: {
       pickFilePath: async () => null,
+      pickLayerPath: async () => null,
       pickAndRead: async () => null,
       pickScanRoot: async () => '/root',
       pickExportDirectory: async () => '/export'
@@ -211,6 +212,7 @@ describe('file IPC registration', () => {
       makeDependencies(ipc, access, {
         dialogs: {
           pickFilePath: async () => null,
+          pickLayerPath: async () => null,
           pickAndRead: async () => null,
           pickScanRoot: async () => null,
           pickExportDirectory: async () => null
@@ -485,21 +487,26 @@ describe('file IPC registration', () => {
     const access = new FileAccessAuthorizer({ realpath: async (path) => path })
     let signal: AbortSignal | undefined
     const pending = deferred<never>()
-    const dispose = registerFileIpc(
-      makeDependencies(ipc, access, {
-        dialogs: {
-          pickFilePath: async () => null,
-          pickAndRead: async (_window, ownedSignal) => {
-            signal = ownedSignal
-            const onAbort = (): void => pending.reject(ownedSignal?.reason)
-            ownedSignal?.addEventListener('abort', onAbort, { once: true })
-            return pending.promise.finally(() => ownedSignal?.removeEventListener('abort', onAbort))
-          },
-          pickScanRoot: async () => null,
-          pickExportDirectory: async () => null
+    const base = makeDependencies(ipc, access)
+    const dispose = registerFileIpc({
+      ...base,
+      dialogs: {
+        pickFilePath: async () => null,
+        pickLayerPath: async () => '/picked/a.nii',
+        pickAndRead: async () => null,
+        pickScanRoot: async () => null,
+        pickExportDirectory: async () => null
+      },
+      reader: {
+        ...base.reader,
+        read: async (_source, _openedPath, ownedSignal) => {
+          signal = ownedSignal
+          const onAbort = (): void => pending.reject(ownedSignal?.reason)
+          ownedSignal?.addEventListener('abort', onAbort, { once: true })
+          return pending.promise.finally(() => ownedSignal?.removeEventListener('abort', onAbort))
         }
-      })
-    )
+      }
+    })
     const sender = new FakeSender(25)
 
     const opening = ipc.invoke('open-overlay-dialog', sender, 301)
@@ -508,6 +515,37 @@ describe('file IPC registration', () => {
 
     await expect(opening).resolves.toBeNull()
     expect(signal?.aborted).toBe(true)
+    dispose()
+  })
+
+  it('returns an exact-stem companion table with a selected layer volume', async () => {
+    const ipc = new FakeIpc()
+    const access = new FileAccessAuthorizer({ realpath: async (path) => path })
+    const base = makeDependencies(ipc, access)
+    const readWithin = vi.fn(async (_source: string, _max: number, openedPath = _source) => ({
+      name: openedPath.split('/').pop() ?? openedPath,
+      path: openedPath,
+      bytes: new TextEncoder().encode('1\t1\t2\t3\t255\tName\n').buffer
+    }))
+    const dispose = registerFileIpc({
+      ...base,
+      dialogs: { ...base.dialogs, pickLayerPath: async () => '/picked/a.regions-2.nii.gz' },
+      reader: { ...base.reader, readWithin }
+    })
+    const sender = new FakeSender(26)
+
+    await expect(ipc.invoke('open-overlay-dialog', sender, 302)).resolves.toMatchObject({
+      kind: 'volume',
+      file: { path: '/picked/a.regions-2.nii.gz' },
+      table: { path: '/picked/a.regions-2.txt', text: '1\t1\t2\t3\t255\tName\n' },
+      tableError: null
+    })
+    expect(readWithin).toHaveBeenCalledWith(
+      '/picked/a.regions-2.txt',
+      8 * 1024 * 1024,
+      '/picked/a.regions-2.txt',
+      expect.any(AbortSignal)
+    )
     dispose()
   })
 
@@ -572,6 +610,7 @@ describe('file IPC registration', () => {
         openJobs,
         dialogs: {
           pickFilePath: () => picked.promise,
+          pickLayerPath: async () => null,
           pickAndRead: async () => null,
           pickScanRoot: async () => null,
           pickExportDirectory: async () => null

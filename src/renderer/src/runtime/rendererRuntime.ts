@@ -1,10 +1,21 @@
-import type { FolderEntry, FolderScan, OpenedFile, ViewMenuState } from '../../../shared/files'
+import type {
+  FolderEntry,
+  FolderScan,
+  OpenedFile,
+  OpenedLayer,
+  ViewMenuState
+} from '../../../shared/files'
 import type { OpenIntentGate } from '../../../shared/openIntents'
 import type { AppState, AppStore } from '../store'
 import { MAX_BYTES } from '../volume/gunzip'
 import type { Volume } from '../volume/types'
 import { releaseFrameTextureSource } from '../volume/loadVolume'
-import { LoadCoordinator, type CoordinatorEffects, type ScanResult } from '../files/loadCoordinator'
+import {
+  LoadCoordinator,
+  type CoordinatorEffects,
+  type OverlayLoadMetadata,
+  type ScanResult
+} from '../files/loadCoordinator'
 import { filterEntries, regionExportSource, regionExportView } from '../files/folderList'
 import {
   acceptsVolumeFileName,
@@ -17,11 +28,12 @@ import {
   viewMenuSnapshot,
   type LoadTarget
 } from './appEvents'
+import { layerTableKey, parseLayerLabelTable, type LayerLabelTable } from '../slicing/labelTable'
 
 export interface RendererBridge {
   platform: string
   openDialog(baseIntent: number): Promise<OpenedFile | null>
-  openOverlayDialog(requestId: number): Promise<OpenedFile | null>
+  openOverlayDialog(requestId: number): Promise<OpenedLayer | null>
   beginBaseIntent(): Promise<number>
   acceptBaseIntent(intent: number): void
   onFileOpened(callback: (intent: number, file: OpenedFile) => void): () => void
@@ -74,7 +86,7 @@ export interface RuntimeDocument {
 export interface RuntimeCoordinator {
   openBase(name: string, bytes: ArrayBuffer, path: string | null, intent?: number): Promise<void>
   reportBaseError(error: unknown, intent?: number): void
-  openOverlay(name: string, bytes: ArrayBuffer): Promise<void>
+  openOverlay(name: string, bytes: ArrayBuffer, metadata?: OverlayLoadMetadata): Promise<void>
   requestEntry(path: string, intent?: number): void
   navigate(delta: 1 | -1, intent?: number): void
   scanFolder(scan: (token: number) => Promise<ScanResult | null>, intent?: number): Promise<boolean>
@@ -127,6 +139,7 @@ export interface RendererRuntime {
 
 const INITIAL_UI: RuntimeUiState = { dragging: false, dropTarget: 'auto' }
 let nextFileReadRequestId = 0
+const LAYER_TABLE_MAX_BYTES = 8 * 1024 * 1024
 
 function cancelledFileRead(): Error {
   const error = new Error('File read cancelled.')
@@ -241,13 +254,58 @@ class OwnedRendererRuntime implements RendererRuntime {
     try {
       const opened = await this.deps.bridge.openOverlayDialog(requestId)
       if (!this.active || !opened || !this.overlaySessionIsCurrent(ownerSession)) return
-      await this.coordinator?.openOverlay(opened.name, opened.bytes)
+      if (opened.kind === 'table') {
+        this.attachLayerTable(opened.table.path, opened.table.text)
+        return
+      }
+      const parsed = opened.table ? parseLayerLabelTable(opened.table.text) : null
+      if (opened.tableError || (parsed && !parsed.table)) {
+        this.deps.store.getState().pushToast({
+          text: opened.tableError ?? 'The adjacent layer table has no valid entries.',
+          variant: 'error'
+        })
+      } else if (parsed && parsed.invalidLines > 0) {
+        this.deps.store.getState().pushToast({
+          text: `Ignored ${parsed.invalidLines} invalid layer table line${parsed.invalidLines === 1 ? '' : 's'}.`
+        })
+      }
+      await this.coordinator?.openOverlay(opened.file.name, opened.file.bytes, {
+        sourcePath: opened.file.path,
+        labelTable: parsed?.table ?? null
+      })
     } catch (error) {
       if (this.active && this.overlaySessionIsCurrent(ownerSession)) {
         this.deps.store.getState().fail(ipcErrorMessage(error))
       }
     } finally {
       this.overlayDialogReads.delete(requestId)
+    }
+  }
+
+  private attachLayerTable(sourcePath: string, text: string): void {
+    const parsed = parseLayerLabelTable(text)
+    const state = this.deps.store.getState()
+    if (!parsed.table) {
+      state.fail('The selected layer table has no valid entries.')
+      return
+    }
+    const result = state.attachOverlayTable(sourcePath, parsed.table, this.platform === 'win32')
+    if (result === 'missing') {
+      state.fail('Import the matching layer data before attaching its table.')
+      return
+    }
+    if (result === 'ambiguous') {
+      state.fail('More than one layer matches this table. Remove the duplicate and try again.')
+      return
+    }
+    state.pushToast({
+      text: `Applied ${parsed.table.size} names and colors.`,
+      variant: 'success'
+    })
+    if (parsed.invalidLines > 0) {
+      state.pushToast({
+        text: `Ignored ${parsed.invalidLines} invalid layer table line${parsed.invalidLines === 1 ? '' : 's'}.`
+      })
     }
   }
 
@@ -309,7 +367,7 @@ class OwnedRendererRuntime implements RendererRuntime {
         store.getState().setVolume(volume, path, false)
         if (path) bridge.noteFileOpened(path)
       },
-      parseAndAddOverlay: async (name, bytes, isCurrent, signal) => {
+      parseAndAddOverlay: async (name, bytes, metadata, isCurrent, signal) => {
         const base = store.getState().volume
         if (!base) throw new Error('Load the base volume first.')
         const volume = await this.deps.loadVolume(name, bytes, { skipTex: true, signal })
@@ -320,7 +378,11 @@ class OwnedRendererRuntime implements RendererRuntime {
         } else if (!this.deps.volumesAlign(base, volume)) {
           throw new Error('Overlay could not be aligned: its affine is not invertible.')
         } else {
-          state.addOverlay(volume, false)
+          state.addOverlay(volume, {
+            settleLoad: false,
+            sourcePath: metadata.sourcePath,
+            labelTable: metadata.labelTable
+          })
         }
       },
       confirmReplaceBase: () => this.confirmDiscard(),
@@ -634,20 +696,32 @@ class OwnedRendererRuntime implements RendererRuntime {
     event.preventDefault()
     this.dragDepth = 0
     this.setUiState({ dragging: false })
-    const file = event.dataTransfer?.files[0]
-    if (!file) return
+    const files = [...(event.dataTransfer?.files ?? [])]
+    if (files.length === 0) return
     const target = dropTargetAt(event.target)
-    const path = this.deps.bridge.pathForFile(file) || null
     const resolvedTarget: Exclude<LoadTarget, 'auto'> =
       target === 'auto' ? (this.deps.store.getState().volume ? 'overlay' : 'base') : target
+    const file =
+      resolvedTarget === 'overlay'
+        ? (files.find((candidate) => acceptsVolumeFileName(candidate.name)) ?? files[0])
+        : files[0]
+    const path = this.deps.bridge.pathForFile(file) || null
+    const caseInsensitive = this.platform === 'win32'
+    const fileKey = layerTableKey(path ?? file.name, caseInsensitive)
+    const tableFile = files.find((candidate) => {
+      if (!candidate.name.toLowerCase().endsWith('.txt')) return false
+      const candidatePath = this.deps.bridge.pathForFile(candidate) || candidate.name
+      return layerTableKey(candidatePath, caseInsensitive) === fileKey
+    })
     const intent = this.deps.bridge.beginBaseIntent()
     const overlaySession = resolvedTarget === 'overlay' ? this.overlaySession() : null
-    void this.handleDrop(file, path, resolvedTarget, intent, overlaySession)
+    void this.handleDrop(file, path, tableFile ?? null, resolvedTarget, intent, overlaySession)
   }
 
   private async handleDrop(
     file: File,
     path: string | null,
+    tableFile: File | null,
     target: Exclude<LoadTarget, 'auto'>,
     intentPromise: Promise<number>,
     overlaySession: number | null
@@ -678,6 +752,18 @@ class OwnedRendererRuntime implements RendererRuntime {
         }
       }
       if (target === 'overlay' && !this.overlaySessionIsCurrent(overlaySession)) return
+      if (target === 'overlay' && file.name.toLowerCase().endsWith('.txt')) {
+        if (file.size > LAYER_TABLE_MAX_BYTES) {
+          this.deps.store
+            .getState()
+            .fail('Layer table is larger than 8 MB, which is not supported.')
+          return
+        }
+        const text = await file.text()
+        if (!this.active || !this.overlaySessionIsCurrent(overlaySession)) return
+        this.attachLayerTable(path ?? file.name, text)
+        return
+      }
       if (!acceptsVolumeFileName(file.name)) {
         const error = `"${file.name}" is not a .nii or .nii.gz file.`
         if (target === 'base') this.coordinator?.reportBaseError(error, intent)
@@ -694,7 +780,33 @@ class OwnedRendererRuntime implements RendererRuntime {
       if (!this.active) return
       if (target === 'overlay' && !this.overlaySessionIsCurrent(overlaySession)) return
       if (target === 'base') await this.coordinator?.openBase(file.name, bytes, path, intent)
-      else await this.coordinator?.openOverlay(file.name, bytes)
+      else {
+        let labelTable: LayerLabelTable | null = null
+        if (tableFile) {
+          if (tableFile.size > LAYER_TABLE_MAX_BYTES) {
+            this.deps.store.getState().pushToast({
+              text: 'The paired layer table is larger than 8 MB and was ignored.',
+              variant: 'error'
+            })
+          } else {
+            const text = await tableFile.text()
+            if (!this.active || !this.overlaySessionIsCurrent(overlaySession)) return
+            const parsed = parseLayerLabelTable(text)
+            labelTable = parsed.table
+            if (!parsed.table) {
+              this.deps.store.getState().pushToast({
+                text: 'The paired layer table has no valid entries.',
+                variant: 'error'
+              })
+            } else if (parsed.invalidLines > 0) {
+              this.deps.store.getState().pushToast({
+                text: `Ignored ${parsed.invalidLines} invalid layer table line${parsed.invalidLines === 1 ? '' : 's'}.`
+              })
+            }
+          }
+        }
+        await this.coordinator?.openOverlay(file.name, bytes, { sourcePath: path, labelTable })
+      }
     } catch (error) {
       if (!this.active) return
       if (target === 'base') this.coordinator?.reportBaseError(error, intent)

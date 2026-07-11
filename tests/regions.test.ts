@@ -211,7 +211,7 @@ describe('export helpers', () => {
     const table = buildColorTable([
       { value: 1, region: makeRegion(9, { name: 'left part', color: '#ff8000' }) }
     ])
-    expect(table).toBe('1\t255\t128\t0\t255\tleft part\n')
+    expect(table).toBe('0\t0\t0\t0\t0\t@table-escaped-v1@\n1\t255\t128\t0\t255\tleft part\n')
   })
 
   it('dirOfPath keeps the separator for filesystem roots', () => {

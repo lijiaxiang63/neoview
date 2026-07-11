@@ -18,7 +18,7 @@ export interface HistoryEntry<Snap = unknown> {
   patch: LabelPatch | null
   /** Whole-map replacement. Ordered undo/redo applies later patches before
    * swapping, so each retained map is back at the exact state captured here. */
-  mapSwap?: { before: Uint16Array | null; after: Uint16Array }
+  mapSwap?: { before: Uint16Array | null; after: Uint16Array | null }
   /** Whole snapshot-table replacement paired with a whole-map operation. */
   snapshots?: { before: Record<number, Snap>; after: Record<number, Snap> }
   selection?: {
@@ -29,6 +29,8 @@ export interface HistoryEntry<Snap = unknown> {
   regions?: { before: Region[]; after: Region[] }
   /** nextRegionId change (a commit that created a region). */
   nextId?: { before: number; after: number }
+  /** Cleanliness before/after operations whose two states are both saved. */
+  dirty?: { before: boolean; after: boolean }
   /** One region's saved commit snapshot changed (a re-segment overwrites
    * it); undo must put the old one back, or the next re-edit of the region
    * opens with the undone box/params. `before` undefined = none existed.
@@ -43,7 +45,8 @@ export const HISTORY_MAX_BYTES = 192 * 1024 * 1024
 
 export function entryBytes(e: HistoryEntry): number {
   if (e.mapSwap) {
-    const buffers = new Set<ArrayBufferLike>([e.mapSwap.after.buffer])
+    const buffers = new Set<ArrayBufferLike>()
+    if (e.mapSwap.after) buffers.add(e.mapSwap.after.buffer)
     if (e.mapSwap.before) buffers.add(e.mapSwap.before.buffer)
     let bytes = 0
     for (const buffer of buffers) bytes += buffer.byteLength

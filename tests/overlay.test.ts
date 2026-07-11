@@ -40,6 +40,8 @@ function mkLayer(volume: Volume, overrides: Partial<OverlayLayer> = {}): Overlay
     range: { lo: 0, hi: 1 },
     colormap: 'warm',
     hiddenLabels: new Set<number>(),
+    sourcePath: null,
+    labelTable: null,
     ...overrides
   }
 }
@@ -282,6 +284,22 @@ describe('label palette', () => {
       seen.add(c)
     }
     expect(seen.size).toBe(20)
+  })
+
+  it('uses exact table RGBA for label pixels', () => {
+    const vol = mkVol({
+      dims: [2, 2, 1],
+      dtype: 'uint8',
+      value: () => 3,
+      rowTransform: identity
+    })
+    const layer = mkLayer(vol, {
+      kind: 'labels',
+      labelTable: new Map([[3, { name: 'Three', rgba: [10, 20, 30, 40] }]])
+    })
+    const img = stub(2, 2)
+    extractOverlayRGBA(layer, vol, PLANES[0], 0, 0, img)
+    expect(pixelAt(img, 0, 0)).toBe((40 << 24) | (30 << 16) | (20 << 8) | 10)
   })
 
   it('labelColorCSS mirrors the packed channels', () => {

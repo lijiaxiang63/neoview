@@ -2,7 +2,7 @@ import { type JSX } from 'react'
 import { useStore } from '../store'
 import { applyAffine } from '../volume/affine'
 import { strides } from '../slicing/extract'
-import { sampleOverlayAt, type OverlayLayer } from '../slicing/overlay'
+import { layerLabelName, sampleOverlayAt, type OverlayLayer } from '../slicing/overlay'
 import type { Volume } from '../volume/types'
 
 function fmt(v: number, digits = 1): string {
@@ -24,7 +24,7 @@ function layerReadout(
   if (v === null) return '—'
   if (layer.kind === 'labels') {
     const id = Math.round(v)
-    return layer.volume.labels?.get(id) ?? `id ${id}`
+    return layerLabelName(layer, id) ?? `id ${id}`
   }
   return fmt(v, 4)
 }

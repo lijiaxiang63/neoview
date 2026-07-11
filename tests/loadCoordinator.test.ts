@@ -163,7 +163,7 @@ function makeHarness(
         co.releasePrefetch()
       }
     },
-    parseAndAddOverlay: async (name, _bytes, isCurrent, signal) => {
+    parseAndAddOverlay: async (name, _bytes, _metadata, isCurrent, signal) => {
       const basePath = state.sourcePath
       const d = deferred<void>()
       overlays.push({ name, signal, d })

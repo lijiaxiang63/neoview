@@ -25,6 +25,16 @@ export interface OpenedFile {
   bytes: ArrayBuffer
 }
 
+export interface OpenedLayerTable {
+  name: string
+  path: string
+  text: string
+}
+
+export type OpenedLayer =
+  | { kind: 'volume'; file: OpenedFile; table: OpenedLayerTable | null; tableError: string | null }
+  | { kind: 'table'; table: OpenedLayerTable }
+
 export interface FolderEntry {
   name: string
   path: string

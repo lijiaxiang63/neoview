@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createAppStore, type AppStore, type PreviewController } from '../src/renderer/src/store'
 import type { Volume } from '../src/renderer/src/volume/types'
-import type { FolderScan, OpenedFile } from '../src/shared/files'
+import type { FolderScan, OpenedFile, OpenedLayer } from '../src/shared/files'
 import {
   createRendererRuntime,
   type RendererBridge,
@@ -332,9 +332,9 @@ function dropFile(name = 'a.nii', size = 8): File {
   } as unknown as File
 }
 
-function dragEvent(file?: File, zone: 'base' | 'overlay' | 'auto' = 'auto'): object {
+function dragEvent(file?: File | File[], zone: 'base' | 'overlay' | 'auto' = 'auto'): object {
   return {
-    dataTransfer: { types: ['Files'], files: file ? [file] : [] },
+    dataTransfer: { types: ['Files'], files: file ? (Array.isArray(file) ? file : [file]) : [] },
     target: {
       closest: () => (zone === 'auto' ? null : { dataset: { dropTarget: zone } })
     },
@@ -513,17 +513,70 @@ describe('renderer runtime event routing', () => {
     const h = runtimeHarness()
     const file = opened()
     h.bridge.openDialog.mockResolvedValue(file)
-    h.bridge.openOverlayDialog.mockResolvedValue(file)
+    h.bridge.openOverlayDialog.mockResolvedValue({
+      kind: 'volume',
+      file,
+      table: null,
+      tableError: null
+    })
     h.runtime.init()
     await h.runtime.openFileDialog()
     await h.runtime.addOverlayDialog()
     expect(h.ownedCoordinator.openBase).toHaveBeenCalledWith(file.name, file.bytes, file.path, 1)
-    expect(h.ownedCoordinator.openOverlay).toHaveBeenCalledWith(file.name, file.bytes)
+    expect(h.ownedCoordinator.openOverlay).toHaveBeenCalledWith(file.name, file.bytes, {
+      sourcePath: file.path,
+      labelTable: null
+    })
+  })
+
+  it('passes an automatically matched table into the layer load', async () => {
+    const h = runtimeHarness()
+    const file = opened('result.regions-2.nii.gz')
+    h.bridge.openOverlayDialog.mockResolvedValue({
+      kind: 'volume',
+      file,
+      table: {
+        name: 'result.regions-2.txt',
+        path: '/data/result.regions-2.txt',
+        text: '1\t9\t8\t7\t255\tResult\n'
+      },
+      tableError: null
+    })
+    h.runtime.init()
+
+    await h.runtime.addOverlayDialog()
+
+    expect(h.ownedCoordinator.openOverlay).toHaveBeenCalledWith(file.name, file.bytes, {
+      sourcePath: file.path,
+      labelTable: new Map([[1, { name: 'Result', rgba: [9, 8, 7, 255] }]])
+    })
+  })
+
+  it('attaches a separately selected table to the exact existing layer', async () => {
+    const h = runtimeHarness()
+    h.store.getState().setVolume(volume('base.nii'))
+    h.store.getState().addOverlay(volume('result.regions-2.nii.gz'), {
+      sourcePath: '/data/result.regions-2.nii.gz'
+    })
+    h.bridge.openOverlayDialog.mockResolvedValue({
+      kind: 'table',
+      table: {
+        name: 'result.regions-2.txt',
+        path: '/data/result.regions-2.txt',
+        text: '1\t9\t8\t7\t255\tResult\n'
+      }
+    })
+    h.runtime.init()
+
+    await h.runtime.addOverlayDialog()
+
+    expect(h.store.getState().overlays[0]).toMatchObject({ kind: 'labels' })
+    expect(h.store.getState().overlays[0].labelTable?.get(1)?.name).toBe('Result')
   })
 
   it('drops an overlay dialog result when the base session changed during the picker read', async () => {
     const h = runtimeHarness()
-    const selected = deferred<OpenedFile | null>()
+    const selected = deferred<OpenedLayer | null>()
     h.store.getState().setVolume(volume('first.nii'))
     h.bridge.openOverlayDialog.mockReturnValueOnce(selected.promise)
     h.runtime.init()
@@ -531,7 +584,7 @@ describe('renderer runtime event routing', () => {
     const adding = h.runtime.addOverlayDialog()
     h.store.getState().setVolume(volume('replacement.nii'))
     expect(h.bridge.cancelFileRead).toHaveBeenCalledTimes(1)
-    selected.resolve(opened('late.nii'))
+    selected.resolve({ kind: 'volume', file: opened('late.nii'), table: null, tableError: null })
     await adding
 
     expect(h.ownedCoordinator.openOverlay).not.toHaveBeenCalled()
@@ -772,6 +825,51 @@ describe('folder and drop flows', () => {
     await vi.waitFor(() => expect(file.arrayBuffer).toHaveBeenCalledTimes(1))
     h.store.getState().setVolume(volume('replacement.nii'))
     data.resolve(bytes())
+    await tick()
+
+    expect(h.ownedCoordinator.openOverlay).not.toHaveBeenCalled()
+  })
+
+  it('drops a standalone table whose text finishes after the base session changes', async () => {
+    const h = runtimeHarness()
+    const text = deferred<string>()
+    const table = {
+      name: 'result.txt',
+      size: 32,
+      text: vi.fn(() => text.promise)
+    } as unknown as File
+    h.bridge.pathForFile.mockImplementation((file) => `/data/${file.name}`)
+    h.store.getState().setVolume(volume('first.nii'))
+    h.store.getState().addOverlay(volume('result.nii'), { sourcePath: '/data/result.nii' })
+    h.runtime.init()
+
+    h.window.dispatch('drop', dragEvent(table, 'overlay'))
+    await vi.waitFor(() => expect(table.text).toHaveBeenCalledTimes(1))
+    h.store.getState().setVolume(volume('replacement.nii'))
+    h.store.getState().addOverlay(volume('result.nii'), { sourcePath: '/data/result.nii' })
+    text.resolve('1\t1\t2\t3\t255\tOld\n')
+    await tick()
+
+    expect(h.store.getState().overlays[0].labelTable).toBeNull()
+  })
+
+  it('drops a paired table whose text finishes after the base session changes', async () => {
+    const h = runtimeHarness()
+    const text = deferred<string>()
+    const file = dropFile('result.nii')
+    const table = {
+      name: 'result.txt',
+      size: 32,
+      text: vi.fn(() => text.promise)
+    } as unknown as File
+    h.bridge.pathForFile.mockImplementation((candidate) => `/data/${candidate.name}`)
+    h.store.getState().setVolume(volume('first.nii'))
+    h.runtime.init()
+
+    h.window.dispatch('drop', dragEvent([file, table], 'overlay'))
+    await vi.waitFor(() => expect(table.text).toHaveBeenCalledTimes(1))
+    h.store.getState().setVolume(volume('replacement.nii'))
+    text.resolve('1\t1\t2\t3\t255\tOld\n')
     await tick()
 
     expect(h.ownedCoordinator.openOverlay).not.toHaveBeenCalled()

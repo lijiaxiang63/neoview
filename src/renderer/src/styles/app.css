@@ -1056,6 +1056,14 @@ body {
   color: var(--danger, #e25555);
 }
 
+.preset-btn.danger {
+  color: var(--danger, #e25555);
+}
+
+.export-action-hint {
+  margin-top: 6px;
+}
+
 .seg-histogram-wrap {
   margin-top: 10px;
 }

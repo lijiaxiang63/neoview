@@ -14,6 +14,7 @@ import {
 } from './files/uiPrefs'
 import { clampPanelWidth, SIDE_PANEL_WIDTH_DEFAULT } from './panelLayout'
 import { defaultLayerSettings, guessOverlayKind, type OverlayLayer } from './slicing/overlay'
+import { layerTableKey, type LayerLabelTable } from './slicing/labelTable'
 import { PreviewClient } from './segmentation/previewClient'
 import { ModelRunner, type ModelController } from './model/modelRunner'
 import {
@@ -135,7 +136,17 @@ export interface AppState extends RegionState, RegionActions {
   toggleDirectionLabels: () => void
   toggleCrosshair: () => void
   setPendingFilePath: (p: string | null) => void
-  addOverlay: (v: Volume, settleLoad?: boolean) => void
+  addOverlay: (
+    v: Volume,
+    options?:
+      | boolean
+      | { settleLoad?: boolean; sourcePath?: string | null; labelTable?: LayerLabelTable | null }
+  ) => void
+  attachOverlayTable: (
+    sourcePath: string,
+    table: LayerLabelTable,
+    caseInsensitive?: boolean
+  ) => 'attached' | 'missing' | 'ambiguous'
   removeOverlay: (id: number) => void
   updateOverlay: (id: number, patch: Partial<Omit<OverlayLayer, 'id' | 'volume'>>) => void
   fail: (message: string) => void
@@ -477,8 +488,11 @@ function createAppState(
       }))
     },
 
-    addOverlay: (v, settleLoad = true) => {
-      const kind = guessOverlayKind(v)
+    addOverlay: (v, options = true) => {
+      const settleLoad = typeof options === 'boolean' ? options : (options.settleLoad ?? true)
+      const sourcePath = typeof options === 'boolean' ? null : (options.sourcePath ?? null)
+      const labelTable = typeof options === 'boolean' ? null : (options.labelTable ?? null)
+      const kind = labelTable ? 'labels' : guessOverlayKind(v)
       const { range, colormap } = defaultLayerSettings(v)
       const layer: OverlayLayer = {
         id: nextOverlayId++,
@@ -488,13 +502,32 @@ function createAppState(
         opacity: 0.6,
         range,
         colormap,
-        hiddenLabels: new Set()
+        hiddenLabels: new Set(),
+        sourcePath,
+        labelTable
       }
       set((s) => ({
         overlays: [...s.overlays, layer],
         loadState: settleLoad ? 'ready' : s.loadState,
         errorMessage: settleLoad ? null : s.errorMessage
       }))
+    },
+
+    attachOverlayTable: (sourcePath, table, caseInsensitive = false) => {
+      const key = layerTableKey(sourcePath, caseInsensitive)
+      const matches = get().overlays.filter(
+        (layer) =>
+          layer.sourcePath !== null && layerTableKey(layer.sourcePath, caseInsensitive) === key
+      )
+      if (matches.length === 0) return 'missing'
+      if (matches.length > 1) return 'ambiguous'
+      const id = matches[0].id
+      set((state) => ({
+        overlays: state.overlays.map((layer) =>
+          layer.id === id ? { ...layer, kind: 'labels', labelTable: table } : layer
+        )
+      }))
+      return 'attached'
     },
 
     removeOverlay: (id) => {

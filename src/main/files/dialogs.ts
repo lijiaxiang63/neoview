@@ -13,6 +13,7 @@ export interface FileDialogs {
   /** Keep the selected path on the main side so callers can establish read
    * ownership after a non-null pick but before any bytes are allocated. */
   pickFilePath(window: BrowserWindow): Promise<string | null>
+  pickLayerPath(window: BrowserWindow): Promise<string | null>
   pickAndRead(window: BrowserWindow, signal?: AbortSignal): Promise<OpenedFile | null>
   pickScanRoot(window: BrowserWindow): Promise<string | null>
   pickExportDirectory(window: BrowserWindow): Promise<string | null>
@@ -53,8 +54,18 @@ export function createFileDialogs(deps: FileDialogDependencies, reader: FileRead
       ]
     })
 
+  const pickLayerPath = async (window: BrowserWindow): Promise<string | null> =>
+    pickPath(window, {
+      properties: ['openFile'],
+      filters: [
+        { name: 'Layer files', extensions: ['nii', 'nii.gz', 'txt'] },
+        { name: 'All files', extensions: ['*'] }
+      ]
+    })
+
   return {
     pickFilePath,
+    pickLayerPath,
 
     async pickAndRead(window, signal) {
       const path = await pickFilePath(window)
