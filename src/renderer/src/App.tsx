@@ -58,7 +58,13 @@ export default function App({
             <SliceView view={1} />
             <SliceView view={2} />
             <VolumeView />
-            <SidePanel onAddOverlay={runtime.addOverlayDialog} regionExports={regionExports} />
+            <SidePanel
+              onAddOverlay={runtime.addOverlayDialog}
+              onChooseOverlayTable={runtime.chooseOverlayTable}
+              onUseBuiltInOverlayTable={runtime.useBuiltInOverlayTable}
+              onSelectOverlayTableSource={runtime.selectOverlayTableSource}
+              regionExports={regionExports}
+            />
           </>
         ) : (
           <EmptyState onOpen={runtime.openFileDialog} onOpenFolder={runtime.openFolderDialog} />

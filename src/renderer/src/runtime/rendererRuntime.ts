@@ -3,6 +3,7 @@ import type {
   FolderScan,
   OpenedFile,
   OpenedLayer,
+  OpenedLayerTable,
   ViewMenuState
 } from '../../../shared/files'
 import type { OpenIntentGate } from '../../../shared/openIntents'
@@ -29,12 +30,18 @@ import {
   type LoadTarget
 } from './appEvents'
 import { layerTableKey, parseLayerLabelTable, type LayerLabelTable } from '../slicing/labelTable'
+import type { LayerTableSource } from '../slicing/overlay'
 import type { AppSettings } from '../../../shared/settings'
 
 export interface RendererBridge {
   platform: string
   openDialog(baseIntent: number): Promise<OpenedFile | null>
-  openOverlayDialog(requestId: number): Promise<OpenedLayer | null>
+  openOverlayDialog(requestId: number, currentFilePath: string | null): Promise<OpenedLayer | null>
+  openLayerTable(
+    requestId: number,
+    currentFilePath: string | null
+  ): Promise<OpenedLayerTable | null>
+  readBuiltInLayerTable(requestId: number): Promise<OpenedLayerTable | null>
   beginBaseIntent(): Promise<number>
   acceptBaseIntent(intent: number): void
   onFileOpened(callback: (intent: number, file: OpenedFile) => void): () => void
@@ -43,6 +50,7 @@ export interface RendererBridge {
   onOverlayOpenError(callback: (openId: number, message: string) => void): () => void
   onFileOpenError(callback: (message: string, intent?: number) => void): () => void
   onOpenFolderRequest(callback: () => void): () => void
+  onAddLayerRequest(callback: () => void): () => void
   onShowShortcuts(callback: () => void): () => void
   onMenuUndo(callback: () => void): () => void
   onMenuRedo(callback: () => void): () => void
@@ -134,6 +142,9 @@ export interface RendererRuntime {
   dispose(): void
   openFileDialog(): Promise<void>
   addOverlayDialog(): Promise<void>
+  chooseOverlayTable(id: number): Promise<void>
+  useBuiltInOverlayTable(id: number): Promise<void>
+  selectOverlayTableSource(id: number, source: LayerTableSource): void
   openFolderDialog(): Promise<void>
   requestEntry(path: string): void
   subscribeUi(listener: () => void): () => void
@@ -169,6 +180,8 @@ class OwnedRendererRuntime implements RendererRuntime {
   private closeResponderClaim: Promise<number> | null = null
   private readonly mainOverlaySessions = new Map<number, number | null>()
   private readonly overlayDialogReads = new Set<number>()
+  private readonly overlayTableReadGeneration = new Map<number, number>()
+  private readonly overlayTableReadRequest = new Map<number, number>()
 
   constructor(private readonly deps: RendererRuntimeDeps) {
     this.platform = deps.bridge.platform
@@ -255,7 +268,10 @@ class OwnedRendererRuntime implements RendererRuntime {
     const requestId = ++nextFileReadRequestId
     this.overlayDialogReads.add(requestId)
     try {
-      const opened = await this.deps.bridge.openOverlayDialog(requestId)
+      const opened = await this.deps.bridge.openOverlayDialog(
+        requestId,
+        this.deps.store.getState().sourcePath
+      )
       if (!this.active || !opened || !this.overlaySessionIsCurrent(ownerSession)) return
       if (opened.kind === 'table') {
         this.attachLayerTable(opened.table.path, opened.table.text)
@@ -274,7 +290,8 @@ class OwnedRendererRuntime implements RendererRuntime {
       }
       await this.coordinator?.openOverlay(opened.file.name, opened.file.bytes, {
         sourcePath: opened.file.path,
-        labelTable: parsed?.table ?? null
+        labelTable: parsed?.table ?? null,
+        labelTableName: opened.table?.name ?? null
       })
     } catch (error) {
       if (this.active && this.overlaySessionIsCurrent(ownerSession)) {
@@ -282,6 +299,97 @@ class OwnedRendererRuntime implements RendererRuntime {
       }
     } finally {
       this.overlayDialogReads.delete(requestId)
+    }
+  }
+
+  chooseOverlayTable = async (id: number): Promise<void> => {
+    await this.readOverlayTable(id, 'custom')
+  }
+
+  useBuiltInOverlayTable = async (id: number): Promise<void> => {
+    await this.readOverlayTable(id, 'built-in')
+  }
+
+  selectOverlayTableSource = (id: number, source: LayerTableSource): void => {
+    if (!this.active) return
+    const layer = this.deps.store.getState().overlays.find((candidate) => candidate.id === id)
+    if (layer?.kind !== 'labels') return
+    this.invalidateOverlayTableRead(id)
+    this.deps.store.getState().selectOverlayTableSource(id, source)
+  }
+
+  private invalidateOverlayTableRead(id: number): number {
+    const requestId = this.overlayTableReadRequest.get(id)
+    if (requestId !== undefined) {
+      try {
+        this.deps.bridge.cancelFileRead(requestId)
+      } catch {
+        // A replaced document also releases the main-side request owner.
+      }
+      this.overlayTableReadRequest.delete(id)
+    }
+    const generation = (this.overlayTableReadGeneration.get(id) ?? 0) + 1
+    this.overlayTableReadGeneration.set(id, generation)
+    return generation
+  }
+
+  private async readOverlayTable(id: number, source: 'built-in' | 'custom'): Promise<void> {
+    if (!this.active) return
+    const stateAtStart = this.deps.store.getState()
+    if (!stateAtStart.overlays.some((layer) => layer.id === id && layer.kind === 'labels')) return
+    const generation = this.invalidateOverlayTableRead(id)
+    const ownerSession = this.overlaySession()
+    const requestId = ++nextFileReadRequestId
+    this.overlayDialogReads.add(requestId)
+    this.overlayTableReadRequest.set(id, requestId)
+    const ownsRead = (): boolean => {
+      const layer = this.deps.store.getState().overlays.find((candidate) => candidate.id === id)
+      return (
+        layer?.kind === 'labels' &&
+        this.overlayTableReadGeneration.get(id) === generation &&
+        this.overlayTableReadRequest.get(id) === requestId
+      )
+    }
+    try {
+      const opened =
+        source === 'built-in'
+          ? await this.deps.bridge.readBuiltInLayerTable(requestId)
+          : await this.deps.bridge.openLayerTable(requestId, stateAtStart.sourcePath)
+      if (!this.active || !opened || !this.overlaySessionIsCurrent(ownerSession) || !ownsRead()) {
+        return
+      }
+      const parsed = parseLayerLabelTable(opened.text)
+      const state = this.deps.store.getState()
+      if (!parsed.table) {
+        state.fail('The selected color table has no valid entries.')
+        return
+      }
+      if (
+        !state.setOverlayTableOption(id, source, {
+          name: source === 'built-in' ? 'FreeSurfer' : opened.name,
+          table: parsed.table
+        })
+      ) {
+        return
+      }
+      state.pushToast({
+        text: `Applied ${parsed.table.size} names and colors.`,
+        variant: 'success'
+      })
+      if (parsed.invalidLines > 0) {
+        state.pushToast({
+          text: `Ignored ${parsed.invalidLines} invalid color table line${parsed.invalidLines === 1 ? '' : 's'}.`
+        })
+      }
+    } catch (error) {
+      if (this.active && this.overlaySessionIsCurrent(ownerSession) && ownsRead()) {
+        this.deps.store.getState().fail(ipcErrorMessage(error))
+      }
+    } finally {
+      this.overlayDialogReads.delete(requestId)
+      if (this.overlayTableReadRequest.get(id) === requestId) {
+        this.overlayTableReadRequest.delete(id)
+      }
     }
   }
 
@@ -384,7 +492,8 @@ class OwnedRendererRuntime implements RendererRuntime {
           state.addOverlay(volume, {
             settleLoad: false,
             sourcePath: metadata.sourcePath,
-            labelTable: metadata.labelTable
+            labelTable: metadata.labelTable,
+            labelTableName: metadata.labelTableName
           })
         }
       },
@@ -543,6 +652,11 @@ class OwnedRendererRuntime implements RendererRuntime {
       })
     )
     keep(
+      bridge.onAddLayerRequest(() => {
+        if (this.active && store.getState().volume) void this.addOverlayDialog()
+      })
+    )
+    keep(
       bridge.onShowShortcuts(() => {
         if (this.active) store.getState().setShortcutsOpen(true)
       })
@@ -648,12 +762,17 @@ class OwnedRendererRuntime implements RendererRuntime {
   private onKeyDown(event: KeyboardEvent): void {
     if (!this.active) return
     const state = this.deps.store.getState()
-    const command = keyCommand(event, {
-      hasRegionBox: state.segBox !== null,
-      maximizedView: state.maximizedView !== null,
-      folderOpen: state.folder !== null,
-      shortcutsOpen: state.shortcutsOpen
-    })
+    const command = keyCommand(
+      event,
+      {
+        hasRegionBox: state.segBox !== null,
+        maximizedView: state.maximizedView !== null,
+        folderOpen: state.folder !== null,
+        shortcutsOpen: state.shortcutsOpen,
+        hasVolume: state.volume !== null
+      },
+      this.platform
+    )
     if (!command) return
 
     switch (command) {
@@ -674,6 +793,9 @@ class OwnedRendererRuntime implements RendererRuntime {
         break
       case 'show-shortcuts':
         state.setShortcutsOpen(true)
+        break
+      case 'add-layer':
+        void this.addOverlayDialog()
         break
       case 'undo':
         state.undo()
@@ -823,7 +945,11 @@ class OwnedRendererRuntime implements RendererRuntime {
             }
           }
         }
-        await this.coordinator?.openOverlay(file.name, bytes, { sourcePath: path, labelTable })
+        await this.coordinator?.openOverlay(file.name, bytes, {
+          sourcePath: path,
+          labelTable,
+          labelTableName: labelTable ? (tableFile?.name ?? null) : null
+        })
       }
     } catch (error) {
       if (!this.active) return
@@ -856,6 +982,7 @@ class OwnedRendererRuntime implements RendererRuntime {
       }
     }
     this.overlayDialogReads.clear()
+    this.overlayTableReadRequest.clear()
   }
 
   private withBaseIntent(action: (intent: number) => void): void {

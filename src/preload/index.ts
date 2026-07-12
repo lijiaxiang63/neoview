@@ -6,6 +6,7 @@ import type {
   FolderScan,
   FolderScanProgress,
   OpenedLayer,
+  OpenedLayerTable,
   OpenedFile,
   ViewMenuState
 } from '../shared/files'
@@ -21,6 +22,7 @@ export type {
   FolderScan,
   FolderScanProgress,
   OpenedLayer,
+  OpenedLayerTable,
   OpenedFile,
   ViewMenuState
 } from '../shared/files'
@@ -50,8 +52,18 @@ const api = {
   /** Overlay picker/read owned by a renderer request id. Base replacement,
    * runtime disposal, or document teardown can cancel it through the same
    * read-cancellation channel used by folder navigation. */
-  openOverlayDialog: (requestId: number): Promise<OpenedLayer | null> =>
-    ipcRenderer.invoke(FILE_CHANNELS.openOverlayDialog, requestId),
+  openOverlayDialog: (
+    requestId: number,
+    currentFilePath: string | null
+  ): Promise<OpenedLayer | null> =>
+    ipcRenderer.invoke(FILE_CHANNELS.openOverlayDialog, requestId, currentFilePath),
+  openLayerTable: (
+    requestId: number,
+    currentFilePath: string | null
+  ): Promise<OpenedLayerTable | null> =>
+    ipcRenderer.invoke(FILE_CHANNELS.openLayerTable, requestId, currentFilePath),
+  readBuiltInLayerTable: (requestId: number): Promise<OpenedLayerTable | null> =>
+    ipcRenderer.invoke(FILE_CHANNELS.readBuiltInLayerTable, requestId),
   /** Reserve ordering before renderer-side path probes or reads begin. */
   beginBaseIntent: (): Promise<number> => ipcRenderer.invoke('begin-base-intent'),
   /** Promote a provisional token once its operation has a real result. Main
@@ -125,6 +137,12 @@ const api = {
     const listener = (): void => cb()
     ipcRenderer.on('open-folder-request', listener)
     return () => ipcRenderer.removeListener('open-folder-request', listener)
+  },
+  /** File > Add Layer… was chosen. */
+  onAddLayerRequest: (cb: () => void): (() => void) => {
+    const listener = (): void => cb()
+    ipcRenderer.on('add-layer-request', listener)
+    return () => ipcRenderer.removeListener('add-layer-request', listener)
   },
   /** Help > Keyboard Shortcuts was chosen in the menu. */
   onShowShortcuts: (cb: () => void): (() => void) => {

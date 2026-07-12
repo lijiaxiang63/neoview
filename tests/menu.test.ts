@@ -7,6 +7,7 @@ function options(isMac: boolean): ApplicationMenuOptions {
     isMac,
     appName: 'Neoview',
     viewState: {
+      hasVolume: true,
       fileList: true,
       sidePanel: false,
       folderOpen: true,
@@ -17,6 +18,7 @@ function options(isMac: boolean): ApplicationMenuOptions {
     actions: {
       openFile: action,
       openFolder: action,
+      addLayer: action,
       openRecent: action,
       clearRecent: action,
       openBuiltinBase: action,
@@ -86,6 +88,28 @@ describe('application menu template', () => {
       .submenu as Electron.MenuItemConstructorOptions[]
     const settings = fileItems.find((item) => item.label === 'Settings…')!
     expect(settings.accelerator).toBe('CmdOrCtrl+,')
+  })
+
+  it('adds a volume-gated Add Layer command without taking the text accelerator', () => {
+    const input = options(true)
+    const template = createApplicationMenuTemplate(input)
+    const fileItems = template.find((item) => item.label === 'File')!
+      .submenu as Electron.MenuItemConstructorOptions[]
+    const addLayer = fileItems.find((item) => item.id === 'file-add-layer')!
+
+    expect(addLayer).toMatchObject({ label: 'Add Layer…', enabled: true })
+    expect(addLayer.accelerator).toBeUndefined()
+    addLayer.click?.({} as never, {} as never, {} as never)
+    expect(input.actions.addLayer).toHaveBeenCalledTimes(1)
+
+    input.viewState.hasVolume = false
+    const disabled = createApplicationMenuTemplate(input).find((item) => item.label === 'File')!
+      .submenu as Electron.MenuItemConstructorOptions[]
+    expect(disabled.find((item) => item.id === 'file-add-layer')?.enabled).toBe(false)
+    const editItems = createApplicationMenuTemplate(options(true)).find(
+      (item) => item.label === 'Edit'
+    )!.submenu as Electron.MenuItemConstructorOptions[]
+    expect(editItems.some((item) => item.role === 'selectAll')).toBe(false)
   })
 
   it('offers only the explicit update check — the automatic toggle lives in settings', () => {

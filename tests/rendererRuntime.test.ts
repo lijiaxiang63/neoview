@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createAppStore, type AppStore, type PreviewController } from '../src/renderer/src/store'
 import type { Volume } from '../src/renderer/src/volume/types'
-import type { FolderScan, OpenedFile, OpenedLayer } from '../src/shared/files'
+import type { FolderScan, OpenedFile, OpenedLayer, OpenedLayerTable } from '../src/shared/files'
 import {
   createRendererRuntime,
   type RendererBridge,
@@ -82,6 +82,8 @@ interface BridgeHarness {
   unsubscribes: Array<ReturnType<typeof vi.fn>>
   openDialog: ReturnType<typeof vi.fn<RendererBridge['openDialog']>>
   openOverlayDialog: ReturnType<typeof vi.fn<RendererBridge['openOverlayDialog']>>
+  openLayerTable: ReturnType<typeof vi.fn<RendererBridge['openLayerTable']>>
+  readBuiltInLayerTable: ReturnType<typeof vi.fn<RendererBridge['readBuiltInLayerTable']>>
   beginBaseIntent: ReturnType<typeof vi.fn<RendererBridge['beginBaseIntent']>>
   acceptBaseIntent: ReturnType<typeof vi.fn<RendererBridge['acceptBaseIntent']>>
   openFolderScan: ReturnType<typeof vi.fn<RendererBridge['openFolderScan']>>
@@ -114,6 +116,8 @@ function bridgeHarness(): BridgeHarness {
   }
   const openDialog = vi.fn<RendererBridge['openDialog']>(async () => null)
   const openOverlayDialog = vi.fn<RendererBridge['openOverlayDialog']>(async () => null)
+  const openLayerTable = vi.fn<RendererBridge['openLayerTable']>(async () => null)
+  const readBuiltInLayerTable = vi.fn<RendererBridge['readBuiltInLayerTable']>(async () => null)
   let nextIntent = 0
   const beginBaseIntent = vi.fn<RendererBridge['beginBaseIntent']>(async () => ++nextIntent)
   const acceptBaseIntent = vi.fn<RendererBridge['acceptBaseIntent']>()
@@ -139,6 +143,8 @@ function bridgeHarness(): BridgeHarness {
     platform: 'darwin',
     openDialog,
     openOverlayDialog,
+    openLayerTable,
+    readBuiltInLayerTable,
     beginBaseIntent,
     acceptBaseIntent,
     onFileOpened: (callback) => listen('file-opened', callback as Callback),
@@ -147,6 +153,7 @@ function bridgeHarness(): BridgeHarness {
     onOverlayOpenError: (callback) => listen('overlay-error', callback as Callback),
     onFileOpenError: (callback) => listen('file-error', callback as Callback),
     onOpenFolderRequest: (callback) => listen('open-folder', callback as Callback),
+    onAddLayerRequest: (callback) => listen('add-layer', callback as Callback),
     onShowShortcuts: (callback) => listen('show-shortcuts', callback as Callback),
     onMenuUndo: (callback) => listen('undo', callback as Callback),
     onMenuRedo: (callback) => listen('redo', callback as Callback),
@@ -185,6 +192,8 @@ function bridgeHarness(): BridgeHarness {
     unsubscribes,
     openDialog,
     openOverlayDialog,
+    openLayerTable,
+    readBuiltInLayerTable,
     beginBaseIntent,
     acceptBaseIntent,
     openFolderScan,
@@ -357,7 +366,7 @@ describe('renderer runtime lifecycle', () => {
 
     expect(h.coordinatorFactory).toHaveBeenCalledTimes(1)
     expect(h.coordinatorFactory.mock.calls[0][1].intentGate).toBe(h.store.openIntentGate)
-    expect(h.bridge.unsubscribes).toHaveLength(16)
+    expect(h.bridge.unsubscribes).toHaveLength(17)
     expect(h.window.add).toHaveBeenCalledTimes(5)
     expect(h.bridge.claimCloseResponder).toHaveBeenCalledTimes(1)
     expect(h.bridge.activateCloseResponder).toHaveBeenCalledWith(1)
@@ -466,6 +475,7 @@ describe('renderer runtime lifecycle', () => {
     expect(h.bridge.sendViewState).toHaveBeenCalledTimes(1)
     h.store.getState().toggleFilePanel()
     expect(h.bridge.sendViewState).toHaveBeenLastCalledWith({
+      hasVolume: false,
       fileList: false,
       sidePanel: true,
       folderOpen: false,
@@ -475,6 +485,7 @@ describe('renderer runtime lifecycle', () => {
     expect(h.bridge.sendViewState).toHaveBeenCalledTimes(2)
     h.bridge.emit('toggle-labels')
     expect(h.bridge.sendViewState).toHaveBeenLastCalledWith({
+      hasVolume: false,
       fileList: false,
       sidePanel: true,
       folderOpen: false,
@@ -483,6 +494,7 @@ describe('renderer runtime lifecycle', () => {
     })
     h.bridge.emit('toggle-crosshair')
     expect(h.bridge.sendViewState).toHaveBeenLastCalledWith({
+      hasVolume: false,
       fileList: false,
       sidePanel: true,
       folderOpen: false,
@@ -565,11 +577,14 @@ describe('renderer runtime event routing', () => {
     })
     h.runtime.init()
     await h.runtime.openFileDialog()
+    h.store.getState().setVolume(volume('base.nii'), file.path)
     await h.runtime.addOverlayDialog()
     expect(h.ownedCoordinator.openBase).toHaveBeenCalledWith(file.name, file.bytes, file.path, 1)
+    expect(h.bridge.openOverlayDialog).toHaveBeenCalledWith(expect.any(Number), file.path)
     expect(h.ownedCoordinator.openOverlay).toHaveBeenCalledWith(file.name, file.bytes, {
       sourcePath: file.path,
-      labelTable: null
+      labelTable: null,
+      labelTableName: null
     })
   })
 
@@ -592,7 +607,8 @@ describe('renderer runtime event routing', () => {
 
     expect(h.ownedCoordinator.openOverlay).toHaveBeenCalledWith(file.name, file.bytes, {
       sourcePath: file.path,
-      labelTable: new Map([[1, { name: 'Result', rgba: [9, 8, 7, 255] }]])
+      labelTable: new Map([[1, { name: 'Result', rgba: [9, 8, 7, 255] }]]),
+      labelTableName: 'result.regions-2.txt'
     })
   })
 
@@ -616,6 +632,142 @@ describe('renderer runtime event routing', () => {
 
     expect(h.store.getState().overlays[0]).toMatchObject({ kind: 'labels' })
     expect(h.store.getState().overlays[0].labelTable?.get(1)?.name).toBe('Result')
+  })
+
+  it('applies targeted custom and built-in tables while retaining both choices', async () => {
+    const h = runtimeHarness()
+    h.store.getState().setVolume(volume('base.nii'), '/data/base.nii')
+    h.store.getState().addOverlay(volume('layer.nii'), { sourcePath: '/data/layer.nii' })
+    const id = h.store.getState().overlays[0].id
+    h.store.getState().updateOverlay(id, { kind: 'labels' })
+    h.bridge.openLayerTable.mockResolvedValue({
+      name: 'picked.txt',
+      path: '/data/picked.txt',
+      text: '1\t9\t8\t7\t255\tCustom\n'
+    })
+    h.bridge.readBuiltInLayerTable.mockResolvedValue({
+      name: 'FreeSurferColorLUT.txt',
+      path: '',
+      text: '2 Built-In 6 5 4 0\n'
+    })
+    h.runtime.init()
+
+    await h.runtime.chooseOverlayTable(id)
+    expect(h.bridge.openLayerTable).toHaveBeenCalledWith(expect.any(Number), '/data/base.nii')
+    expect(h.store.getState().overlays[0]).toMatchObject({
+      labelTableSource: 'custom',
+      customTable: { name: 'picked.txt' }
+    })
+
+    await h.runtime.useBuiltInOverlayTable(id)
+    expect(h.store.getState().overlays[0]).toMatchObject({
+      labelTableSource: 'built-in',
+      builtInTable: { name: 'FreeSurfer' },
+      customTable: { name: 'picked.txt' }
+    })
+    expect(h.store.getState().overlays[0].labelTable?.get(2)?.rgba).toEqual([6, 5, 4, 255])
+  })
+
+  it('drops a targeted table result after its layer is removed', async () => {
+    const h = runtimeHarness()
+    const selected = deferred<OpenedLayerTable | null>()
+    h.store.getState().setVolume(volume('base.nii'))
+    h.store.getState().addOverlay(volume('layer.nii'))
+    const id = h.store.getState().overlays[0].id
+    h.store.getState().updateOverlay(id, { kind: 'labels' })
+    h.bridge.openLayerTable.mockReturnValueOnce(selected.promise)
+    h.runtime.init()
+
+    const choosing = h.runtime.chooseOverlayTable(id)
+    h.store.getState().removeOverlay(id)
+    selected.resolve({ name: 'picked.txt', path: '/picked.txt', text: '1\t1\t2\t3\t255\tOne' })
+    await choosing
+
+    expect(h.store.getState().overlays).toEqual([])
+  })
+
+  it('drops a targeted table error after its layer is removed', async () => {
+    const h = runtimeHarness()
+    const selected = deferred<OpenedLayerTable | null>()
+    h.store.getState().setVolume(volume('base.nii'))
+    h.store.getState().addOverlay(volume('layer.nii'))
+    const id = h.store.getState().overlays[0].id
+    h.store.getState().updateOverlay(id, { kind: 'labels' })
+    h.bridge.openLayerTable.mockReturnValueOnce(selected.promise)
+    h.runtime.init()
+
+    const choosing = h.runtime.chooseOverlayTable(id)
+    h.store.getState().removeOverlay(id)
+    selected.reject(new Error('late failure'))
+    await choosing
+
+    expect(h.store.getState().errorMessage).toBeNull()
+  })
+
+  it('keeps the latest targeted table request for each layer', async () => {
+    const h = runtimeHarness()
+    const first = deferred<OpenedLayerTable | null>()
+    const second = deferred<OpenedLayerTable | null>()
+    h.store.getState().setVolume(volume('base.nii'))
+    h.store.getState().addOverlay(volume('layer.nii'))
+    const id = h.store.getState().overlays[0].id
+    h.store.getState().updateOverlay(id, { kind: 'labels' })
+    h.bridge.openLayerTable.mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise)
+    h.runtime.init()
+
+    const firstChoice = h.runtime.chooseOverlayTable(id)
+    const secondChoice = h.runtime.chooseOverlayTable(id)
+    second.resolve({ name: 'second.txt', path: '/second.txt', text: '2\t1\t2\t3\t255\tSecond' })
+    await secondChoice
+    first.resolve({ name: 'first.txt', path: '/first.txt', text: '1\t1\t2\t3\t255\tFirst' })
+    await firstChoice
+
+    expect(h.bridge.cancelFileRead).toHaveBeenCalledTimes(1)
+    expect(h.store.getState().overlays[0]).toMatchObject({
+      labelTableSource: 'custom',
+      customTable: { name: 'second.txt' }
+    })
+  })
+
+  it('invalidates a targeted table read when a newer source is selected', async () => {
+    const h = runtimeHarness()
+    const selected = deferred<OpenedLayerTable | null>()
+    h.store.getState().setVolume(volume('base.nii'))
+    h.store.getState().addOverlay(volume('layer.nii'))
+    const id = h.store.getState().overlays[0].id
+    h.store.getState().updateOverlay(id, { kind: 'labels' })
+    h.bridge.openLayerTable.mockReturnValueOnce(selected.promise)
+    h.runtime.init()
+
+    const choosing = h.runtime.chooseOverlayTable(id)
+    h.runtime.selectOverlayTableSource(id, 'automatic')
+    selected.reject(new Error('late failure'))
+    await choosing
+
+    expect(h.bridge.cancelFileRead).toHaveBeenCalledTimes(1)
+    expect(h.store.getState().overlays[0].labelTableSource).toBe('automatic')
+    expect(h.store.getState().errorMessage).toBeNull()
+  })
+
+  it('drops a targeted table result after its layer type changes', async () => {
+    const h = runtimeHarness()
+    const selected = deferred<OpenedLayerTable | null>()
+    h.store.getState().setVolume(volume('base.nii'))
+    h.store.getState().addOverlay(volume('layer.nii'))
+    const id = h.store.getState().overlays[0].id
+    h.store.getState().updateOverlay(id, { kind: 'labels' })
+    h.bridge.openLayerTable.mockReturnValueOnce(selected.promise)
+    h.runtime.init()
+
+    const choosing = h.runtime.chooseOverlayTable(id)
+    h.store.getState().updateOverlay(id, { kind: 'map' })
+    selected.resolve({ name: 'picked.txt', path: '/picked.txt', text: '1\t1\t2\t3\t255\tOne' })
+    await choosing
+
+    expect(h.store.getState().overlays[0]).toMatchObject({
+      kind: 'map',
+      customTable: null
+    })
   })
 
   it('drops an overlay dialog result when the base session changed during the picker read', async () => {

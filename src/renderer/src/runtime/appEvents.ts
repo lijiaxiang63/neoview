@@ -12,6 +12,7 @@ export type AppKeyCommand =
   | 'shrink-brush'
   | 'grow-brush'
   | 'show-shortcuts'
+  | 'add-layer'
   | 'undo'
   | 'redo'
   | 'previous-file'
@@ -34,6 +35,7 @@ export interface KeyStateSnapshot {
   maximizedView: boolean
   folderOpen: boolean
   shortcutsOpen: boolean
+  hasVolume: boolean
 }
 
 const TEXT_INPUT_TYPES = new Set(['text', 'search', 'url', 'tel', 'email', 'password', 'number'])
@@ -83,7 +85,11 @@ export function dropTargetAt(target: unknown): LoadTarget {
 }
 
 /** Decide which application command, if any, owns a keydown. */
-export function keyCommand(event: KeyEventSnapshot, state: KeyStateSnapshot): AppKeyCommand | null {
+export function keyCommand(
+  event: KeyEventSnapshot,
+  state: KeyStateSnapshot,
+  platform = 'darwin'
+): AppKeyCommand | null {
   if (event.defaultPrevented || state.shortcutsOpen || isTextEntry(event.target)) return null
 
   const undoCombo =
@@ -101,6 +107,19 @@ export function keyCommand(event: KeyEventSnapshot, state: KeyStateSnapshot): Ap
   if (event.key === '[') return 'shrink-brush'
   if (event.key === ']') return 'grow-brush'
   if (event.key === '?') return 'show-shortcuts'
+  const addLayerModifier =
+    platform === 'darwin'
+      ? event.metaKey === true && event.ctrlKey !== true
+      : event.ctrlKey === true && event.metaKey !== true
+  if (
+    state.hasVolume &&
+    addLayerModifier &&
+    event.altKey !== true &&
+    event.shiftKey !== true &&
+    event.key.toLowerCase() === 'a'
+  ) {
+    return 'add-layer'
+  }
   if (undoCombo) return event.shiftKey ? 'redo' : 'undo'
   if (event.key === 'ArrowUp' && state.folderOpen) return 'previous-file'
   if (event.key === 'ArrowDown' && state.folderOpen) return 'next-file'
@@ -118,10 +137,16 @@ export function menuHistoryTarget(
 export function viewMenuSnapshot(
   state: Pick<
     AppState,
-    'filePanelOpen' | 'sidePanelOpen' | 'folder' | 'directionLabelsVisible' | 'crosshairVisible'
+    | 'volume'
+    | 'filePanelOpen'
+    | 'sidePanelOpen'
+    | 'folder'
+    | 'directionLabelsVisible'
+    | 'crosshairVisible'
   >
 ): ViewMenuState {
   return {
+    hasVolume: state.volume !== null,
     fileList: state.filePanelOpen,
     sidePanel: state.sidePanelOpen,
     folderOpen: state.folder !== null,
@@ -145,6 +170,7 @@ export function autoPanelTab(
 export function sameViewMenuSnapshot(a: ViewMenuState | null, b: ViewMenuState): boolean {
   return (
     a !== null &&
+    a.hasVolume === b.hasVolume &&
     a.fileList === b.fileList &&
     a.sidePanel === b.sidePanel &&
     a.folderOpen === b.folderOpen &&

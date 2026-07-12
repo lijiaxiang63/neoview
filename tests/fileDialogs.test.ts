@@ -88,4 +88,24 @@ describe('file dialogs', () => {
       extensions: ['nii', 'nii.gz', 'txt']
     })
   })
+
+  it('prefers the current file directory for layer and table pickers', async () => {
+    const showOpenDialog = vi.fn().mockResolvedValue({ canceled: true, filePaths: [] })
+    const dialogs = createFileDialogs(
+      { showOpenDialog, getLastUsedDirectory: () => '/previous' },
+      {} as FileReader
+    )
+
+    await dialogs.pickLayerPath({} as BrowserWindow, '/current/base.nii')
+    await dialogs.pickLayerTablePath({} as BrowserWindow, '/other/base.nii.gz')
+
+    expect(showOpenDialog.mock.calls[0][1]).toMatchObject({ defaultPath: '/current' })
+    expect(showOpenDialog.mock.calls[1][1]).toMatchObject({
+      defaultPath: '/other',
+      filters: [
+        { name: 'Text files', extensions: ['txt'] },
+        { name: 'All files', extensions: ['*'] }
+      ]
+    })
+  })
 })

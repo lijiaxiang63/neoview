@@ -22,6 +22,7 @@ function sections(mod: string): Section[] {
       rows: [
         { keys: `${mod} O`, what: 'Open a volume file' },
         { keys: `${mod} ⇧ O`, what: 'Open a folder' },
+        { keys: `${mod} A`, what: 'Add a layer' },
         { keys: '↑ / ↓', what: 'Previous / next file in the opened folder' },
         { keys: `${mod} Z / ${mod} ⇧ Z`, what: 'Undo / redo region edits' }
       ]

@@ -10,6 +10,7 @@ import { RegionPanel } from './RegionPanel'
 import { RenderPanel } from './RenderPanel'
 import { InfoPanel } from './InfoPanel'
 import type { RegionExportController } from '../runtime/regionExportController'
+import type { RendererRuntime } from '../runtime/rendererRuntime'
 
 function TabPanel({
   id,
@@ -41,9 +42,15 @@ function TabPanel({
 
 export function SidePanel({
   onAddOverlay,
+  onChooseOverlayTable,
+  onUseBuiltInOverlayTable,
+  onSelectOverlayTableSource,
   regionExports
 }: {
   onAddOverlay: () => void
+  onChooseOverlayTable: (id: number) => void
+  onUseBuiltInOverlayTable: (id: number) => void
+  onSelectOverlayTableSource: RendererRuntime['selectOverlayTableSource']
   regionExports: RegionExportController
 }): JSX.Element {
   const tab = useStore((s) => s.sidePanelTab)
@@ -85,7 +92,12 @@ export function SidePanel({
         <RegionPanel exports={regionExports} />
       </TabPanel>
       <TabPanel id="layers" active={tab} fill>
-        <OverlayPanel onAdd={onAddOverlay} />
+        <OverlayPanel
+          onAdd={onAddOverlay}
+          onChooseTable={onChooseOverlayTable}
+          onUseBuiltInTable={onUseBuiltInOverlayTable}
+          onSelectTableSource={onSelectOverlayTableSource}
+        />
       </TabPanel>
       <TabPanel id="info" active={tab}>
         <InfoPanel />

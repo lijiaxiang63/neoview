@@ -42,6 +42,10 @@ function mkLayer(volume: Volume, overrides: Partial<OverlayLayer> = {}): Overlay
     hiddenLabels: new Set<number>(),
     sourcePath: null,
     labelTable: null,
+    labelTableSource: 'automatic',
+    matchingTable: null,
+    builtInTable: null,
+    customTable: null,
     ...overrides
   }
 }

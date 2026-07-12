@@ -123,6 +123,7 @@ function makeDependencies(
     dialogs: {
       pickFilePath: async () => null,
       pickLayerPath: async () => null,
+      pickLayerTablePath: async () => null,
       pickAndRead: async () => null,
       pickScanRoot: async () => '/root',
       pickExportDirectory: async () => '/export'
@@ -144,6 +145,7 @@ function makeDependencies(
         bytes: new ArrayBuffer(1)
       })
     },
+    builtInLayerTablePath: '/built-in/table.txt',
     scanner: {
       scan: async (root, onBatch) => {
         const files = [file(root)]
@@ -213,6 +215,7 @@ describe('file IPC registration', () => {
         dialogs: {
           pickFilePath: async () => null,
           pickLayerPath: async () => null,
+          pickLayerTablePath: async () => null,
           pickAndRead: async () => null,
           pickScanRoot: async () => null,
           pickExportDirectory: async () => null
@@ -493,6 +496,7 @@ describe('file IPC registration', () => {
       dialogs: {
         pickFilePath: async () => null,
         pickLayerPath: async () => '/picked/a.nii',
+        pickLayerTablePath: async () => null,
         pickAndRead: async () => null,
         pickScanRoot: async () => null,
         pickExportDirectory: async () => null
@@ -546,6 +550,60 @@ describe('file IPC registration', () => {
       '/picked/a.regions-2.txt',
       expect.any(AbortSignal)
     )
+    dispose()
+  })
+
+  it('reads targeted and built-in color tables through owned requests', async () => {
+    const ipc = new FakeIpc()
+    const access = new FileAccessAuthorizer({ realpath: async (path) => path })
+    const base = makeDependencies(ipc, access)
+    const pickLayerTablePath = vi.fn(async () => '/picked/custom.txt')
+    const readWithin = vi.fn(async (_source: string, _max: number, openedPath = _source) => ({
+      name: openedPath.split('/').pop() ?? openedPath,
+      path: openedPath,
+      bytes: new TextEncoder().encode('1\t1\t2\t3\t255\tName\n').buffer
+    }))
+    const dispose = registerFileIpc({
+      ...base,
+      dialogs: { ...base.dialogs, pickLayerTablePath },
+      reader: { ...base.reader, readWithin }
+    })
+    const sender = new FakeSender(27)
+
+    await expect(
+      ipc.invoke('open-layer-table', sender, 303, '/current/base.nii')
+    ).resolves.toMatchObject({ path: '/picked/custom.txt' })
+    expect(pickLayerTablePath).toHaveBeenCalledWith(expect.anything(), '/current/base.nii')
+
+    await expect(ipc.invoke('read-built-in-layer-table', sender, 304)).resolves.toMatchObject({
+      name: 'FreeSurferColorLUT.txt',
+      path: ''
+    })
+    expect(readWithin).toHaveBeenCalledWith(
+      '/built-in/table.txt',
+      8 * 1024 * 1024,
+      '/built-in/table.txt',
+      expect.any(AbortSignal)
+    )
+    dispose()
+  })
+
+  it('rejects a non-text file returned by the targeted table picker', async () => {
+    const ipc = new FakeIpc()
+    const access = new FileAccessAuthorizer({ realpath: async (path) => path })
+    const base = makeDependencies(ipc, access)
+    const readWithin = vi.fn(base.reader.readWithin)
+    const dispose = registerFileIpc({
+      ...base,
+      dialogs: { ...base.dialogs, pickLayerTablePath: async () => '/picked/wrong.nii' },
+      reader: { ...base.reader, readWithin }
+    })
+    const sender = new FakeSender(28)
+
+    await expect(ipc.invoke('open-layer-table', sender, 305, '/current/base.nii')).rejects.toThrow(
+      'Select a .txt file.'
+    )
+    expect(readWithin).not.toHaveBeenCalled()
     dispose()
   })
 
@@ -611,6 +669,7 @@ describe('file IPC registration', () => {
         dialogs: {
           pickFilePath: () => picked.promise,
           pickLayerPath: async () => null,
+          pickLayerTablePath: async () => null,
           pickAndRead: async () => null,
           pickScanRoot: async () => null,
           pickExportDirectory: async () => null
@@ -648,7 +707,7 @@ describe('file IPC registration', () => {
     await ipc.invoke('scan-folder', sender, '/root', 1)
 
     expect(() => registerFileIpc(deps)).toThrow('duplicate handler')
-    expect(ipc.handlers.size).toBe(9)
+    expect(ipc.handlers.size).toBe(11)
     expect(ipc.listenerCount()).toBe(6)
     expect(access.activeRoot(sender.id)).toBe(resolve('/root'))
     expect(sender.listenerCount('did-navigate')).toBe(1)

@@ -1,5 +1,13 @@
 # Third-party notices
 
+## FreeSurfer color table
+
+- Bundled file: `FreeSurferColorLUT.txt`, copied without modification from FreeSurfer 8.1.0.
+- License: MGH Software License; see `freesurfer/LICENSE`.
+- Required notice: All or portions of this licensed product (such portions are the
+  “Software”) have been obtained under license from The General Hospital Corporation
+  and are subject to the terms and conditions in that license.
+
 ## neuroneural/brainchop models
 
 - Source: https://github.com/neuroneural/brainchop

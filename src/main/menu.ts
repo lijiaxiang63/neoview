@@ -9,6 +9,7 @@ export interface ApplicationMenuOptions {
   actions: {
     openFile(): void
     openFolder(): void
+    addLayer(): void
     openRecent(path: string): void
     clearRecent(): void
     openBuiltinBase(): void
@@ -93,6 +94,12 @@ export function createApplicationMenuTemplate(
           accelerator: 'CmdOrCtrl+Shift+O',
           click: actions.openFolder
         },
+        {
+          id: 'file-add-layer',
+          label: 'Add Layer…',
+          enabled: viewState.hasVolume,
+          click: actions.addLayer
+        },
         { label: 'Open Recent', submenu: recents },
         { type: 'separator' },
         { label: 'Open Built-in Volume', click: actions.openBuiltinBase },
@@ -112,8 +119,7 @@ export function createApplicationMenuTemplate(
               { type: 'separator' as const },
               { role: 'cut' as const },
               { role: 'copy' as const },
-              { role: 'paste' as const },
-              { role: 'selectAll' as const }
+              { role: 'paste' as const }
             ]
           } satisfies MenuItemConstructorOptions
         ]

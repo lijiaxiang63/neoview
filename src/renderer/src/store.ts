@@ -13,8 +13,14 @@ import {
   type UiPrefs
 } from './files/uiPrefs'
 import { clampPanelWidth, SIDE_PANEL_WIDTH_DEFAULT } from './panelLayout'
-import { defaultLayerSettings, guessOverlayKind, type OverlayLayer } from './slicing/overlay'
-import { layerTableKey, type LayerLabelTable } from './slicing/labelTable'
+import {
+  defaultLayerSettings,
+  guessOverlayKind,
+  type LayerTableOption,
+  type LayerTableSource,
+  type OverlayLayer
+} from './slicing/overlay'
+import { layerFileName, layerTableKey, type LayerLabelTable } from './slicing/labelTable'
 import { PreviewClient } from './segmentation/previewClient'
 import { ModelRunner, type ModelController } from './model/modelRunner'
 import {
@@ -156,13 +162,24 @@ export interface AppState extends RegionState, RegionActions {
     v: Volume,
     options?:
       | boolean
-      | { settleLoad?: boolean; sourcePath?: string | null; labelTable?: LayerLabelTable | null }
+      | {
+          settleLoad?: boolean
+          sourcePath?: string | null
+          labelTable?: LayerLabelTable | null
+          labelTableName?: string | null
+        }
   ) => void
   attachOverlayTable: (
     sourcePath: string,
     table: LayerLabelTable,
     caseInsensitive?: boolean
   ) => 'attached' | 'missing' | 'ambiguous'
+  setOverlayTableOption: (
+    id: number,
+    source: Exclude<LayerTableSource, 'automatic'>,
+    option: LayerTableOption
+  ) => boolean
+  selectOverlayTableSource: (id: number, source: LayerTableSource) => boolean
   removeOverlay: (id: number) => void
   updateOverlay: (id: number, patch: Partial<Omit<OverlayLayer, 'id' | 'volume'>>) => void
   fail: (message: string) => void
@@ -520,6 +537,8 @@ function createAppState(
       const settleLoad = typeof options === 'boolean' ? options : (options.settleLoad ?? true)
       const sourcePath = typeof options === 'boolean' ? null : (options.sourcePath ?? null)
       const labelTable = typeof options === 'boolean' ? null : (options.labelTable ?? null)
+      const labelTableName =
+        typeof options === 'boolean' ? null : (options.labelTableName ?? sourcePath)
       const kind = labelTable ? 'labels' : guessOverlayKind(v)
       const { range, colormap } = defaultLayerSettings(v)
       const layer: OverlayLayer = {
@@ -532,7 +551,14 @@ function createAppState(
         colormap,
         hiddenLabels: new Set(),
         sourcePath,
-        labelTable
+        labelTable,
+        labelTableSource: labelTable ? 'matching' : 'automatic',
+        matchingTable:
+          labelTable && labelTableName
+            ? { name: layerFileName(labelTableName), table: labelTable }
+            : null,
+        builtInTable: null,
+        customTable: null
       }
       set((s) => ({
         overlays: [...s.overlays, layer],
@@ -552,10 +578,69 @@ function createAppState(
       const id = matches[0].id
       set((state) => ({
         overlays: state.overlays.map((layer) =>
-          layer.id === id ? { ...layer, kind: 'labels', labelTable: table } : layer
+          layer.id === id
+            ? {
+                ...layer,
+                kind: 'labels',
+                labelTable: table,
+                labelTableSource: 'matching',
+                matchingTable: { name: layerFileName(sourcePath), table }
+              }
+            : layer
         )
       }))
       return 'attached'
+    },
+
+    setOverlayTableOption: (id, source, option) => {
+      if (!get().overlays.some((layer) => layer.id === id)) return false
+      const field =
+        source === 'matching'
+          ? 'matchingTable'
+          : source === 'built-in'
+            ? 'builtInTable'
+            : 'customTable'
+      set((state) => ({
+        overlays: state.overlays.map((layer) =>
+          layer.id === id
+            ? {
+                ...layer,
+                kind: 'labels',
+                [field]: option,
+                labelTableSource: source,
+                labelTable: option.table
+              }
+            : layer
+        )
+      }))
+      return true
+    },
+
+    selectOverlayTableSource: (id, source) => {
+      const layer = get().overlays.find((candidate) => candidate.id === id)
+      if (!layer) return false
+      const option =
+        source === 'matching'
+          ? layer.matchingTable
+          : source === 'built-in'
+            ? layer.builtInTable
+            : source === 'custom'
+              ? layer.customTable
+              : null
+      if (source !== 'automatic' && !option) return false
+      set((state) => ({
+        overlays: state.overlays.map((candidate) =>
+          candidate.id === id
+            ? {
+                ...candidate,
+                kind: 'labels',
+                labelTableSource: source,
+                labelTable: option?.table ?? null
+              }
+            : candidate
+        )
+      }))
+      return true
     },
 
     removeOverlay: (id) => {

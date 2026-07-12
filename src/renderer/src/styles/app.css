@@ -808,6 +808,105 @@ body {
   margin-top: 10px;
 }
 
+.table-picker {
+  position: relative;
+  margin-top: 10px;
+}
+
+.table-picker-label {
+  display: block;
+  margin-bottom: 5px;
+  color: var(--text-2);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.table-picker-trigger {
+  width: 100%;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 7px 9px;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  background: linear-gradient(180deg, var(--bg-1), var(--bg-2));
+  color: var(--text-0);
+  font: inherit;
+  font-size: 11px;
+  text-align: left;
+}
+
+.table-picker-trigger:hover,
+.table-picker-trigger:focus-visible {
+  border-color: var(--accent);
+  outline: none;
+}
+
+.table-picker-trigger > span:first-child,
+.table-picker-menu button > span:last-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.table-picker-chevron {
+  flex: none;
+  color: var(--text-2);
+}
+
+.table-picker-menu {
+  position: absolute;
+  z-index: 30;
+  top: calc(100% + 5px);
+  left: 0;
+  right: 0;
+  padding: 5px;
+  border: 1px solid var(--border-strong);
+  border-radius: 10px;
+  background: var(--bg-1);
+  box-shadow: var(--shadow);
+}
+
+.table-picker-menu button {
+  width: 100%;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 7px 8px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text-0);
+  font: inherit;
+  font-size: 11px;
+  text-align: left;
+}
+
+.table-picker-menu button:hover,
+.table-picker-menu button:focus-visible {
+  background: var(--accent-soft);
+  outline: none;
+}
+
+.table-picker-check {
+  width: 12px;
+  flex: none;
+  color: var(--accent-strong);
+  text-align: center;
+}
+
+.table-picker-separator {
+  height: 1px;
+  margin: 4px 5px;
+  background: var(--border);
+}
+
 .label-filter {
   flex: 1;
   min-width: 0;

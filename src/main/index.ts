@@ -60,6 +60,7 @@ import iconLight from '../../resources/icon-light.png?asset'
 // without hunting for a file: one base volume and one labels overlay.
 import builtinVolume from '../../resources/builtin-volume.nii.gz?asset'
 import builtinOverlay from '../../resources/builtin-overlay.nii.gz?asset'
+import builtInLayerTable from '../../resources/FreeSurferColorLUT.txt?asset'
 
 // A secure standard origin lets production use the same cross-origin
 // isolation contract as the development server. Registration must happen
@@ -375,6 +376,7 @@ function saveRecentFiles(): void {
 // The View menu's checkbox state survives menu rebuilds (recents changing)
 // by re-applying the last state the renderer reported.
 let lastViewState: ViewMenuState = {
+  hasVolume: false,
   fileList: true,
   sidePanel: true,
   folderOpen: false,
@@ -469,6 +471,7 @@ function buildMenu(getWindow: () => BrowserWindow | null): void {
         })()
       },
       openFolder: () => sendToWindow('open-folder-request'),
+      addLayer: () => sendToWindow('add-layer-request'),
       openRecent: (path) => void openRecent(path),
       clearRecent: () => {
         recentFiles = []
@@ -603,6 +606,7 @@ if (gotLock) {
         ipc: ipcMain,
         access: fileAccess,
         dialogs: fileDialogs,
+        builtInLayerTablePath: builtInLayerTable,
         reader: fileReader,
         scanner: folderScanner,
         exporter: exportService,
@@ -637,12 +641,15 @@ if (gotLock) {
       const onViewState = (event: Electron.IpcMainEvent, state: ViewMenuState): void => {
         if (!rendererMainFrameIsTrusted(event) || !state || typeof state !== 'object') return
         lastViewState = {
+          hasVolume: Boolean(state.hasVolume),
           fileList: Boolean(state.fileList),
           sidePanel: Boolean(state.sidePanel),
           folderOpen: Boolean(state.folderOpen),
           directionLabels: Boolean(state.directionLabels),
           crosshair: Boolean(state.crosshair)
         }
+        const addLayer = Menu.getApplicationMenu()?.getMenuItemById('file-add-layer')
+        if (addLayer) addLayer.enabled = Boolean(state.hasVolume)
         const menu = Menu.getApplicationMenu()
         const fileList = menu?.getMenuItemById('view-file-list')
         if (fileList) {

@@ -13,7 +13,8 @@ export interface FileDialogs {
   /** Keep the selected path on the main side so callers can establish read
    * ownership after a non-null pick but before any bytes are allocated. */
   pickFilePath(window: BrowserWindow): Promise<string | null>
-  pickLayerPath(window: BrowserWindow): Promise<string | null>
+  pickLayerPath(window: BrowserWindow, currentFilePath?: string | null): Promise<string | null>
+  pickLayerTablePath(window: BrowserWindow, currentFilePath?: string | null): Promise<string | null>
   pickAndRead(window: BrowserWindow, signal?: AbortSignal): Promise<OpenedFile | null>
   pickScanRoot(window: BrowserWindow): Promise<string | null>
   pickExportDirectory(window: BrowserWindow): Promise<string | null>
@@ -29,9 +30,10 @@ export function createFileDialogs(deps: FileDialogDependencies, reader: FileRead
   const pickPath = async (
     window: BrowserWindow,
     options: OpenDialogOptions,
-    selectsDirectory = false
+    selectsDirectory = false,
+    preferredDirectory?: string
   ): Promise<string | null> => {
-    const defaultPath = lastUsedDirectory ?? deps.getLastUsedDirectory?.()
+    const defaultPath = preferredDirectory ?? lastUsedDirectory ?? deps.getLastUsedDirectory?.()
     const path = selectedPath(
       await deps.showOpenDialog(window, {
         ...options,
@@ -54,18 +56,44 @@ export function createFileDialogs(deps: FileDialogDependencies, reader: FileRead
       ]
     })
 
-  const pickLayerPath = async (window: BrowserWindow): Promise<string | null> =>
-    pickPath(window, {
-      properties: ['openFile'],
-      filters: [
-        { name: 'Layer files', extensions: ['nii', 'nii.gz', 'txt'] },
-        { name: 'All files', extensions: ['*'] }
-      ]
-    })
+  const pickLayerPath = async (
+    window: BrowserWindow,
+    currentFilePath?: string | null
+  ): Promise<string | null> =>
+    pickPath(
+      window,
+      {
+        properties: ['openFile'],
+        filters: [
+          { name: 'Layer files', extensions: ['nii', 'nii.gz', 'txt'] },
+          { name: 'All files', extensions: ['*'] }
+        ]
+      },
+      false,
+      currentFilePath ? dirname(currentFilePath) : undefined
+    )
+
+  const pickLayerTablePath = async (
+    window: BrowserWindow,
+    currentFilePath?: string | null
+  ): Promise<string | null> =>
+    pickPath(
+      window,
+      {
+        properties: ['openFile'],
+        filters: [
+          { name: 'Text files', extensions: ['txt'] },
+          { name: 'All files', extensions: ['*'] }
+        ]
+      },
+      false,
+      currentFilePath ? dirname(currentFilePath) : undefined
+    )
 
   return {
     pickFilePath,
     pickLayerPath,
+    pickLayerTablePath,
 
     async pickAndRead(window, signal) {
       const path = await pickFilePath(window)

@@ -558,7 +558,47 @@ describe('overlay layers', () => {
       'missing'
     )
     expect(useStore.getState().attachOverlayTable('/out/a.regions-2.txt', table)).toBe('attached')
-    expect(useStore.getState().overlays[0]).toMatchObject({ kind: 'labels', labelTable: table })
+    expect(useStore.getState().overlays[0]).toMatchObject({
+      kind: 'labels',
+      labelTable: table,
+      labelTableSource: 'matching',
+      matchingTable: { name: 'a.regions-2.txt', table }
+    })
+  })
+
+  it('retains matching and custom table choices while switching sources', () => {
+    useStore.getState().setVolume(baseVolume())
+    const matching = new Map([[1, { name: 'One', rgba: [1, 2, 3, 255] as const }]])
+    const custom = new Map([[2, { name: 'Two', rgba: [4, 5, 6, 255] as const }]])
+    const builtIn = new Map([[3, { name: 'Three', rgba: [7, 8, 9, 255] as const }]])
+    useStore.getState().addOverlay(fakeVolume({ dataMin: 0, dataMax: 3 }, 16), {
+      sourcePath: '/out/a.nii',
+      labelTable: matching,
+      labelTableName: 'a.txt'
+    })
+    const id = useStore.getState().overlays[0].id
+
+    expect(
+      useStore.getState().setOverlayTableOption(id, 'custom', { name: 'picked.txt', table: custom })
+    ).toBe(true)
+    expect(
+      useStore
+        .getState()
+        .setOverlayTableOption(id, 'built-in', { name: 'FreeSurfer', table: builtIn })
+    ).toBe(true)
+    expect(useStore.getState().selectOverlayTableSource(id, 'matching')).toBe(true)
+    expect(useStore.getState().overlays[0].labelTable).toBe(matching)
+    expect(useStore.getState().selectOverlayTableSource(id, 'custom')).toBe(true)
+    expect(useStore.getState().overlays[0].labelTable).toBe(custom)
+    expect(useStore.getState().selectOverlayTableSource(id, 'automatic')).toBe(true)
+    expect(useStore.getState().overlays[0]).toMatchObject({
+      labelTable: null,
+      labelTableSource: 'automatic',
+      matchingTable: { table: matching },
+      customTable: { table: custom },
+      builtInTable: { table: builtIn }
+    })
+    expect(useStore.getState().selectOverlayTableSource(999, 'automatic')).toBe(false)
   })
 
   it('setVolume clears all layers', () => {

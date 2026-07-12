@@ -57,7 +57,8 @@ describe('application event decisions', () => {
       hasRegionBox: false,
       maximizedView: false,
       folderOpen: false,
-      shortcutsOpen: false
+      shortcutsOpen: false,
+      hasVolume: false
     }
     expect(
       keyCommand({ key: 'Escape' }, { ...idle, hasRegionBox: true, maximizedView: true })
@@ -78,7 +79,8 @@ describe('application event decisions', () => {
       hasRegionBox: true,
       maximizedView: true,
       folderOpen: true,
-      shortcutsOpen: false
+      shortcutsOpen: false,
+      hasVolume: true
     }
     expect(keyCommand({ key: 'Enter', target: target('input', { type: 'text' }) }, ready)).toBe(
       null
@@ -88,6 +90,25 @@ describe('application event decisions', () => {
     expect(menuHistoryTarget(true, null)).toBe('blocked')
     expect(menuHistoryTarget(false, target('textarea'))).toBe('text')
     expect(menuHistoryTarget(false, target('button'))).toBe('regions')
+  })
+
+  it('uses the platform add-layer shortcut only outside text entry', () => {
+    const ready = {
+      hasRegionBox: false,
+      maximizedView: false,
+      folderOpen: false,
+      shortcutsOpen: false,
+      hasVolume: true
+    }
+    expect(keyCommand({ key: 'a', metaKey: true }, ready, 'darwin')).toBe('add-layer')
+    expect(keyCommand({ key: 'a', ctrlKey: true }, ready, 'darwin')).toBeNull()
+    expect(keyCommand({ key: 'a', ctrlKey: true }, ready, 'win32')).toBe('add-layer')
+    expect(keyCommand({ key: 'a', metaKey: true }, ready, 'linux')).toBeNull()
+    expect(
+      keyCommand({ key: 'a', metaKey: true, target: target('input', { type: 'text' }) }, ready)
+    ).toBeNull()
+    expect(keyCommand({ key: 'a', metaKey: true }, { ...ready, hasVolume: false })).toBeNull()
+    expect(keyCommand({ key: 'a', metaKey: true, shiftKey: true }, ready)).toBeNull()
   })
 
   it('makes a stale playback tick inert after the volume is replaced', () => {
@@ -100,6 +121,7 @@ describe('application event decisions', () => {
 
   it('creates comparable View menu snapshots', () => {
     const first = viewMenuSnapshot({
+      volume: {} as never,
       filePanelOpen: true,
       sidePanelOpen: false,
       folder: null,
@@ -107,6 +129,7 @@ describe('application event decisions', () => {
       crosshairVisible: false
     })
     expect(first).toEqual({
+      hasVolume: true,
       fileList: true,
       sidePanel: false,
       folderOpen: false,

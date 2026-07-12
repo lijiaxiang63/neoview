@@ -1,4 +1,10 @@
-import { useEffect, useRef, useState, type JSX } from 'react'
+import {
+  useEffect,
+  useRef,
+  useState,
+  type JSX,
+  type KeyboardEvent as ReactKeyboardEvent
+} from 'react'
 import { useStore } from '../store'
 import { RangeSlider } from './RangeSlider'
 import { EyeIcon } from './EyeIcon'
@@ -11,9 +17,17 @@ import {
   MAX_LISTED_LABELS,
   overlayVoxelToBase,
   type ColormapName,
+  type LayerTableSource,
   type OverlayKind,
   type OverlayLayer
 } from '../slicing/overlay'
+
+const TABLE_SOURCE_LABEL: Record<LayerTableSource, string> = {
+  automatic: 'Automatic colors',
+  'built-in': 'Built-in',
+  matching: 'Matching file',
+  custom: 'Custom'
+}
 
 const KINDS: { key: OverlayKind; label: string }[] = [
   { key: 'map', label: 'Map' },
@@ -204,7 +218,178 @@ function mapDomain(layer: OverlayLayer): { min: number; max: number } {
   }
 }
 
-export function OverlayPanel({ onAdd }: { onAdd: () => void }): JSX.Element | null {
+function LayerTableMenu({
+  layer,
+  onChoose,
+  onUseBuiltIn,
+  onSelectSource
+}: {
+  layer: OverlayLayer
+  onChoose: () => void
+  onUseBuiltIn: () => void
+  onSelectSource: (source: LayerTableSource) => void
+}): JSX.Element {
+  const [open, setOpen] = useState(false)
+  const rootRef = useRef<HTMLDivElement>(null)
+  const triggerRef = useRef<HTMLButtonElement>(null)
+  const itemRefs = useRef<Array<HTMLButtonElement | null>>([])
+  const activeOption =
+    layer.labelTableSource === 'matching'
+      ? layer.matchingTable
+      : layer.labelTableSource === 'built-in'
+        ? layer.builtInTable
+        : layer.labelTableSource === 'custom'
+          ? layer.customTable
+          : null
+  const currentLabel = activeOption
+    ? `${TABLE_SOURCE_LABEL[layer.labelTableSource]} · ${activeOption.name}`
+    : TABLE_SOURCE_LABEL[layer.labelTableSource]
+
+  useEffect(() => {
+    if (!open) return
+    const closeOutside = (event: PointerEvent): void => {
+      if (event.target instanceof Node && !rootRef.current?.contains(event.target)) setOpen(false)
+    }
+    document.addEventListener('pointerdown', closeOutside)
+    return () => document.removeEventListener('pointerdown', closeOutside)
+  }, [open])
+
+  const chooseSource = (source: LayerTableSource): void => {
+    if (source === 'built-in' && !layer.builtInTable) onUseBuiltIn()
+    else onSelectSource(source)
+    setOpen(false)
+    triggerRef.current?.focus()
+  }
+
+  const options: Array<{ source: LayerTableSource; label: string }> = [
+    { source: 'automatic', label: 'Automatic colors' },
+    { source: 'built-in', label: `Built-in · ${layer.builtInTable?.name ?? 'FreeSurfer'}` },
+    ...(layer.matchingTable
+      ? [{ source: 'matching' as const, label: `Matching file · ${layer.matchingTable.name}` }]
+      : []),
+    ...(layer.customTable
+      ? [{ source: 'custom' as const, label: `Custom · ${layer.customTable.name}` }]
+      : [])
+  ]
+
+  const onMenuKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>): void => {
+    if (event.key === 'Escape') {
+      event.preventDefault()
+      setOpen(false)
+      triggerRef.current?.focus()
+      return
+    }
+    if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return
+    event.preventDefault()
+    const items = itemRefs.current.filter((item): item is HTMLButtonElement => item !== null)
+    if (items.length === 0) return
+    const current = items.indexOf(document.activeElement as HTMLButtonElement)
+    const next =
+      event.key === 'Home'
+        ? 0
+        : event.key === 'End'
+          ? items.length - 1
+          : event.key === 'ArrowDown'
+            ? (current + 1 + items.length) % items.length
+            : (current - 1 + items.length) % items.length
+    items[next].focus()
+  }
+
+  return (
+    <div
+      className="table-picker"
+      ref={rootRef}
+      onBlur={(event) => {
+        if (
+          open &&
+          event.relatedTarget instanceof Node &&
+          !event.currentTarget.contains(event.relatedTarget)
+        ) {
+          setOpen(false)
+        }
+      }}
+    >
+      <span className="table-picker-label">Color table</span>
+      <button
+        ref={triggerRef}
+        className="table-picker-trigger"
+        type="button"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        title={currentLabel}
+        onClick={() => {
+          const next = !open
+          setOpen(next)
+          if (next) {
+            requestAnimationFrame(() => {
+              const selected = options.findIndex(
+                (option) => option.source === layer.labelTableSource
+              )
+              itemRefs.current[Math.max(0, selected)]?.focus()
+            })
+          }
+        }}
+      >
+        <span>{currentLabel}</span>
+        <span className="table-picker-chevron" aria-hidden="true">
+          ▾
+        </span>
+      </button>
+      {open && (
+        <div className="table-picker-menu" role="menu" onKeyDown={onMenuKeyDown}>
+          {options.map((option, index) => (
+            <button
+              key={option.source}
+              ref={(element) => {
+                itemRefs.current[index] = element
+              }}
+              type="button"
+              role="menuitemradio"
+              aria-checked={layer.labelTableSource === option.source}
+              title={option.label}
+              onClick={() => chooseSource(option.source)}
+            >
+              <span className="table-picker-check" aria-hidden="true">
+                {layer.labelTableSource === option.source ? '✓' : ''}
+              </span>
+              <span>{option.label}</span>
+            </button>
+          ))}
+          <div className="table-picker-separator" role="separator" />
+          <button
+            ref={(element) => {
+              itemRefs.current[options.length] = element
+            }}
+            type="button"
+            role="menuitem"
+            onClick={() => {
+              setOpen(false)
+              triggerRef.current?.focus()
+              onChoose()
+            }}
+          >
+            <span className="table-picker-check" aria-hidden="true">
+              +
+            </span>
+            <span>Choose .txt…</span>
+          </button>
+        </div>
+      )}
+    </div>
+  )
+}
+
+export function OverlayPanel({
+  onAdd,
+  onChooseTable,
+  onUseBuiltInTable,
+  onSelectTableSource
+}: {
+  onAdd: () => void
+  onChooseTable: (id: number) => void
+  onUseBuiltInTable: (id: number) => void
+  onSelectTableSource: (id: number, source: LayerTableSource) => void
+}): JSX.Element | null {
   const volume = useStore((s) => s.volume)
   const overlays = useStore((s) => s.overlays)
   const updateOverlay = useStore((s) => s.updateOverlay)
@@ -215,7 +400,15 @@ export function OverlayPanel({ onAdd }: { onAdd: () => void }): JSX.Element | nu
   return (
     <div className="panel-section">
       <div className="tab-toolbar">
-        <button className="preset-btn" onClick={onAdd}>
+        <button
+          className="preset-btn"
+          title={
+            navigator.platform.toLowerCase().includes('mac')
+              ? 'Add layer (⌘A)'
+              : 'Add layer (Ctrl+A)'
+          }
+          onClick={onAdd}
+        >
           Add layer
         </button>
       </div>
@@ -281,7 +474,18 @@ export function OverlayPanel({ onAdd }: { onAdd: () => void }): JSX.Element | nu
               <span className="frame-label mono">op {layer.opacity.toFixed(2)}</span>
             </div>
             {layer.kind === 'labels' && (
-              <LabelVisibility layer={layer} onPatch={(patch) => updateOverlay(layer.id, patch)} />
+              <>
+                <LayerTableMenu
+                  layer={layer}
+                  onChoose={() => onChooseTable(layer.id)}
+                  onUseBuiltIn={() => onUseBuiltInTable(layer.id)}
+                  onSelectSource={(source) => onSelectTableSource(layer.id, source)}
+                />
+                <LabelVisibility
+                  layer={layer}
+                  onPatch={(patch) => updateOverlay(layer.id, patch)}
+                />
+              </>
             )}
             {layer.kind === 'map' && (
               <>

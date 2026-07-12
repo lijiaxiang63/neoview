@@ -3,6 +3,13 @@ import { applyAffine, composeVoxelMap } from '../volume/affine'
 import type { PlaneSpec } from './extract'
 import type { LayerLabelTable } from './labelTable'
 
+export type LayerTableSource = 'automatic' | 'built-in' | 'matching' | 'custom'
+
+export interface LayerTableOption {
+  name: string
+  table: LayerLabelTable
+}
+
 export type OverlayKind = 'map' | 'mask' | 'labels'
 export type ColormapName = 'warm' | 'cool' | 'signed'
 
@@ -22,6 +29,11 @@ export interface OverlayLayer {
   sourcePath: string | null
   /** Optional names and exact colors keyed by displayed integer value. */
   labelTable: LayerLabelTable | null
+  /** Active table choice plus the session-local choices that can be restored. */
+  labelTableSource: LayerTableSource
+  matchingTable: LayerTableOption | null
+  builtInTable: LayerTableOption | null
+  customTable: LayerTableOption | null
 }
 
 // ---------------------------------------------------------------------------

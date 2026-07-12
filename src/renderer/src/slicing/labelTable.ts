@@ -36,19 +36,35 @@ export function parseLayerLabelTable(text: string): LayerLabelTableParseResult {
   const escaped = lines[0] === ESCAPED_LAYER_TABLE_MARKER_ROW
   for (let lineIndex = escaped ? 1 : 0; lineIndex < lines.length; lineIndex++) {
     const rawLine = lines[lineIndex]
-    if (rawLine.trim() === '') continue
+    const trimmed = rawLine.trim()
+    if (trimmed === '' || trimmed.startsWith('#')) continue
     const columns = rawLine.split('\t')
-    if (columns.length < 6) {
-      invalidLines++
-      continue
+    const native =
+      columns.length >= 6 &&
+      columns.slice(1, 5).every((value) => value.trim() !== '' && Number.isFinite(Number(value)))
+    let id: number
+    let channels: number[]
+    let name: string
+    if (native) {
+      id = Number(columns[0])
+      channels = columns.slice(1, 5).map(Number)
+      const rawName = columns.slice(5).join('\t')
+      name = escaped ? unescapeName(rawName) : rawName
+    } else {
+      const match = trimmed.match(/^(\S+)\s+(.+?)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)$/)
+      if (!match) {
+        invalidLines++
+        continue
+      }
+      id = Number(match[1])
+      name = match[2]
+      const values = match.slice(3, 7).map(Number)
+      channels = [values[0], values[1], values[2], 255 - values[3]]
     }
-    const id = Number(columns[0])
-    const channels = columns.slice(1, 5).map(Number)
-    const rawName = columns.slice(5).join('\t')
-    const name = escaped ? unescapeName(rawName) : rawName
+    const whitespaceBackground = !native && id === 0
     if (
       !Number.isSafeInteger(id) ||
-      id <= 0 ||
+      id < (whitespaceBackground ? 0 : 1) ||
       id > 0xffff ||
       channels.some((channel) => !Number.isInteger(channel) || channel < 0 || channel > 255) ||
       name.length === 0
@@ -56,6 +72,8 @@ export function parseLayerLabelTable(text: string): LayerLabelTableParseResult {
       invalidLines++
       continue
     }
+    // Zero is the transparent background in this whitespace-separated format.
+    if (whitespaceBackground) continue
     table.set(id, {
       name,
       rgba: channels as unknown as readonly [number, number, number, number]

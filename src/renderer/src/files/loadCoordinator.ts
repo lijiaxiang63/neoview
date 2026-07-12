@@ -31,6 +31,7 @@ export type ScanResult = FolderScan
 export interface OverlayLoadMetadata {
   sourcePath: string | null
   labelTable: LayerLabelTable | null
+  labelTableName?: string | null
 }
 
 /** The slice of app state the coordinator's decisions depend on. */
@@ -236,7 +237,7 @@ export class LoadCoordinator<V> {
   async openOverlay(
     name: string,
     bytes: ArrayBuffer,
-    metadata: OverlayLoadMetadata = { sourcePath: null, labelTable: null }
+    metadata: OverlayLoadMetadata = { sourcePath: null, labelTable: null, labelTableName: null }
   ): Promise<void> {
     if (this.disposed) return
     const session = this.overlaySessionGen

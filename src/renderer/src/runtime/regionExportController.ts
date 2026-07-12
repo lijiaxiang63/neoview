@@ -180,7 +180,8 @@ export class RegionExportController {
       current.addOverlay(layer, {
         settleLoad: false,
         sourcePath: saved.path,
-        labelTable: table
+        labelTable: table,
+        labelTableName: saved.sidecarPath
       })
       current.markExported(volume, sourcePath, segRevision)
       current.setSidePanelTab('layers')

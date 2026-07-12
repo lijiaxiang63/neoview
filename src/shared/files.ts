@@ -3,6 +3,8 @@
 export const FILE_CHANNELS = {
   openDialog: 'open-dialog',
   openOverlayDialog: 'open-overlay-dialog',
+  openLayerTable: 'open-layer-table',
+  readBuiltInLayerTable: 'read-built-in-layer-table',
   openFolderScan: 'open-folder-scan',
   isDirectory: 'is-directory',
   scanFolder: 'scan-folder',
@@ -109,6 +111,7 @@ export interface ExportResult {
 }
 
 export interface ViewMenuState {
+  hasVolume: boolean
   fileList: boolean
   sidePanel: boolean
   folderOpen: boolean

@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { readFileSync } from 'node:fs'
 import { buildColorTable, type Region } from '../src/renderer/src/segmentation/regions'
 import { layerTableKey, parseLayerLabelTable } from '../src/renderer/src/slicing/labelTable'
 
@@ -14,6 +15,41 @@ function region(name: string): Region {
 }
 
 describe('layer label table', () => {
+  it('parses whitespace-separated names and converts transparency to opacity', () => {
+    const parsed = parseLayerLabelTable(
+      [
+        '# id name channels',
+        '0 Unknown 0 0 0 0',
+        '1 First-Name 10 20 30 0',
+        '2 Name With Spaces 4 5 6 7'
+      ].join('\n')
+    )
+
+    expect(parsed.invalidLines).toBe(0)
+    expect(parsed.table?.get(1)).toEqual({ name: 'First-Name', rgba: [10, 20, 30, 255] })
+    expect(parsed.table?.get(2)).toEqual({ name: 'Name With Spaces', rgba: [4, 5, 6, 248] })
+  })
+
+  it('validates whitespace-separated background rows before ignoring them', () => {
+    const parsed = parseLayerLabelTable(
+      ['0 Unknown 0 0 0 0', '0 Broken 0 0 0 300', '1 One 1 2 3 0'].join('\n')
+    )
+
+    expect(parsed.invalidLines).toBe(1)
+    expect(parsed.table?.get(1)?.name).toBe('One')
+  })
+
+  it('parses the bundled FreeSurfer preset', () => {
+    const text = readFileSync(
+      new URL('../resources/FreeSurferColorLUT.txt', import.meta.url),
+      'utf8'
+    )
+    const parsed = parseLayerLabelTable(text)
+
+    expect(parsed.invalidLines).toBe(0)
+    expect(parsed.table?.size).toBeGreaterThan(1000)
+    expect(parsed.table?.get(1)?.rgba).toEqual([70, 130, 180, 255])
+  })
   it('round-trips exported colors and escaped names', () => {
     const text = buildColorTable([{ value: 3, region: region('left\tright\\line\nnext') }])
     const parsed = parseLayerLabelTable(text)

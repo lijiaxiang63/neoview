@@ -59,6 +59,7 @@ export interface FileIpcDependencies {
   ipc: Pick<IpcMain, 'handle' | 'removeHandler' | 'on' | 'removeListener'>
   access: FileAccessAuthorizer
   dialogs: FileDialogs
+  builtInLayerTablePath: string
   reader: FileReader
   scanner: FolderScanner
   exporter: ExportService
@@ -198,35 +199,89 @@ export function registerFileIpc(deps: FileIpcDependencies): () => void {
       }
     })
 
-    addHandle(FILE_CHANNELS.openOverlayDialog, async (event, requestIdValue: unknown) => {
+    addHandle(
+      FILE_CHANNELS.openOverlayDialog,
+      async (event, requestIdValue: unknown, currentFilePathValue?: unknown) => {
+        requireCurrentMainFrame(event)
+        const window = deps.windowFromSender(event.sender)
+        if (!window) return null
+        sessions.track(event.sender)
+        const requestId = readIdOf(requestIdValue)
+        const abort = sessions.beginRead(event.sender.id, requestId)
+        try {
+          const currentFilePath =
+            typeof currentFilePathValue === 'string' && currentFilePathValue !== ''
+              ? currentFilePathValue
+              : null
+          const path = await deps.dialogs.pickLayerPath(window, currentFilePath)
+          if (path === null || abort.signal.aborted || !isCurrentMainFrame(event)) return null
+          if (isTableFileName(path)) {
+            const table = await readLayerTable(deps.reader, path, abort.signal)
+            return !abort.signal.aborted && isCurrentMainFrame(event)
+              ? { kind: 'table' as const, table }
+              : null
+          }
+          if (!isVolumeFileName(path)) throw new Error('Select a .nii, .nii.gz, or .txt file.')
+          const file = await deps.reader.read(path, path, abort.signal)
+          let table: OpenedLayerTable | null = null
+          let tableError: string | null = null
+          try {
+            table = await readLayerTable(deps.reader, companionTablePath(path), abort.signal)
+          } catch (error) {
+            if (!isMissingFile(error)) {
+              tableError =
+                error instanceof Error ? error.message : 'Could not read the layer table.'
+            }
+          }
+          return !abort.signal.aborted && isCurrentMainFrame(event)
+            ? { kind: 'volume' as const, file, table, tableError }
+            : null
+        } catch (error) {
+          if (abort.signal.aborted || !isCurrentMainFrame(event)) return null
+          throw error
+        } finally {
+          sessions.finishRead(event.sender.id, requestId, abort)
+        }
+      }
+    )
+
+    addHandle(
+      FILE_CHANNELS.openLayerTable,
+      async (event, requestIdValue: unknown, currentFilePathValue?: unknown) => {
+        requireCurrentMainFrame(event)
+        const window = deps.windowFromSender(event.sender)
+        if (!window) return null
+        sessions.track(event.sender)
+        const requestId = readIdOf(requestIdValue)
+        const abort = sessions.beginRead(event.sender.id, requestId)
+        try {
+          const currentFilePath =
+            typeof currentFilePathValue === 'string' && currentFilePathValue !== ''
+              ? currentFilePathValue
+              : null
+          const path = await deps.dialogs.pickLayerTablePath(window, currentFilePath)
+          if (path === null || abort.signal.aborted || !isCurrentMainFrame(event)) return null
+          if (!isTableFileName(path)) throw new Error('Select a .txt file.')
+          const table = await readLayerTable(deps.reader, path, abort.signal)
+          return !abort.signal.aborted && isCurrentMainFrame(event) ? table : null
+        } catch (error) {
+          if (abort.signal.aborted || !isCurrentMainFrame(event)) return null
+          throw error
+        } finally {
+          sessions.finishRead(event.sender.id, requestId, abort)
+        }
+      }
+    )
+
+    addHandle(FILE_CHANNELS.readBuiltInLayerTable, async (event, requestIdValue: unknown) => {
       requireCurrentMainFrame(event)
-      const window = deps.windowFromSender(event.sender)
-      if (!window) return null
       sessions.track(event.sender)
       const requestId = readIdOf(requestIdValue)
       const abort = sessions.beginRead(event.sender.id, requestId)
       try {
-        const path = await deps.dialogs.pickLayerPath(window)
-        if (path === null || abort.signal.aborted || !isCurrentMainFrame(event)) return null
-        if (isTableFileName(path)) {
-          const table = await readLayerTable(deps.reader, path, abort.signal)
-          return !abort.signal.aborted && isCurrentMainFrame(event)
-            ? { kind: 'table' as const, table }
-            : null
-        }
-        if (!isVolumeFileName(path)) throw new Error('Select a .nii, .nii.gz, or .txt file.')
-        const file = await deps.reader.read(path, path, abort.signal)
-        let table: OpenedLayerTable | null = null
-        let tableError: string | null = null
-        try {
-          table = await readLayerTable(deps.reader, companionTablePath(path), abort.signal)
-        } catch (error) {
-          if (!isMissingFile(error)) {
-            tableError = error instanceof Error ? error.message : 'Could not read the layer table.'
-          }
-        }
+        const table = await readLayerTable(deps.reader, deps.builtInLayerTablePath, abort.signal)
         return !abort.signal.aborted && isCurrentMainFrame(event)
-          ? { kind: 'volume' as const, file, table, tableError }
+          ? { ...table, name: 'FreeSurferColorLUT.txt', path: '' }
           : null
       } catch (error) {
         if (abort.signal.aborted || !isCurrentMainFrame(event)) return null
