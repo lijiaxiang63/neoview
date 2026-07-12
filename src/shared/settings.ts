@@ -12,12 +12,18 @@ export interface SegDefaults {
   brushRadius: number
 }
 
+/** Preferred execution backend for built-in model runs. The run falls back
+ * to the other backend when the preferred one is unavailable. */
+export type ModelBackend = 'webgpu' | 'webgl'
+
 export interface AppSettings {
   /** Frame playback rate for multi-frame volumes. */
   playbackFps: number
   seg: SegDefaults
   /** Whether a newly added labels layer starts with its label list open. */
   expandLabelLists: boolean
+  /** Applied to the next model run; never changes a run in flight. */
+  modelBackend: ModelBackend
 }
 
 export const PLAYBACK_FPS_MIN = 1
@@ -33,6 +39,7 @@ export interface AppSettingsPatch {
   playbackFps?: number
   seg?: Partial<SegDefaults>
   expandLabelLists?: boolean
+  modelBackend?: ModelBackend
 }
 
 export const SETTINGS_CHANNELS = {
@@ -45,7 +52,8 @@ export function defaultAppSettings(): AppSettings {
   return {
     playbackFps: PLAYBACK_FPS_DEFAULT,
     seg: { connectivity: 26, slabDepth: 9, brushRadius: 4 },
-    expandLabelLists: true
+    expandLabelLists: true,
+    modelBackend: 'webgpu'
   }
 }
 
@@ -56,6 +64,10 @@ function clampInt(value: unknown, min: number, max: number, fallback: number): n
 
 function connectivityOf(value: unknown, fallback: 6 | 26): 6 | 26 {
   return value === 6 || value === 26 ? value : fallback
+}
+
+function modelBackendOf(value: unknown, fallback: ModelBackend): ModelBackend {
+  return value === 'webgpu' || value === 'webgl' ? value : fallback
 }
 
 /** Field-by-field fallback: one malformed field never discards the rest. */
@@ -87,7 +99,8 @@ export function parseAppSettings(raw: unknown): AppSettings {
     expandLabelLists:
       typeof record.expandLabelLists === 'boolean'
         ? record.expandLabelLists
-        : defaults.expandLabelLists
+        : defaults.expandLabelLists,
+    modelBackend: modelBackendOf(record.modelBackend, defaults.modelBackend)
   }
 }
 
@@ -122,6 +135,10 @@ export function patchAppSettings(current: AppSettings, patch: unknown): AppSetti
     expandLabelLists:
       typeof record.expandLabelLists === 'boolean'
         ? record.expandLabelLists
-        : current.expandLabelLists
+        : current.expandLabelLists,
+    modelBackend:
+      'modelBackend' in record
+        ? modelBackendOf(record.modelBackend, current.modelBackend)
+        : current.modelBackend
   }
 }

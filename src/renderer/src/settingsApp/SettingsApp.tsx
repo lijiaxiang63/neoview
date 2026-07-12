@@ -8,8 +8,14 @@ import {
   PLAYBACK_FPS_MAX,
   PLAYBACK_FPS_MIN,
   type AppSettings,
-  type AppSettingsPatch
+  type AppSettingsPatch,
+  type ModelBackend
 } from '../../../shared/settings'
+
+const MODEL_BACKENDS: ReadonlyArray<{ id: ModelBackend; label: string }> = [
+  { id: 'webgpu', label: 'WebGPU' },
+  { id: 'webgl', label: 'WebGL' }
+]
 
 function Section({ title, children }: { title: string; children: ReactNode }): JSX.Element {
   return (
@@ -150,6 +156,26 @@ export function SettingsApp(): JSX.Element {
           />
         </div>
         <div className="settings-hint">Applied when a volume loads.</div>
+      </Section>
+
+      <Section title="Model execution">
+        <div className="seg-field">
+          <label>Preferred backend</label>
+          <div className="preset-row settings-inline">
+            {MODEL_BACKENDS.map(({ id, label }) => (
+              <button
+                key={id}
+                className={`preset-btn${settings.modelBackend === id ? ' active' : ''}`}
+                onClick={() => apply({ modelBackend: id })}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        </div>
+        <div className="settings-hint">
+          Falls back to the other backend when unavailable. Applied to the next run.
+        </div>
       </Section>
 
       <Section title="Layers">

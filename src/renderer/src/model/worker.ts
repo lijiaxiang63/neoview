@@ -1,4 +1,6 @@
 import * as tf from '@tensorflow/tfjs'
+// Registers the 'webgpu' backend factory; harmless where WebGPU is absent.
+import '@tensorflow/tfjs-backend-webgpu'
 import { MODEL_ASSETS, modelVariant, type ModelAssetId } from './catalog'
 import {
   cropModelInput,
@@ -11,6 +13,7 @@ import {
 } from './preprocess'
 import { initializeModelBackend, loadVerifiedModel, runModel } from './modelCore'
 import { modelAssetUrls } from './workerAssets'
+import type { ModelBackend } from '../../../shared/settings'
 import type {
   ModelErrorCode,
   ModelProgressStage,
@@ -28,6 +31,9 @@ const post = (message: ModelWorkerResponse, transfer?: Transferable[]): void => 
   self.postMessage(message, transfer ?? [])
 }
 
+// One request per worker (`self.close()` after run), so a single slot is safe.
+let activeBackend: ModelBackend | null = null
+
 function progress(request: ModelWorkerRequest, stage: ModelProgressStage, value: number): void {
   post({
     type: 'progress',
@@ -35,7 +41,8 @@ function progress(request: ModelWorkerRequest, stage: ModelProgressStage, value:
     volumeSession: request.volumeSession,
     variantId: request.variantId,
     stage,
-    progress: Math.max(0, Math.min(1, value))
+    progress: Math.max(0, Math.min(1, value)),
+    backend: activeBackend
   })
 }
 
@@ -94,7 +101,7 @@ async function run(request: ModelWorkerRequest): Promise<void> {
   try {
     const variant = modelVariant(request.variantId)
     const mainSpec = MODEL_ASSETS[variant.assetId]
-    await initializeModelBackend()
+    activeBackend = await initializeModelBackend(request.backend)
 
     const grid = prepareModelGrid(
       request.raw,

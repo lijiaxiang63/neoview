@@ -1,3 +1,4 @@
+import type { ModelBackend } from '../../../shared/settings'
 import type { Volume, VoxelArray } from '../volume/types'
 import type { ModelVariantId } from './catalog'
 import { modelAvailability, type ModelAvailability } from './preprocess'
@@ -19,7 +20,7 @@ export interface ModelWorkerLike {
 export type ModelWorkerFactory = () => ModelWorkerLike
 
 export interface ModelRunCallbacks {
-  progress(value: number, stage: ModelProgressStage): void
+  progress(value: number, stage: ModelProgressStage, backend: ModelBackend | null): void
   complete(labels: Uint8Array, counts: Uint32Array): void
   error(code: ModelErrorCode, message: string): void
 }
@@ -31,6 +32,7 @@ export interface ModelController {
     volumeSession: number,
     variantId: ModelVariantId,
     volume: Volume,
+    backend: ModelBackend,
     callbacks: ModelRunCallbacks
   ): boolean
   cancel(): void
@@ -67,6 +69,7 @@ export class ModelRunner implements ModelController {
     volumeSession: number,
     variantId: ModelVariantId,
     volume: Volume,
+    backend: ModelBackend,
     callbacks: ModelRunCallbacks
   ): boolean {
     if (this.disposed || !this.availability(volume).available) return false
@@ -88,7 +91,8 @@ export class ModelRunner implements ModelController {
         message.variantId !== variantId
       )
         return
-      if (message.type === 'progress') callbacks.progress(message.progress, message.stage)
+      if (message.type === 'progress')
+        callbacks.progress(message.progress, message.stage, message.backend)
       else if (message.type === 'complete') {
         this.release(worker)
         callbacks.complete(message.labels, message.counts)
@@ -108,6 +112,7 @@ export class ModelRunner implements ModelController {
       token,
       volumeSession,
       variantId,
+      backend,
       dims: volume.dims,
       affine: volume.affine.slice(),
       datatypeCode: volume.datatypeCode,

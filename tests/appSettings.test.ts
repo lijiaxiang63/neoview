@@ -14,7 +14,8 @@ describe('parseAppSettings', () => {
     const settings: AppSettings = {
       playbackFps: 12,
       seg: { connectivity: 6, slabDepth: 5, brushRadius: 9 },
-      expandLabelLists: false
+      expandLabelLists: false,
+      modelBackend: 'webgl'
     }
     expect(parseAppSettings(JSON.parse(JSON.stringify(settings)))).toEqual(settings)
   })
@@ -29,7 +30,8 @@ describe('parseAppSettings', () => {
     const parsed = parseAppSettings({
       playbackFps: 'fast',
       seg: { connectivity: 7, slabDepth: 4, brushRadius: Number.NaN },
-      expandLabelLists: 1
+      expandLabelLists: 1,
+      modelBackend: 'metal'
     })
     const defaults = defaultAppSettings()
     expect(parsed).toEqual({
@@ -39,8 +41,16 @@ describe('parseAppSettings', () => {
         slabDepth: 4,
         brushRadius: defaults.seg.brushRadius
       },
-      expandLabelLists: defaults.expandLabelLists
+      expandLabelLists: defaults.expandLabelLists,
+      modelBackend: defaults.modelBackend
     })
+  })
+
+  it('defaults the preferred model backend to webgpu and accepts only known names', () => {
+    expect(defaultAppSettings().modelBackend).toBe('webgpu')
+    expect(parseAppSettings({}).modelBackend).toBe('webgpu')
+    expect(parseAppSettings({ modelBackend: 'webgl' }).modelBackend).toBe('webgl')
+    expect(parseAppSettings({ modelBackend: 'WEBGL' }).modelBackend).toBe('webgpu')
   })
 
   it('clamps and rounds numeric fields', () => {
@@ -65,8 +75,16 @@ describe('patchAppSettings', () => {
     expect(next).toEqual({
       playbackFps: 20,
       seg: { ...base.seg, connectivity: 6 },
-      expandLabelLists: base.expandLabelLists
+      expandLabelLists: base.expandLabelLists,
+      modelBackend: base.modelBackend
     })
+  })
+
+  it('patches the preferred model backend and keeps the current one for junk', () => {
+    expect(patchAppSettings(base, { modelBackend: 'webgl' }).modelBackend).toBe('webgl')
+    const current: AppSettings = { ...base, modelBackend: 'webgl' }
+    expect(patchAppSettings(current, { modelBackend: 'vulkan' }).modelBackend).toBe('webgl')
+    expect(patchAppSettings(current, {}).modelBackend).toBe('webgl')
   })
 
   it('rejects malformed shapes without touching current values', () => {

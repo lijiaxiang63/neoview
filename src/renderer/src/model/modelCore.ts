@@ -1,4 +1,5 @@
 import * as tf from '@tensorflow/tfjs'
+import type { ModelBackend } from '../../../shared/settings'
 import type { ModelAssetSpec, ModelExecution } from './catalog'
 
 interface StoredLayer {
@@ -228,16 +229,40 @@ function spatialChannelNormalization(input: tf.Tensor): tf.Tensor {
 export function highFinalNeedsStreaming(
   spatialDims: readonly number[],
   outputClasses: number,
-  maxTextureSize: number
+  maxStoredElements: number
 ): boolean {
-  if (!(maxTextureSize > 0) || !Number.isFinite(maxTextureSize)) return false
+  if (!(maxStoredElements > 0) || !Number.isFinite(maxStoredElements)) return false
   const outputElements = spatialDims.reduce((product, size) => product * size, outputClasses)
-  return outputElements > maxTextureSize * maxTextureSize
+  return outputElements > maxStoredElements
 }
 
-function currentMaxTextureSize(): number {
+/** WebGPU default binding budget, used only when device limits are unreadable:
+ * streaming a final layer that would have fit is slow but correct. */
+const WEBGPU_FALLBACK_TENSOR_BYTES = 128 * 1024 * 1024
+
+/** Largest float32 element count one tensor may hold on the active backend.
+ * webgl packs tensors into 2D textures (side² cap); webgpu binds storage
+ * buffers, capped by the smaller of the buffer-size and binding-size limits. */
+export function currentMaxStoredElements(
+  backendName: () => string = () => tf.getBackend(),
+  activeBackend: () => unknown = () => tf.backend(),
+  flagNumber: (name: string) => number = (name) => tf.env().getNumber(name)
+): number {
+  if (backendName() === 'webgpu') {
+    const limits = (
+      activeBackend() as {
+        device?: { limits?: { maxBufferSize?: number; maxStorageBufferBindingSize?: number } }
+      }
+    ).device?.limits
+    const bytes = Math.min(
+      limits?.maxBufferSize ?? WEBGPU_FALLBACK_TENSOR_BYTES,
+      limits?.maxStorageBufferBindingSize ?? WEBGPU_FALLBACK_TENSOR_BYTES
+    )
+    return Math.floor(bytes / 4)
+  }
   try {
-    return tf.env().getNumber('WEBGL_MAX_TEXTURE_SIZE')
+    const size = flagNumber('WEBGL_MAX_TEXTURE_SIZE')
+    return size * size
   } catch {
     return Number.POSITIVE_INFINITY
   }
@@ -250,7 +275,7 @@ export async function runModelHigh(
   inputMin = 0,
   inputScale = 1,
   onStep?: (completed: number, total: number) => void,
-  maxTextureSize = currentMaxTextureSize()
+  maxStoredElements = currentMaxStoredElements()
 ): Promise<Uint8Array> {
   let current = inputTensor(input, dims, inputMin, inputScale)
   try {
@@ -258,7 +283,7 @@ export async function runModelHigh(
     const finalLayer = model.layers[finalIndex] as ConvLayerLike
     const config = finalLayer.getConfig() as { filters?: number }
     if (!config.filters) throw new Error('run-failed')
-    const streamFinal = highFinalNeedsStreaming(dims, config.filters, maxTextureSize)
+    const streamFinal = highFinalNeedsStreaming(dims, config.filters, maxStoredElements)
     const standardEnd = streamFinal ? finalIndex : model.layers.length
     const total = standardEnd - 1 + (streamFinal ? config.filters : 0)
     let completed = 0
@@ -527,36 +552,57 @@ export async function runModel(
 }
 
 export async function smokeTestBackend(): Promise<void> {
-  const input = tf.ones([1, 2, 2, 2, 1]) as tf.Tensor5D
-  const filter = tf.ones([1, 1, 1, 1, 1]) as tf.Tensor5D
-  const output = tf.conv3d(input, filter, 1, 'same')
+  let input: tf.Tensor5D | null = null
+  let filter: tf.Tensor5D | null = null
+  let output: tf.Tensor | null = null
   try {
+    input = tf.ones([1, 2, 2, 2, 1]) as tf.Tensor5D
+    filter = tf.ones([1, 1, 1, 1, 1]) as tf.Tensor5D
+    output = tf.conv3d(input, filter, 1, 'same')
     const values = await output.data()
     if (values.length !== 8 || values[0] !== 1) throw new Error('unsupported')
   } finally {
-    input.dispose()
-    filter.dispose()
-    output.dispose()
+    // A synchronous conv3d throw is the missing-kernel case this smoke test
+    // exists for; the broken backend must not keep the probe tensors alive.
+    input?.dispose()
+    filter?.dispose()
+    output?.dispose()
   }
 }
 
+/** Activate the first working backend, preferred one first. Every candidate
+ * must pass the conv3d smoke test before it is trusted, so a backend whose
+ * kernels are missing or broken falls through to the next candidate instead
+ * of failing mid-run. Resolves with the backend that won. */
 export async function initializeModelBackend(
+  preferred: ModelBackend,
   setBackend: (name: string) => Promise<boolean> = tf.setBackend,
   ready: () => Promise<void> = tf.ready,
   smoke: () => Promise<void> = smokeTestBackend,
   enableProduction: () => void = tf.enableProdMode,
   setFlag: (name: string, value: boolean | number) => void = (name, value) =>
     tf.env().set(name, value)
-): Promise<void> {
+): Promise<ModelBackend> {
   try {
     enableProduction()
     setFlag('DEBUG', false)
+    // WebGL flags are set up front regardless of preference: they only take
+    // effect if the chain lands on the webgl candidate.
     setFlag('WEBGL_FORCE_F16_TEXTURES', true)
     setFlag('WEBGL_DELETE_TEXTURE_THRESHOLD', -1)
-    if (!(await setBackend('webgl'))) throw new Error('unsupported')
-    await ready()
-    await smoke()
   } catch {
     throw new Error('unsupported')
   }
+  const chain: ModelBackend[] = preferred === 'webgl' ? ['webgl', 'webgpu'] : ['webgpu', 'webgl']
+  for (const candidate of chain) {
+    try {
+      if (!(await setBackend(candidate))) continue
+      await ready()
+      await smoke()
+      return candidate
+    } catch {
+      // Try the next candidate; only an exhausted chain is unsupported.
+    }
+  }
+  throw new Error('unsupported')
 }

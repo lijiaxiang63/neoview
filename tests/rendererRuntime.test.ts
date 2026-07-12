@@ -520,7 +520,8 @@ describe('renderer runtime event routing', () => {
     h.bridge.getAppSettings.mockResolvedValueOnce({
       playbackFps: 20,
       seg: { connectivity: 6, slabDepth: 3, brushRadius: 7 },
-      expandLabelLists: false
+      expandLabelLists: false,
+      modelBackend: 'webgl'
     })
     h.runtime.init()
     await tick()

@@ -51,9 +51,10 @@ describe('ModelRunner', () => {
       error: vi.fn()
     }
     const source = volume()
-    expect(runner.run(4, 7, 'tissue-high', source, callbacks)).toBe(true)
+    expect(runner.run(4, 7, 'tissue-high', source, 'webgpu', callbacks)).toBe(true)
     expect(worker.request?.raw).not.toBe(source.raw)
     expect(worker.request?.datatypeCode).toBe(2)
+    expect(worker.request?.backend).toBe('webgpu')
     expect(worker.transfer).toHaveLength(2)
     worker.respond({
       type: 'progress',
@@ -61,7 +62,8 @@ describe('ModelRunner', () => {
       volumeSession: 7,
       variantId: 'tissue-high',
       progress: 0.5,
-      stage: 'infer'
+      stage: 'infer',
+      backend: 'webgpu'
     })
     worker.respond({
       type: 'progress',
@@ -69,7 +71,8 @@ describe('ModelRunner', () => {
       volumeSession: 7,
       variantId: 'tissue-low',
       progress: 0.4,
-      stage: 'infer'
+      stage: 'infer',
+      backend: 'webgpu'
     })
     worker.respond({
       type: 'progress',
@@ -77,10 +80,11 @@ describe('ModelRunner', () => {
       volumeSession: 7,
       variantId: 'tissue-high',
       progress: 0.5,
-      stage: 'infer'
+      stage: 'infer',
+      backend: 'webgl'
     })
     expect(callbacks.progress).toHaveBeenCalledTimes(1)
-    expect(callbacks.progress).toHaveBeenCalledWith(0.5, 'infer')
+    expect(callbacks.progress).toHaveBeenCalledWith(0.5, 'infer', 'webgl')
     const labels = new Uint8Array(8)
     worker.respond({
       type: 'complete',
@@ -99,12 +103,13 @@ describe('ModelRunner', () => {
     const runner = new ModelRunner(() => worker)
     const source = volume()
     source.raw = new Uint8Array(new SharedArrayBuffer(8))
-    runner.run(4, 7, 'tissue-high', source, {
+    runner.run(4, 7, 'tissue-high', source, 'webgl', {
       progress: vi.fn(),
       complete: vi.fn(),
       error: vi.fn()
     })
     expect(worker.request?.raw).toBe(source.raw)
+    expect(worker.request?.backend).toBe('webgl')
     expect(worker.transfer).toEqual([worker.request?.affine.buffer])
     runner.dispose()
   })
@@ -116,8 +121,8 @@ describe('ModelRunner', () => {
     const runner = new ModelRunner(() => workers.shift()!)
     const first = { progress: vi.fn(), complete: vi.fn(), error: vi.fn() }
     const second = { progress: vi.fn(), complete: vi.fn(), error: vi.fn() }
-    runner.run(1, 1, 'tissue-high', volume(), first)
-    runner.run(2, 1, 'tissue-low', volume(), second)
+    runner.run(1, 1, 'tissue-high', volume(), 'webgpu', first)
+    runner.run(2, 1, 'tissue-low', volume(), 'webgpu', second)
     expect(firstWorker.terminate).toHaveBeenCalledTimes(1)
     firstWorker.respond({
       type: 'complete',

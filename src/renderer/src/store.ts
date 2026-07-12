@@ -30,6 +30,7 @@ import {
   parseAppSettings,
   PLAYBACK_FPS_DEFAULT,
   type AppSettings,
+  type ModelBackend,
   type SegDefaults
 } from '../../shared/settings'
 
@@ -132,6 +133,8 @@ export interface AppState extends RegionState, RegionActions {
   expandLabelLists: boolean
   /** Segmentation values applied when a volume loads (application setting). */
   segDefaults: SegDefaults
+  /** Preferred model execution backend, applied to the next run. */
+  modelBackend: ModelBackend
 
   startLoading: () => void
   setVolume: (v: Volume, sourcePath?: string | null, settleLoad?: boolean) => void
@@ -360,6 +363,7 @@ function createAppState(
 
   const initialUiPrefs = prefStorage ? loadUiPrefs(prefStorage) : defaultUiPrefs()
   const initialSegDefaults = defaultAppSettings().seg
+  const initialModelBackend = defaultAppSettings().modelBackend
 
   const regionDomain = createRegionDomain({
     get: () => get(),
@@ -370,7 +374,8 @@ function createAppState(
     confirmModelReplace,
     // The domain constructs its initial state before the store state object
     // exists, so the getter must fall back until the first read can succeed.
-    segDefaults: () => (get() as AppState | undefined)?.segDefaults ?? initialSegDefaults
+    segDefaults: () => (get() as AppState | undefined)?.segDefaults ?? initialSegDefaults,
+    modelBackend: () => (get() as AppState | undefined)?.modelBackend ?? initialModelBackend
   })
 
   const state: AppState = {
@@ -404,6 +409,7 @@ function createAppState(
     playbackFps: PLAYBACK_FPS_DEFAULT,
     expandLabelLists: true,
     segDefaults: initialSegDefaults,
+    modelBackend: initialModelBackend,
     ...regionDomain.state,
 
     startLoading: () => set({ loadState: 'loading', errorMessage: null }),
@@ -633,7 +639,8 @@ function createAppState(
       set({
         playbackFps: next.playbackFps,
         expandLabelLists: next.expandLabelLists,
-        segDefaults: next.seg
+        segDefaults: next.seg,
+        modelBackend: next.modelBackend
       })
     }
   }

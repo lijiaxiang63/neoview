@@ -1,3 +1,4 @@
+import type { ModelBackend } from '../../../shared/settings'
 import type { VoxelArray } from '../volume/types'
 import type { ModelVariantId } from './catalog'
 
@@ -21,6 +22,8 @@ export interface ModelRunRequest {
   token: number
   volumeSession: number
   variantId: ModelVariantId
+  /** Preferred execution backend; the worker falls back to the other. */
+  backend: ModelBackend
   dims: [number, number, number]
   affine: Float64Array
   datatypeCode: number
@@ -39,6 +42,8 @@ export type ModelWorkerResponse =
       variantId: ModelVariantId
       progress: number
       stage: ModelProgressStage
+      /** Backend that won the initialization chain; null before it settles. */
+      backend: ModelBackend | null
     }
   | {
       type: 'complete'

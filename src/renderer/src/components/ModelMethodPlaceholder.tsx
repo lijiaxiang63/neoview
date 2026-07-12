@@ -12,6 +12,7 @@ import {
 } from '../model/catalog'
 import { modelAvailability } from '../model/preprocess'
 import type { ModelProgressStage } from '../model/protocol'
+import type { ModelBackend } from '../../../shared/settings'
 import { useStore } from '../store'
 
 const STAGE_LABELS: Readonly<Record<ModelProgressStage, string>> = {
@@ -20,6 +21,11 @@ const STAGE_LABELS: Readonly<Record<ModelProgressStage, string>> = {
   prerequisite: 'Preparing crop',
   infer: 'Running model',
   writeback: 'Building preview'
+}
+
+const BACKEND_LABELS: Readonly<Record<ModelBackend, string>> = {
+  webgpu: 'WebGPU',
+  webgl: 'WebGL'
 }
 
 function formatBytes(value: number): string {
@@ -167,7 +173,10 @@ export function ModelMethodPlaceholder({ onClose }: { onClose: () => void }): JS
       <div className="model-progress-label" aria-live="polite">
         {run.status === 'running' && (
           <>
-            <span>{STAGE_LABELS[run.stage]}</span>
+            <span>
+              {STAGE_LABELS[run.stage]}
+              {run.backend ? ` · ${BACKEND_LABELS[run.backend]}` : ''}
+            </span>
             <span className="mono">{Math.round(run.progress * 100)}%</span>
           </>
         )}

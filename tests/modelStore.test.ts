@@ -3,6 +3,7 @@ import type { ModelController, ModelRunCallbacks } from '../src/renderer/src/mod
 import type { ModelVariantId } from '../src/renderer/src/model/catalog'
 import { createAppStore } from '../src/renderer/src/store'
 import type { Volume } from '../src/renderer/src/volume/types'
+import { defaultAppSettings, type ModelBackend } from '../src/shared/settings'
 
 const IDENTITY = new Float64Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1])
 
@@ -28,6 +29,7 @@ function volume(patch: Partial<Volume> = {}): Volume {
 
 class FakeController implements ModelController {
   callbacks: ModelRunCallbacks | null = null
+  backend: ModelBackend | null = null
   cancel = vi.fn()
   dispose = vi.fn()
 
@@ -40,8 +42,10 @@ class FakeController implements ModelController {
     _volumeSession: number,
     _variantId: ModelVariantId,
     _volume: Volume,
+    backend: ModelBackend,
     callbacks: ModelRunCallbacks
   ): boolean {
+    this.backend = backend
     this.callbacks = callbacks
     return true
   }
@@ -58,9 +62,11 @@ describe('model state ownership', () => {
     store.getState().setVolume(volume())
     store.getState().startModelRun()
     expect(store.getState().modelRun.status).toBe('running')
-    controller.callbacks?.progress(0.5, 'infer')
+    expect(store.getState().modelRun.backend).toBeNull()
+    controller.callbacks?.progress(0.5, 'infer', 'webgl')
     expect(store.getState().modelRun.progress).toBe(0.5)
-    controller.callbacks?.progress(0.25, 'load')
+    expect(store.getState().modelRun.backend).toBe('webgl')
+    controller.callbacks?.progress(0.25, 'load', 'webgl')
     expect(store.getState().modelRun.progress).toBe(0.5)
     expect(store.getState().modelRun.stage).toBe('infer')
     const labels = new Uint8Array([0, 1, 1, 2, 2, 2, 0, 0])
@@ -265,6 +271,24 @@ describe('model state ownership', () => {
     store.getState().commitModelPreview()
     expect(store.getState().modelRun.status).toBe('preview')
     expect(store.getState().segDirty).toBe(false)
+    store.dispose()
+  })
+
+  it('passes the preferred backend setting to each run, defaulting to webgpu', () => {
+    const controller = new FakeController()
+    const store = createAppStore({
+      storage: null,
+      pagehideTarget: null,
+      createModelController: () => controller
+    })
+    store.getState().setVolume(volume())
+    store.getState().startModelRun()
+    expect(controller.backend).toBe('webgpu')
+
+    store.getState().cancelModelRun()
+    store.getState().applyAppSettings({ ...defaultAppSettings(), modelBackend: 'webgl' })
+    store.getState().startModelRun()
+    expect(controller.backend).toBe('webgl')
     store.dispose()
   })
 })

@@ -2,6 +2,7 @@ import { readFile } from 'node:fs/promises'
 import * as tf from '@tensorflow/tfjs'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import {
+  currentMaxStoredElements,
   highFinalNeedsStreaming,
   initializeModelBackend,
   lowFinalInputChunkSize,
@@ -130,9 +131,9 @@ describe('fixed model core', () => {
   })
 
   it('streams a high-memory final layer only when its output exceeds the texture limit', () => {
-    expect(highFinalNeedsStreaming([4, 4, 4], 4, 16)).toBe(false)
-    expect(highFinalNeedsStreaming([4, 4, 4], 5, 16)).toBe(true)
-    expect(highFinalNeedsStreaming([176, 144, 128], 104, 16_384)).toBe(true)
+    expect(highFinalNeedsStreaming([4, 4, 4], 4, 256)).toBe(false)
+    expect(highFinalNeedsStreaming([4, 4, 4], 5, 256)).toBe(true)
+    expect(highFinalNeedsStreaming([176, 144, 128], 104, 16_384 * 16_384)).toBe(true)
     expect(highFinalNeedsStreaming([176, 144, 128], 104, Number.POSITIVE_INFINITY)).toBe(false)
   })
 
@@ -172,20 +173,117 @@ describe('fixed model core', () => {
     expect(tf.memory().numTensors).toBe(before)
   })
 
-  it('classifies backend setup and smoke failures as unsupported', async () => {
+  it('derives the stored-element cap from the active backend', () => {
+    const gpuLimits = (
+      maxBufferSize?: number,
+      maxStorageBufferBindingSize?: number
+    ): (() => unknown) => {
+      return () => ({ device: { limits: { maxBufferSize, maxStorageBufferBindingSize } } })
+    }
+    // webgpu: the smaller of the two byte limits, converted to f32 elements.
+    expect(currentMaxStoredElements(() => 'webgpu', gpuLimits(400, 100))).toBe(25)
+    expect(currentMaxStoredElements(() => 'webgpu', gpuLimits(100, 400))).toBe(25)
+    // webgpu with unreadable limits: the conservative 128 MiB fallback.
+    expect(currentMaxStoredElements(() => 'webgpu', () => ({}))).toBe(33_554_432)
+    // webgl: texture side squared; unreadable flag preserves the no-stream cap.
+    expect(
+      currentMaxStoredElements(
+        () => 'webgl',
+        () => ({}),
+        () => 16_384
+      )
+    ).toBe(16_384 * 16_384)
+    expect(
+      currentMaxStoredElements(
+        () => 'webgl',
+        () => ({}),
+        () => {
+          throw new Error('no context')
+        }
+      )
+    ).toBe(Number.POSITIVE_INFINITY)
+  })
+
+  it('classifies a flag-setup failure as unsupported without trying any candidate', async () => {
+    const attempted: string[] = []
     const failure = initializeModelBackend(
-      async () => true,
+      'webgpu',
+      async (name) => {
+        attempted.push(name)
+        return true
+      },
+      async () => undefined,
+      async () => undefined,
+      () => {
+        throw new Error('production mode failed')
+      }
+    )
+    await expect(failure).rejects.toThrow('unsupported')
+    expect(attempted).toEqual([])
+  })
+
+  it('reports unsupported only after every chain candidate fails', async () => {
+    const attempted: string[] = []
+    const failure = initializeModelBackend(
+      'webgpu',
+      async (name) => {
+        attempted.push(name)
+        return true
+      },
       async () => undefined,
       async () => {
         throw new Error('context failed')
       }
     )
     await expect(failure).rejects.toThrow('unsupported')
+    expect(attempted).toEqual(['webgpu', 'webgl'])
+  })
+
+  it('falls back to the other backend when the preferred one is unavailable', async () => {
+    const chosen = await initializeModelBackend(
+      'webgpu',
+      async (name) => name === 'webgl',
+      async () => undefined,
+      async () => undefined
+    )
+    expect(chosen).toBe('webgl')
+  })
+
+  it('recovers when the preferred backend fails its smoke test', async () => {
+    let active = ''
+    const chosen = await initializeModelBackend(
+      'webgpu',
+      async (name) => {
+        active = name
+        return true
+      },
+      async () => undefined,
+      async () => {
+        if (active === 'webgpu') throw new Error('kernel missing')
+      }
+    )
+    expect(chosen).toBe('webgl')
+  })
+
+  it('honors an explicit webgl preference before trying webgpu', async () => {
+    const attempted: string[] = []
+    const chosen = await initializeModelBackend(
+      'webgl',
+      async (name) => {
+        attempted.push(name)
+        return name === 'webgpu'
+      },
+      async () => undefined,
+      async () => undefined
+    )
+    expect(chosen).toBe('webgpu')
+    expect(attempted).toEqual(['webgl', 'webgpu'])
   })
 
   it('configures the fixed WebGL inference precision before readiness', async () => {
     const calls: string[] = []
     await initializeModelBackend(
+      'webgpu',
       async (name) => {
         calls.push(`backend:${name}`)
         return true
@@ -208,7 +306,7 @@ describe('fixed model core', () => {
       'DEBUG:false',
       'WEBGL_FORCE_F16_TEXTURES:true',
       'WEBGL_DELETE_TEXTURE_THRESHOLD:-1',
-      'backend:webgl',
+      'backend:webgpu',
       'ready',
       'smoke'
     ])

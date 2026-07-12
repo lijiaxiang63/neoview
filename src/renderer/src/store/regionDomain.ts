@@ -51,6 +51,7 @@ import {
   BRUSH_RADIUS_MAX,
   BRUSH_RADIUS_MIN,
   defaultAppSettings,
+  type ModelBackend,
   type SegDefaults
 } from '../../../shared/settings'
 
@@ -93,6 +94,9 @@ export interface ModelRunState {
   variantId: ModelVariantId
   stage: ModelProgressStage
   progress: number
+  /** Backend that actually executes the run (may be the fallback); null
+   * until the worker's initialization chain settles. */
+  backend: ModelBackend | null
   error: string | null
   errorCode: ModelErrorCode | null
   preview: ModelPreview | null
@@ -291,6 +295,7 @@ function initialRegionState(defaults: SegDefaults): RegionState {
       variantId: DEFAULT_MODEL_VARIANT_ID,
       stage: 'prepare',
       progress: 0,
+      backend: null,
       error: null,
       errorCode: null,
       preview: null
@@ -318,9 +323,13 @@ export function createRegionDomain(deps: {
    * a settings change lands on the next load without touching the current
    * session's values. */
   segDefaults?: () => SegDefaults
+  /** Preferred model execution backend. Read lazily at run start so a
+   * settings change applies to the next run, never one in flight. */
+  modelBackend?: () => ModelBackend
 }): RegionDomain {
   const { get, set, timers } = deps
   const segDefaults = deps.segDefaults ?? (() => defaultAppSettings().seg)
+  const modelBackend = deps.modelBackend ?? (() => defaultAppSettings().modelBackend)
   const previewClient = deps.previewClient ?? new PreviewClient()
   const modelController = deps.modelController
   let disposed = false
@@ -614,6 +623,7 @@ export function createRegionDomain(deps: {
     variantId,
     stage: 'prepare',
     progress: 0,
+    backend: null,
     error: null,
     errorCode: null,
     preview: null
@@ -913,6 +923,7 @@ export function createRegionDomain(deps: {
             variantId,
             stage: 'prepare',
             progress: 0,
+            backend: null,
             error: availability.reason ?? 'Model execution is unavailable.',
             errorCode: null,
             preview: null
@@ -929,6 +940,7 @@ export function createRegionDomain(deps: {
           variantId,
           stage: 'prepare',
           progress: 0,
+          backend: null,
           error: null,
           errorCode: null,
           preview: null
@@ -946,13 +958,13 @@ export function createRegionDomain(deps: {
           next.modelRun.status === 'running'
         )
       }
-      const started = modelController.run(token, volumeSession, variantId, volume, {
-        progress: (progress, stage) => {
+      const started = modelController.run(token, volumeSession, variantId, volume, modelBackend(), {
+        progress: (progress, stage, backend) => {
           if (current()) {
             set((next) =>
               progress < next.modelRun.progress
                 ? next
-                : { modelRun: { ...next.modelRun, progress, stage } }
+                : { modelRun: { ...next.modelRun, progress, stage, backend } }
             )
           }
         },

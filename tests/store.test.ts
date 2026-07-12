@@ -283,12 +283,14 @@ describe('application settings', () => {
     useStore.getState().applyAppSettings({
       playbackFps: 99,
       seg: { connectivity: 6, slabDepth: 0, brushRadius: 500 },
-      expandLabelLists: false
+      expandLabelLists: false,
+      modelBackend: 'webgl'
     })
     const s = useStore.getState()
     expect(s.playbackFps).toBe(30)
     expect(s.expandLabelLists).toBe(false)
     expect(s.segDefaults).toEqual({ connectivity: 6, slabDepth: 1, brushRadius: 30 })
+    expect(s.modelBackend).toBe('webgl')
   })
 
   it('applies segmentation defaults on the next volume load, not retroactively', () => {
@@ -297,7 +299,8 @@ describe('application settings', () => {
     useStore.getState().applyAppSettings({
       playbackFps: 8,
       seg: { connectivity: 6, slabDepth: 5, brushRadius: 2 },
-      expandLabelLists: true
+      expandLabelLists: true,
+      modelBackend: 'webgpu'
     })
     // The active session keeps its values…
     let s = useStore.getState()
@@ -318,7 +321,8 @@ describe('application settings', () => {
     owned.getState().applyAppSettings({
       playbackFps: 20,
       seg: { connectivity: 6, slabDepth: 5, brushRadius: 2 },
-      expandLabelLists: false
+      expandLabelLists: false,
+      modelBackend: 'webgl'
     })
     expect(owned.getState().playbackFps).toBe(8)
   })
