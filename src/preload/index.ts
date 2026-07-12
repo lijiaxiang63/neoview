@@ -1,4 +1,4 @@
-import { contextBridge, ipcRenderer, webUtils } from 'electron'
+import { contextBridge, ipcRenderer, webUtils, type IpcRendererEvent } from 'electron'
 import type {
   ExportRequest,
   ExportResult,
@@ -139,8 +139,8 @@ const api = {
     return () => ipcRenderer.removeListener('open-folder-request', listener)
   },
   /** File > Add Layer… was chosen. */
-  onAddLayerRequest: (cb: () => void): (() => void) => {
-    const listener = (): void => cb()
+  onAddLayerRequest: (cb: (triggeredByAccelerator: boolean) => void): (() => void) => {
+    const listener = (_event: IpcRendererEvent, value: unknown): void => cb(value === true)
     ipcRenderer.on('add-layer-request', listener)
     return () => ipcRenderer.removeListener('add-layer-request', listener)
   },

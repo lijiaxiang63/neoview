@@ -505,6 +505,27 @@ describe('renderer runtime lifecycle', () => {
 })
 
 describe('renderer runtime event routing', () => {
+  it('keeps text selection native when the macOS menu accelerator fires', async () => {
+    const h = runtimeHarness()
+    h.store.getState().setVolume(volume())
+    h.runtime.init()
+
+    h.document.activeElement = { tagName: 'textarea' }
+    h.bridge.emit('add-layer', true)
+    expect(h.document.execCommand).toHaveBeenCalledWith('selectAll')
+    expect(h.bridge.openOverlayDialog).not.toHaveBeenCalled()
+
+    h.document.activeElement = { tagName: 'input', type: 'range' }
+    h.bridge.emit('add-layer', true)
+    await tick()
+    expect(h.bridge.openOverlayDialog).toHaveBeenCalledTimes(1)
+
+    h.document.activeElement = { tagName: 'textarea' }
+    h.bridge.emit('add-layer', false)
+    await tick()
+    expect(h.bridge.openOverlayDialog).toHaveBeenCalledTimes(2)
+  })
+
   it('routes file, overlay, error, scan batch, and panel IPC events', () => {
     const h = runtimeHarness()
     h.runtime.init()
@@ -858,9 +879,11 @@ describe('renderer runtime event routing', () => {
     })
     h.runtime.init()
     h.bridge.emit('undo')
+    h.bridge.emit('add-layer', true)
     h.window.dispatch('keydown', { key: 'Enter', target: null, preventDefault: vi.fn() })
     h.window.dispatch('keydown', { key: 'ArrowDown', target: null, preventDefault: vi.fn() })
     expect(undo).not.toHaveBeenCalled()
+    expect(h.bridge.openOverlayDialog).not.toHaveBeenCalled()
     expect(commitPreview).not.toHaveBeenCalled()
     expect(h.ownedCoordinator.navigate).not.toHaveBeenCalled()
   })

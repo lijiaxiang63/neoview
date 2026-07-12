@@ -35,7 +35,7 @@ import { sendIfAlive, windowContentsIfAlive } from './windowLifecycle'
 import { createApplicationWindow } from './applicationWindow'
 import { OpenIntentIssuer } from '../shared/openIntents'
 import { shouldCreateWindowOnActivate, shouldQuitAfterAllWindowsClosed } from './appLifecycle'
-import { createApplicationMenuTemplate } from './menu'
+import { addLayerMenuTarget, createApplicationMenuTemplate } from './menu'
 import { installLaunchFileRouting } from './launchFiles'
 import { createAppSettingsStore } from './appSettings'
 import { registerSettingsIpc } from './settingsIpc'
@@ -417,9 +417,9 @@ async function sendBuiltinFile(
 }
 
 function buildMenu(getWindow: () => BrowserWindow | null): void {
-  const sendToWindow = (channel: string): void => {
+  const sendToWindow = (channel: string, ...args: unknown[]): void => {
     const window = getWindow()
-    if (window) sendIfAlive(window, channel)
+    if (window) sendIfAlive(window, channel, ...args)
   }
   app.setAboutPanelOptions({
     applicationName: app.name,
@@ -471,7 +471,25 @@ function buildMenu(getWindow: () => BrowserWindow | null): void {
         })()
       },
       openFolder: () => sendToWindow('open-folder-request'),
-      addLayer: () => sendToWindow('add-layer-request'),
+      addLayer: (triggeredByAccelerator, targetWindow) => {
+        const applicationWindow = getWindow()
+        if (
+          addLayerMenuTarget(triggeredByAccelerator, targetWindow, applicationWindow) ===
+          'select-all'
+        ) {
+          if (
+            targetWindow instanceof BrowserWindow &&
+            !targetWindow.isDestroyed() &&
+            !targetWindow.webContents.isDestroyed()
+          ) {
+            targetWindow.webContents.selectAll()
+          }
+          return
+        }
+        if (applicationWindow) {
+          sendIfAlive(applicationWindow, 'add-layer-request', triggeredByAccelerator)
+        }
+      },
       openRecent: (path) => void openRecent(path),
       clearRecent: () => {
         recentFiles = []

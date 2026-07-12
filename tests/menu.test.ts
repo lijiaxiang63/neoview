@@ -1,5 +1,9 @@
 import { describe, expect, it, vi } from 'vitest'
-import { createApplicationMenuTemplate, type ApplicationMenuOptions } from '../src/main/menu'
+import {
+  addLayerMenuTarget,
+  createApplicationMenuTemplate,
+  type ApplicationMenuOptions
+} from '../src/main/menu'
 
 function options(isMac: boolean): ApplicationMenuOptions {
   const action = vi.fn()
@@ -90,17 +94,30 @@ describe('application menu template', () => {
     expect(settings.accelerator).toBe('CmdOrCtrl+,')
   })
 
-  it('adds a volume-gated Add Layer command without taking the text accelerator', () => {
+  it('shows the Add Layer accelerator without registering it outside macOS', () => {
     const input = options(true)
     const template = createApplicationMenuTemplate(input)
     const fileItems = template.find((item) => item.label === 'File')!
       .submenu as Electron.MenuItemConstructorOptions[]
     const addLayer = fileItems.find((item) => item.id === 'file-add-layer')!
 
-    expect(addLayer).toMatchObject({ label: 'Add Layer…', enabled: true })
-    expect(addLayer.accelerator).toBeUndefined()
-    addLayer.click?.({} as never, {} as never, {} as never)
-    expect(input.actions.addLayer).toHaveBeenCalledTimes(1)
+    expect(addLayer).toMatchObject({
+      label: 'Add Layer…',
+      accelerator: 'CmdOrCtrl+A',
+      registerAccelerator: true,
+      enabled: true
+    })
+    const targetWindow = {} as Electron.BaseWindow
+    addLayer.click?.({} as never, targetWindow, { triggeredByAccelerator: true })
+    expect(input.actions.addLayer).toHaveBeenCalledWith(true, targetWindow)
+
+    const otherFileItems = createApplicationMenuTemplate(options(false)).find(
+      (item) => item.label === 'File'
+    )!.submenu as Electron.MenuItemConstructorOptions[]
+    expect(otherFileItems.find((item) => item.id === 'file-add-layer')).toMatchObject({
+      accelerator: 'CmdOrCtrl+A',
+      registerAccelerator: false
+    })
 
     input.viewState.hasVolume = false
     const disabled = createApplicationMenuTemplate(input).find((item) => item.label === 'File')!
@@ -110,6 +127,15 @@ describe('application menu template', () => {
       (item) => item.label === 'Edit'
     )!.submenu as Electron.MenuItemConstructorOptions[]
     expect(editItems.some((item) => item.role === 'selectAll')).toBe(false)
+  })
+
+  it('keeps an auxiliary window accelerator in that window', () => {
+    const applicationWindow = {} as Electron.BaseWindow
+    const auxiliaryWindow = {} as Electron.BaseWindow
+
+    expect(addLayerMenuTarget(true, applicationWindow, applicationWindow)).toBe('add-layer')
+    expect(addLayerMenuTarget(true, auxiliaryWindow, applicationWindow)).toBe('select-all')
+    expect(addLayerMenuTarget(false, auxiliaryWindow, applicationWindow)).toBe('add-layer')
   })
 
   it('offers only the explicit update check — the automatic toggle lives in settings', () => {

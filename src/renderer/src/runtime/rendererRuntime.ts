@@ -23,6 +23,7 @@ import {
   discardWarning,
   dropTargetAt,
   ipcErrorMessage,
+  isTextEntry,
   keyCommand,
   menuHistoryTarget,
   sameViewMenuSnapshot,
@@ -50,7 +51,7 @@ export interface RendererBridge {
   onOverlayOpenError(callback: (openId: number, message: string) => void): () => void
   onFileOpenError(callback: (message: string, intent?: number) => void): () => void
   onOpenFolderRequest(callback: () => void): () => void
-  onAddLayerRequest(callback: () => void): () => void
+  onAddLayerRequest(callback: (triggeredByAccelerator: boolean) => void): () => void
   onShowShortcuts(callback: () => void): () => void
   onMenuUndo(callback: () => void): () => void
   onMenuRedo(callback: () => void): () => void
@@ -652,8 +653,15 @@ class OwnedRendererRuntime implements RendererRuntime {
       })
     )
     keep(
-      bridge.onAddLayerRequest(() => {
-        if (this.active && store.getState().volume) void this.addOverlayDialog()
+      bridge.onAddLayerRequest((triggeredByAccelerator) => {
+        if (!this.active) return
+        const state = store.getState()
+        if (state.shortcutsOpen) return
+        if (triggeredByAccelerator && isTextEntry(this.deps.documentTarget.activeElement)) {
+          this.deps.documentTarget.execCommand('selectAll')
+          return
+        }
+        if (state.volume) void this.addOverlayDialog()
       })
     )
     keep(

@@ -1,4 +1,4 @@
-import type { MenuItemConstructorOptions } from 'electron'
+import type { BaseWindow, MenuItemConstructorOptions } from 'electron'
 import type { ViewMenuState } from '../shared/files'
 
 export interface ApplicationMenuOptions {
@@ -9,7 +9,7 @@ export interface ApplicationMenuOptions {
   actions: {
     openFile(): void
     openFolder(): void
-    addLayer(): void
+    addLayer(triggeredByAccelerator: boolean, targetWindow: BaseWindow | undefined): void
     openRecent(path: string): void
     clearRecent(): void
     openBuiltinBase(): void
@@ -94,13 +94,17 @@ export function createApplicationMenuTemplate(
           accelerator: 'CmdOrCtrl+Shift+O',
           click: actions.openFolder
         },
+        { label: 'Open Recent', submenu: recents },
+        { type: 'separator' },
         {
           id: 'file-add-layer',
           label: 'Add Layer…',
+          accelerator: 'CmdOrCtrl+A',
+          registerAccelerator: isMac,
           enabled: viewState.hasVolume,
-          click: actions.addLayer
+          click: (_item, window, event) =>
+            actions.addLayer(event.triggeredByAccelerator === true, window)
         },
-        { label: 'Open Recent', submenu: recents },
         { type: 'separator' },
         { label: 'Open Built-in Volume', click: actions.openBuiltinBase },
         { label: 'Open Built-in Overlay', click: actions.openBuiltinOverlay },
@@ -188,4 +192,14 @@ export function createApplicationMenuTemplate(
           ]
         }
   ]
+}
+
+export function addLayerMenuTarget(
+  triggeredByAccelerator: boolean,
+  targetWindow: BaseWindow | undefined,
+  applicationWindow: BaseWindow | null
+): 'add-layer' | 'select-all' {
+  return triggeredByAccelerator && targetWindow !== undefined && targetWindow !== applicationWindow
+    ? 'select-all'
+    : 'add-layer'
 }
