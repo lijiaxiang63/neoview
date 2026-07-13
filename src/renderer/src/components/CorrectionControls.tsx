@@ -1,5 +1,6 @@
-import { type JSX } from 'react'
+import { useState, type JSX } from 'react'
 import { CollapsibleSection } from './CollapsibleSection'
+import { CorrectionGuide } from './CorrectionGuide'
 import { NumberField } from './NumberField'
 import { fmt } from '../format'
 import { useStore } from '../store'
@@ -46,6 +47,7 @@ export function CorrectionControls({
   onExport: () => void
 }): JSX.Element {
   const cfg = layer.correction
+  const [guideOpen, setGuideOpen] = useState(false)
 
   const setConfig = (partial: Partial<CorrectionConfig>): void => {
     if (!cfg) return
@@ -64,16 +66,27 @@ export function CorrectionControls({
 
   return (
     <CollapsibleSection title="Correction" defaultOpen={true}>
-      <label className="corr-check">
-        <input
-          type="checkbox"
-          checked={cfg !== null}
-          onChange={() =>
-            onPatch({ correction: cfg ? null : defaultCorrectionConfig(layer.volume.statistic) })
-          }
-        />
-        <span>Multiple-comparison correction</span>
-      </label>
+      <div className="corr-head-row">
+        <label className="corr-check">
+          <input
+            type="checkbox"
+            checked={cfg !== null}
+            onChange={() =>
+              onPatch({ correction: cfg ? null : defaultCorrectionConfig(layer.volume.statistic) })
+            }
+          />
+          <span>Multiple-comparison correction</span>
+        </label>
+        <button
+          className="corr-help-btn"
+          title="About correction"
+          aria-label="About correction"
+          onClick={() => setGuideOpen(true)}
+        >
+          ?
+        </button>
+      </div>
+      {guideOpen && <CorrectionGuide onClose={() => setGuideOpen(false)} />}
 
       {cfg && (
         <>

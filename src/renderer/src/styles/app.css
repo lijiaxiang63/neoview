@@ -775,6 +775,40 @@ body {
   color: var(--text-2);
 }
 
+.corr-head-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+/* The checkbox row carries its own top margin standalone; inside the head row
+   the flex container owns the spacing so the label stays vertically centered. */
+.corr-head-row .corr-check {
+  margin-top: 0;
+}
+
+.corr-help-btn {
+  flex: none;
+  appearance: none;
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  background: var(--bg-2);
+  color: var(--text-2);
+  width: 18px;
+  height: 18px;
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0;
+}
+
+.corr-help-btn:hover {
+  color: var(--text-0);
+  border-color: var(--accent-strong);
+}
+
 .cluster-list {
   max-height: clamp(140px, 34vh, 420px);
   overflow-y: auto;
@@ -1928,7 +1962,8 @@ button.cluster-row:hover {
   backdrop-filter: blur(2px);
 }
 
-.shortcuts-panel {
+.shortcuts-panel,
+.corr-guide-panel {
   width: min(640px, calc(100% - 48px));
   max-height: calc(100% - 64px);
   overflow-y: auto;
@@ -1942,18 +1977,21 @@ button.cluster-row:hover {
 /* The panel is focused programmatically on open (to pull activation keys off
    whatever was focused behind the modal); it isn't an interactive control, so
    no focus ring. */
-.shortcuts-panel:focus {
+.shortcuts-panel:focus,
+.corr-guide-panel:focus {
   outline: none;
 }
 
-.shortcuts-panel header {
+.shortcuts-panel header,
+.corr-guide-panel header {
   display: flex;
   align-items: center;
   justify-content: space-between;
   margin-bottom: 14px;
 }
 
-.shortcuts-panel h2 {
+.shortcuts-panel h2,
+.corr-guide-panel h2 {
   font-size: 14px;
   font-weight: 600;
   color: var(--text-0);
@@ -1980,7 +2018,8 @@ button.cluster-row:hover {
   gap: 18px 28px;
 }
 
-.shortcuts-grid h3 {
+.shortcuts-grid h3,
+.corr-guide-body h3 {
   font-size: 11px;
   font-weight: 600;
   text-transform: uppercase;
@@ -2006,6 +2045,60 @@ button.cluster-row:hover {
 .shortcut-row dd {
   color: var(--text-1);
   font-size: 12px;
+}
+
+/* ---------- Correction guide modal ---------- */
+
+/* Fixed (not absolute like the root-mounted shortcuts backdrop): this modal
+   mounts deep inside the side panel, so it must anchor to the viewport. */
+.corr-guide-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--scrim);
+  backdrop-filter: blur(2px);
+}
+
+.corr-guide-body {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.corr-guide-lead {
+  color: var(--text-1);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.corr-guide-row {
+  display: grid;
+  grid-template-columns: 152px 1fr;
+  gap: 6px 14px;
+  align-items: baseline;
+  padding: 3px 0;
+}
+
+.corr-guide-row dt {
+  color: var(--accent-strong);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.corr-guide-row dd {
+  color: var(--text-1);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+@media (max-width: 520px) {
+  .corr-guide-row {
+    grid-template-columns: 1fr;
+    gap: 2px;
+  }
 }
 
 /* ---------- Scrollbars ---------- */
