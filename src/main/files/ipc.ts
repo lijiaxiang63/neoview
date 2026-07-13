@@ -60,6 +60,8 @@ export interface FileIpcDependencies {
   access: FileAccessAuthorizer
   dialogs: FileDialogs
   builtInLayerTablePath: string
+  /** Bundled atlas id → { label-volume path, name-table path }. */
+  atlasPaths: Record<string, { volume: string; table: string }>
   reader: FileReader
   scanner: FolderScanner
   exporter: ExportService
@@ -282,6 +284,27 @@ export function registerFileIpc(deps: FileIpcDependencies): () => void {
         const table = await readLayerTable(deps.reader, deps.builtInLayerTablePath, abort.signal)
         return !abort.signal.aborted && isCurrentMainFrame(event)
           ? { ...table, name: 'FreeSurferColorLUT.txt', path: '' }
+          : null
+      } catch (error) {
+        if (abort.signal.aborted || !isCurrentMainFrame(event)) return null
+        throw error
+      } finally {
+        sessions.finishRead(event.sender.id, requestId, abort)
+      }
+    })
+
+    addHandle(FILE_CHANNELS.readAtlas, async (event, requestIdValue: unknown, atlasIdValue: unknown) => {
+      requireCurrentMainFrame(event)
+      sessions.track(event.sender)
+      const requestId = readIdOf(requestIdValue)
+      const abort = sessions.beginRead(event.sender.id, requestId)
+      try {
+        const paths = typeof atlasIdValue === 'string' ? deps.atlasPaths[atlasIdValue] : undefined
+        if (!paths) return null
+        const volume = await deps.reader.read(paths.volume, paths.volume, abort.signal)
+        const table = await readLayerTable(deps.reader, paths.table, abort.signal)
+        return !abort.signal.aborted && isCurrentMainFrame(event)
+          ? { bytes: volume.bytes, table: table.text }
           : null
       } catch (error) {
         if (abort.signal.aborted || !isCurrentMainFrame(event)) return null

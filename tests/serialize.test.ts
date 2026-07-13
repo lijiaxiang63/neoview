@@ -44,6 +44,24 @@ describe('serializeVolume', () => {
     expect(vol.stats.dataMax).toBe(1)
   })
 
+  it('round-trips a float32 statistic map', () => {
+    const data = new Float32Array(2 * 3 * 4)
+    for (let i = 0; i < data.length; i++) data[i] = (i - 6) * 0.25
+    const buf = serializeVolume({
+      dims: [2, 3, 4],
+      spacing: [2, 2, 3],
+      affine: AFFINE,
+      datatypeCode: 16,
+      data
+    })
+    const vol = parseVolume('floatmap', buf)
+    expect(vol.datatypeName).toBe('float32')
+    expect(vol.datatypeCode).toBe(16)
+    expect(vol.slope).toBe(1)
+    expect([...vol.affine]).toEqual([...AFFINE])
+    expect([...(vol.raw as Float32Array)]).toEqual([...data])
+  })
+
   it('rejects data whose length does not match the extent', () => {
     expect(() =>
       serializeVolume({

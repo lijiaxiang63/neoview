@@ -10,6 +10,24 @@ export type VoxelArray =
 
 export type TransformSource = 'rows' | 'quaternion' | 'spacing-fallback'
 
+/** What the voxel values represent, when the header (or a tool's metadata)
+ * declares it: a Student-t, standard-normal (z), F, or p statistic. */
+export type StatisticKind = 't' | 'z' | 'f' | 'p'
+
+export interface StatisticInfo {
+  kind: StatisticKind
+  /** Degrees of freedom (t, F numerator); null when unknown. */
+  dof1: number | null
+  /** F denominator degrees of freedom; null otherwise. */
+  dof2: number | null
+}
+
+/** Spatial-smoothness metadata declared by a tool, in a neutral form. */
+export interface SmoothnessInfo {
+  dLh: number
+  fwhm: [number, number, number]
+}
+
 export interface VolumeStats {
   /** All in scaled units (raw * slope + inter). */
   dataMin: number
@@ -40,6 +58,10 @@ export interface Volume {
   suggestedRange: { lo: number; hi: number } | null
   /** Embedded label-name table keyed by voxel value, if the file carries one. */
   labels: Map<number, string> | null
+  /** Statistic descriptor from the header/tool metadata, if declared. */
+  statistic: StatisticInfo | null
+  /** Spatial-smoothness metadata from a tool, if declared. */
+  smoothness: SmoothnessInfo | null
   stats: VolumeStats
 }
 

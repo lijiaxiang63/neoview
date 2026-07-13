@@ -146,6 +146,7 @@ function makeDependencies(
       })
     },
     builtInLayerTablePath: '/built-in/table.txt',
+    atlasPaths: {},
     scanner: {
       scan: async (root, onBatch) => {
         const files = [file(root)]
@@ -707,7 +708,7 @@ describe('file IPC registration', () => {
     await ipc.invoke('scan-folder', sender, '/root', 1)
 
     expect(() => registerFileIpc(deps)).toThrow('duplicate handler')
-    expect(ipc.handlers.size).toBe(11)
+    expect(ipc.handlers.size).toBe(12)
     expect(ipc.listenerCount()).toBe(6)
     expect(access.activeRoot(sender.id)).toBe(resolve('/root'))
     expect(sender.listenerCount('did-navigate')).toBe(1)

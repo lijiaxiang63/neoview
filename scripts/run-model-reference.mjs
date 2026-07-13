@@ -279,7 +279,9 @@ async function runVariant(session, variant) {
   await waitFor(
     session,
     (current) =>
-      current.buttons.some((button) => button.text === 'Export label map' && !button.disabled),
+      current.buttons.some(
+        (button) => button.text === 'Export to Layer & Clear' && !button.disabled
+      ),
     `commit ${variant.id}`
   )
 }
@@ -362,7 +364,7 @@ async function installGeneratedPair(generated, label, table, force) {
 
 async function exportVariant(session, inputPath, output, variant, force) {
   const before = await exportFilesIn(inputPath)
-  await clickButton(session, 'Export label map')
+  await clickButton(session, 'Export to Layer & Clear')
   const generated = await waitForExport(inputPath, before)
   const dir = join(output, 'candidate', modelReferenceSampleKey(inputPath))
   const labelExtension = generated.label.endsWith('.nii.gz') ? '.nii.gz' : '.nii'

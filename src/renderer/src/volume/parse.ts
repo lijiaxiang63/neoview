@@ -1,9 +1,18 @@
 import { buildAffine } from './affine'
 import { computeStats } from './stats'
-import { ParseError, type Volume, type VoxelArray } from './types'
+import {
+  ParseError,
+  type SmoothnessInfo,
+  type StatisticInfo,
+  type StatisticKind,
+  type Volume,
+  type VoxelArray
+} from './types'
 
 // 348-byte v1 header byte offsets (spec identifiers, not user-facing).
 const OFF_SIZEOF_HDR = 0
+const OFF_INTENT_P1 = 56
+const OFF_INTENT_P2 = 60
 const OFF_DIM = 40
 const OFF_INTENT_CODE = 68
 const OFF_DATATYPE = 70
@@ -14,6 +23,8 @@ const OFF_SCL_SLOPE = 112
 const OFF_SCL_INTER = 116
 const OFF_CAL_MAX = 124
 const OFF_CAL_MIN = 128
+const OFF_DESCRIP = 148
+const DESCRIP_SIZE = 80
 const OFF_QFORM_CODE = 252
 const OFF_SFORM_CODE = 254
 const OFF_QUATERN = 256
@@ -26,6 +37,20 @@ const OFF_MAGIC = 344
 const HEADER_SIZE = 348
 const MIN_FILE_SIZE = 352
 const INTENT_LABEL = 1002
+
+// NIfTI-1 statistic intent codes → neutral kind. intent_p1/p2 carry the degrees
+// of freedom for the parameterized ones.
+const STAT_INTENT_KINDS: Record<number, StatisticKind> = {
+  3: 't', // Student-t: p1 = dof
+  4: 'f', // F: p1 = numerator dof, p2 = denominator dof
+  5: 'z', // standard normal
+  22: 'p' // p-value
+}
+
+/** Metadata some tools embed in the 80-byte description field, of the form
+ * `<tool>{T_[dof]}{dLh_<value>}{FWHMx_<x> FWHMy_<y> FWHMz_<z> mm}`. */
+const DESCRIP_META_RE =
+  /\{T_\[([0-9.]+)\]\}(?:\{dLh_([0-9.eE+-]+)\})?(?:\{FWHMx_([0-9.]+)\s+FWHMy_([0-9.]+)\s+FWHMz_([0-9.]+)\s*mm\})?/
 
 interface DatatypeInfo {
   ctor: new (buf: ArrayBuffer, byteOffset?: number, length?: number) => VoxelArray
@@ -105,16 +130,16 @@ export interface SerializeOptions {
   spacing: [number, number, number]
   /** Row-major 4x4 voxel-to-world matrix; its three rows are written out. */
   affine: Float64Array
-  /** 2 (uint8) or 512 (uint16). */
-  datatypeCode: 2 | 512
-  data: Uint8Array | Uint16Array
+  /** 2 (uint8), 512 (uint16), or 16 (float32). */
+  datatypeCode: 2 | 512 | 16
+  data: Uint8Array | Uint16Array | Float32Array
 }
 
 /**
  * Build a complete single-file volume buffer (uncompressed): 348-byte v1
  * header, little-endian, matrix-rows transform, data at offset 352. The
- * inverse of parseVolume for the subset this app writes (3D integer data,
- * identity value scaling).
+ * inverse of parseVolume for the subset this app writes (3D integer or float32
+ * data, identity value scaling).
  */
 export function serializeVolume(opts: SerializeOptions): ArrayBuffer {
   const dtype = DATATYPES[opts.datatypeCode]
@@ -149,12 +174,66 @@ export function serializeVolume(opts: SerializeOptions): ArrayBuffer {
   dv.setUint8(OFF_MAGIC + 2, 0x31) // 1
   dv.setUint8(OFF_MAGIC + 3, 0)
 
-  if (opts.data instanceof Uint16Array) {
+  if (opts.data instanceof Float32Array) {
+    new Float32Array(buf, MIN_FILE_SIZE, opts.data.length).set(opts.data)
+  } else if (opts.data instanceof Uint16Array) {
     new Uint16Array(buf, MIN_FILE_SIZE, opts.data.length).set(opts.data)
   } else {
     new Uint8Array(buf, MIN_FILE_SIZE, opts.data.length).set(opts.data)
   }
   return buf
+}
+
+function readDescrip(dv: DataView): string {
+  let text = new TextDecoder('latin1').decode(
+    new Uint8Array(dv.buffer, dv.byteOffset + OFF_DESCRIP, DESCRIP_SIZE)
+  )
+  const nul = text.indexOf('\0')
+  if (nul !== -1) text = text.slice(0, nul)
+  return text
+}
+
+function positiveOrNull(v: number): number | null {
+  return Number.isFinite(v) && v > 0 ? v : null
+}
+
+/**
+ * Neutral statistic + smoothness descriptors from the header: NIfTI intent
+ * fields first, refined by any tool metadata embedded in the description field
+ * (`<tool>{T_[dof]}{dLh_…}{FWHMx_… mm}`). The raw field names stay confined here.
+ */
+function parseStatMetadata(
+  dv: DataView,
+  le: boolean
+): { statistic: StatisticInfo | null; smoothness: SmoothnessInfo | null } {
+  let descripDof: number | null = null
+  let smoothness: SmoothnessInfo | null = null
+  const meta = DESCRIP_META_RE.exec(readDescrip(dv))
+  if (meta) {
+    descripDof = positiveOrNull(Number(meta[1]))
+    if (meta[2] !== undefined) {
+      const dLh = Number(meta[2])
+      if (Number.isFinite(dLh) && dLh > 0) {
+        const fwhm: [number, number, number] =
+          meta[3] !== undefined
+            ? [Number(meta[3]), Number(meta[4]), Number(meta[5])]
+            : [0, 0, 0]
+        smoothness = { dLh, fwhm }
+      }
+    }
+  }
+
+  const kind = STAT_INTENT_KINDS[dv.getInt16(OFF_INTENT_CODE, le)] ?? null
+  let statistic: StatisticInfo | null = null
+  if (kind) {
+    let dof1 = kind === 't' || kind === 'f' ? positiveOrNull(dv.getFloat32(OFF_INTENT_P1, le)) : null
+    const dof2 = kind === 'f' ? positiveOrNull(dv.getFloat32(OFF_INTENT_P2, le)) : null
+    if (kind === 't' && dof1 === null) dof1 = descripDof
+    statistic = { kind, dof1, dof2 }
+  } else if (descripDof !== null) {
+    statistic = { kind: 't', dof1: descripDof, dof2: null }
+  }
+  return { statistic, smoothness }
 }
 
 export function parseVolume(name: string, buf: ArrayBuffer): Volume {
@@ -290,6 +369,7 @@ export function parseVolume(name: string, buf: ArrayBuffer): Volume {
       : null
 
   const stats = computeStats(raw, slope, inter, datatypeCode)
+  const { statistic, smoothness } = parseStatMetadata(dv, le)
 
   return {
     name,
@@ -305,6 +385,8 @@ export function parseVolume(name: string, buf: ArrayBuffer): Volume {
     transformSource,
     suggestedRange,
     labels: parseLabelTable(buf),
+    statistic,
+    smoothness,
     stats
   }
 }

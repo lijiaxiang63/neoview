@@ -48,6 +48,13 @@ export function buildVolume(opts) {
   const spacing = opts.spacing ?? [1, 1, 1]
   for (let i = 0; i < 3; i++) dv.setFloat32(80 + i * 4, spacing[i], le)
   if (nt > 1) dv.setFloat32(92, 1, le)
+  if (opts.intentP1 !== undefined) dv.setFloat32(56, opts.intentP1, le)
+  if (opts.intentP2 !== undefined) dv.setFloat32(60, opts.intentP2, le)
+  if (opts.intentCode !== undefined) dv.setInt16(68, opts.intentCode, le)
+  if (opts.descrip) {
+    const bytes = new TextEncoder().encode(opts.descrip).subarray(0, 79)
+    new Uint8Array(buf, 148, bytes.length).set(bytes)
+  }
   if (table) dv.setInt16(68, 1002, le)
   dv.setFloat32(108, dataOffset, le)
   dv.setFloat32(112, opts.slope ?? 0, le)
@@ -220,6 +227,29 @@ if (isMain) {
         dtype: 'float32',
         rowTransform: identityRowTransform(10, 20, 30),
         value: (i, j, k) => (i - 32) * Math.exp(-((j - 32) ** 2 + (k - 20) ** 2) / 200)
+      })
+    )
+  )
+
+  // Statistical t-map over the base grid: a positive and a negative blob over a
+  // low-amplitude structured background, with intent code + dof and tool
+  // smoothness metadata (so correction can read dof/dLh from the header).
+  save(
+    'stat_tmap.nii.gz',
+    gzipSync(
+      buildVolume({
+        dims: [64, 64, 40],
+        dtype: 'float32',
+        rowTransform: identityRowTransform(10, 20, 30),
+        intentCode: 3,
+        intentP1: 30,
+        descrip: 'GrouVox{T_[30.0]}{dLh_0.15}{FWHMx_6.0 FWHMy_6.0 FWHMz_6.0 mm}',
+        value: (i, j, k) => {
+          const blobA = Math.exp(-((i - 22) ** 2 + (j - 32) ** 2 + (k - 20) ** 2) / 60) * 6
+          const blobB = Math.exp(-((i - 42) ** 2 + (j - 28) ** 2 + (k - 22) ** 2) / 50) * -5
+          const bg = Math.sin(i * 0.7) * Math.cos(j * 0.6) * 0.8
+          return blobA + blobB + bg
+        }
       })
     )
   )

@@ -45,3 +45,23 @@ https://doi.org/10.21105/joss.05098
 
 - Package: `gl-matrix` 3.4.4
 - License: MIT; see `gl-matrix/LICENSE.md`.
+
+## Bundled statistical atlases
+
+Each atlas is bundled as a `.nii.gz` label volume plus a same-stem `.csv` name
+table and used only to annotate correction cluster reports with region names.
+The label volumes were losslessly gzip-compressed from the originals; the CSV
+name tables are unmodified. **License/citation for each atlas must be confirmed
+against its source before distribution** — the canonical citations are noted
+below; complete each `License:` line with the source's terms.
+
+- `aal3` — Automated Anatomical Labelling atlas 3. Rolls, Huang, Lin, Feng &
+  Joliot (2020), *NeuroImage* 206:116189. License: _to be confirmed._
+- `suit` — SUIT cerebellar atlas. Diedrichsen (2006), *NeuroImage* 33(1):127-138.
+  License: _to be confirmed._
+- `thalamic_nuclei` — thalamic nuclei parcellation. License: _to be confirmed._
+- `Tian_Subcortex_S4_7T` — Melbourne Subcortex Atlas (scale IV, 7T). Tian,
+  Margulies, Breakspear & Zalesky (2020), *Nature Neuroscience* 23:1421-1432.
+  License: _to be confirmed._
+- `neuromorphometrics` — Neuromorphometrics labelling (as distributed with
+  SPM/CAT12), © Neuromorphometrics, Inc. License: _to be confirmed._

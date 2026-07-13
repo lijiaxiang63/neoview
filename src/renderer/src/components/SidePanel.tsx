@@ -10,6 +10,7 @@ import { RegionPanel } from './RegionPanel'
 import { RenderPanel } from './RenderPanel'
 import { InfoPanel } from './InfoPanel'
 import type { RegionExportController } from '../runtime/regionExportController'
+import type { CorrectionExportController } from '../runtime/correctionExportController'
 import type { RendererRuntime } from '../runtime/rendererRuntime'
 
 function TabPanel({
@@ -45,13 +46,15 @@ export function SidePanel({
   onChooseOverlayTable,
   onUseBuiltInOverlayTable,
   onSelectOverlayTableSource,
-  regionExports
+  regionExports,
+  correctionExports
 }: {
   onAddOverlay: () => void
   onChooseOverlayTable: (id: number) => void
   onUseBuiltInOverlayTable: (id: number) => void
   onSelectOverlayTableSource: RendererRuntime['selectOverlayTableSource']
   regionExports: RegionExportController
+  correctionExports: CorrectionExportController
 }): JSX.Element {
   const tab = useStore((s) => s.sidePanelTab)
   const setSidePanelTab = useStore((s) => s.setSidePanelTab)
@@ -97,6 +100,7 @@ export function SidePanel({
           onChooseTable={onChooseOverlayTable}
           onUseBuiltInTable={onUseBuiltInOverlayTable}
           onSelectTableSource={onSelectOverlayTableSource}
+          onExportCorrection={(layer) => void correctionExports.export(layer)}
         />
       </TabPanel>
       <TabPanel id="info" active={tab}>
