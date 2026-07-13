@@ -67,22 +67,47 @@ export function CorrectionGuide({ onClose }: Props): JSX.Element {
           </button>
         </header>
         <div className="corr-guide-body">
-          {sections.map((s) => (
-            <section key={s.title}>
-              <h3>{s.title}</h3>
-              {s.lead && <p className="corr-guide-lead">{s.lead}</p>}
-              {s.entries.length > 0 && (
-                <dl>
-                  {s.entries.map((e) => (
-                    <div className="corr-guide-row" key={e.term}>
-                      <dt>{e.term}</dt>
-                      <dd>{e.desc}</dd>
-                    </div>
-                  ))}
-                </dl>
-              )}
-            </section>
-          ))}
+          {sections.map((s) => {
+            const tbl = s.table
+            return (
+              <section key={s.title}>
+                <h3>{s.title}</h3>
+                {s.lead && <p className="corr-guide-lead">{s.lead}</p>}
+                {s.entries && s.entries.length > 0 && (
+                  <dl>
+                    {s.entries.map((e) => (
+                      <div className="corr-guide-row" key={e.term}>
+                        <dt>{e.term}</dt>
+                        <dd>{e.desc}</dd>
+                      </div>
+                    ))}
+                  </dl>
+                )}
+                {tbl && (
+                  <div className="corr-guide-tablewrap">
+                    <table className="corr-guide-table">
+                      <thead>
+                        <tr>
+                          {tbl.columns.map((c) => (
+                            <th key={c || 'aspect'}>{c}</th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {tbl.rows.map((row) => (
+                          <tr key={row[0]}>
+                            {row.map((cell, ci) => (
+                              <td key={tbl.columns[ci] || 'aspect'}>{cell}</td>
+                            ))}
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </section>
+            )
+          })}
         </div>
       </div>
     </div>,

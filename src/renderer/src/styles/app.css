@@ -2101,6 +2101,39 @@ button.cluster-row:hover {
   }
 }
 
+.corr-guide-tablewrap {
+  overflow-x: auto;
+}
+
+.corr-guide-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.corr-guide-table th,
+.corr-guide-table td {
+  text-align: left;
+  vertical-align: top;
+  padding: 5px 12px 5px 0;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-1);
+}
+
+.corr-guide-table th {
+  color: var(--text-2);
+  font-weight: 600;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.corr-guide-table td:first-child {
+  color: var(--accent-strong);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
 /* ---------- Scrollbars ---------- */
 
 ::-webkit-scrollbar {

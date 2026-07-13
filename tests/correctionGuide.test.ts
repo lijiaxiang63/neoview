@@ -5,16 +5,15 @@ describe('correctionGuideSections', () => {
   const sections = correctionGuideSections()
   const byTitle = (t: string): ReturnType<typeof correctionGuideSections>[number] | undefined =>
     sections.find((s) => s.title === t)
-  const terms = (t: string): string[] => byTitle(t)?.entries.map((e) => e.term) ?? []
-  const descs = (t: string): string[] => byTitle(t)?.entries.map((e) => e.desc) ?? []
+  const terms = (t: string): string[] => byTitle(t)?.entries?.map((e) => e.term) ?? []
 
   it('exposes the expected top-level sections in order', () => {
     expect(sections.map((s) => s.title)).toEqual([
       'Overview',
       'Methods',
+      'This viewer vs SPM',
       'Parameters',
-      'Reading the results',
-      'Caveats'
+      'Reading the results'
     ])
   })
 
@@ -36,29 +35,39 @@ describe('correctionGuideSections', () => {
     const t = terms('Parameters')
     expect(t).toContain('Mask')
     expect(t).toContain('Atlas')
-    // The mask description names what it restricts, so it stays in sync with the feature.
-    const mask = byTitle('Parameters')?.entries.find((e) => e.term === 'Mask')?.desc ?? ''
+    const mask = byTitle('Parameters')?.entries?.find((e) => e.term === 'Mask')?.desc ?? ''
     expect(mask.toLowerCase()).toContain('non-zero voxels')
   })
 
-  it('surfaces the honest methodological caveats', () => {
-    const t = terms('Caveats')
-    expect(t.length).toBeGreaterThanOrEqual(3)
-    const all = descs('Caveats').join(' ').toLowerCase()
-    expect(all).toContain('topological') // voxel-wise FDR vs topological FDR
-    expect(all).toContain('smoothness') // single-map smoothness approximation
+  it('compares this viewer against SPM in a well-formed table', () => {
+    const table = byTitle('This viewer vs SPM')?.table
+    expect(table).toBeDefined()
+    expect(table?.columns).toEqual(['', 'This viewer', 'SPM'])
+    // Every row is a full triple with no blank cell beyond the header slot.
+    for (const row of table?.rows ?? []) {
+      expect(row).toHaveLength(3)
+      for (const cell of row) expect(cell.trim().length).toBeGreaterThan(0)
+    }
+    // The differences the table must convey (accuracy anchors vs the code + SPM).
+    const flat = (table?.rows ?? []).flat().join(' ').toLowerCase()
+    expect(flat).toContain('bonferroni')
+    expect(flat).toContain('benjamini') // voxel-wise FDR
+    expect(flat).toContain('topological') // SPM's FDR
+    expect(flat).toContain('residual') // SPM's smoothness source
   })
 
-  it('gives every non-overview section at least one entry', () => {
+  it('gives every non-overview section either entries or a table', () => {
     for (const s of sections) {
       if (s.title === 'Overview') continue
-      expect(s.entries.length).toBeGreaterThan(0)
+      const hasEntries = (s.entries?.length ?? 0) > 0
+      const hasTable = (s.table?.rows.length ?? 0) > 0
+      expect(hasEntries || hasTable).toBe(true)
     }
   })
 
   it('never emits a blank term or description', () => {
     for (const s of sections) {
-      for (const e of s.entries) {
+      for (const e of s.entries ?? []) {
         expect(e.term.trim().length).toBeGreaterThan(0)
         expect(e.desc.trim().length).toBeGreaterThan(0)
       }
