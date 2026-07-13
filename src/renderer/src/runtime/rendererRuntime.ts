@@ -33,6 +33,7 @@ import {
 import { layerTableKey, parseLayerLabelTable, type LayerLabelTable } from '../slicing/labelTable'
 import type { LayerTableSource } from '../slicing/overlay'
 import type { AppSettings } from '../../../shared/settings'
+import { allocateFileReadRequestId } from './fileReadRequestIds'
 
 export interface RendererBridge {
   platform: string
@@ -153,7 +154,6 @@ export interface RendererRuntime {
 }
 
 const INITIAL_UI: RuntimeUiState = { dragging: false, dropTarget: 'auto' }
-let nextFileReadRequestId = 0
 const LAYER_TABLE_MAX_BYTES = 8 * 1024 * 1024
 
 function cancelledFileRead(): Error {
@@ -266,7 +266,7 @@ class OwnedRendererRuntime implements RendererRuntime {
   addOverlayDialog = async (): Promise<void> => {
     if (!this.active) return
     const ownerSession = this.overlaySession()
-    const requestId = ++nextFileReadRequestId
+    const requestId = allocateFileReadRequestId()
     this.overlayDialogReads.add(requestId)
     try {
       const opened = await this.deps.bridge.openOverlayDialog(
@@ -340,7 +340,7 @@ class OwnedRendererRuntime implements RendererRuntime {
     if (!stateAtStart.overlays.some((layer) => layer.id === id && layer.kind === 'labels')) return
     const generation = this.invalidateOverlayTableRead(id)
     const ownerSession = this.overlaySession()
-    const requestId = ++nextFileReadRequestId
+    const requestId = allocateFileReadRequestId()
     this.overlayDialogReads.add(requestId)
     this.overlayTableReadRequest.set(id, requestId)
     const ownsRead = (): boolean => {
@@ -524,7 +524,7 @@ class OwnedRendererRuntime implements RendererRuntime {
     start: (requestId: number) => Promise<T>
   ): Promise<T> {
     if (signal.aborted) return Promise.reject(cancelledFileRead())
-    const requestId = ++nextFileReadRequestId
+    const requestId = allocateFileReadRequestId()
     return new Promise<T>((resolve, reject) => {
       let settled = false
       const finish = (fn: () => void): void => {

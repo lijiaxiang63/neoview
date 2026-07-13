@@ -5,6 +5,7 @@ export const FILE_CHANNELS = {
   openOverlayDialog: 'open-overlay-dialog',
   openLayerTable: 'open-layer-table',
   readBuiltInLayerTable: 'read-built-in-layer-table',
+  readAtlas: 'read-atlas',
   openFolderScan: 'open-folder-scan',
   isDirectory: 'is-directory',
   scanFolder: 'scan-folder',
@@ -31,6 +32,12 @@ export interface OpenedLayerTable {
   name: string
   path: string
   text: string
+}
+
+/** A bundled atlas: its label-volume bytes plus its name-table CSV text. */
+export interface AtlasResource {
+  bytes: ArrayBuffer
+  table: string
 }
 
 export type OpenedLayer =

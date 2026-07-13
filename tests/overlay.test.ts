@@ -230,6 +230,81 @@ describe('extractOverlayRGBA — map windows', () => {
   })
 })
 
+describe('extractOverlayRGBA — significance gate', () => {
+  // Values along x: -2, -1, 0, 1 (constant in j, k).
+  const mapVol = (): Volume =>
+    mkVol({
+      dims: [4, 4, 4],
+      dtype: 'float32',
+      rowTransform: identity,
+      value: (i: number) => i - 2
+    })
+
+  const sig = (over: Record<string, unknown>): OverlayLayer['significance'] => ({
+    statThreshold: 1.5,
+    minClusterSize: null,
+    mask: null,
+    kind: 'z',
+    tail: 'two',
+    survivingVoxels: 0,
+    smoothness: null,
+    report: null,
+    membership: null,
+    configRev: 0,
+    frame: 0,
+    stale: false,
+    ...over
+  })
+
+  const visibleColumns = (img: ImageData): number[] => {
+    const cols: number[] = []
+    for (let c = 0; c < img.width; c++) if (alphaAt(img, c, 0) > 0) cols.push(c)
+    return cols
+  }
+
+  it('two-tailed keeps |value| ≥ threshold, both signs', () => {
+    const vol = mapVol()
+    const layer = mkLayer(vol, {
+      kind: 'map',
+      colormap: 'signed',
+      range: { lo: 0, hi: 2 },
+      significance: sig({ statThreshold: 1.5, tail: 'two' })
+    })
+    const img = stub(4, 4)
+    extractOverlayRGBA(layer, vol, PLANES[0], 0, 0, img)
+    // |−2| ≥ 1.5 (x=0); |−1|, |0|, |1| < 1.5.
+    expect(visibleColumns(img)).toEqual([0])
+  })
+
+  it('one-tailed keeps only the positive tail', () => {
+    const vol = mapVol()
+    const layer = mkLayer(vol, {
+      kind: 'map',
+      colormap: 'signed',
+      range: { lo: 0, hi: 2 },
+      significance: sig({ statThreshold: 0.5, tail: 'one' })
+    })
+    const img = stub(4, 4)
+    extractOverlayRGBA(layer, vol, PLANES[0], 0, 0, img)
+    // value ≥ 0.5 → only x=3 (value 1); the −2 voxel is hidden.
+    expect(visibleColumns(img)).toEqual([3])
+  })
+
+  it('a survival mask hides voxels even above threshold', () => {
+    const vol = mapVol()
+    const mask = new Uint8Array(4 * 4 * 4) // all zero → nothing survives
+    const layer = mkLayer(vol, {
+      kind: 'map',
+      colormap: 'signed',
+      range: { lo: 0, hi: 2 },
+      significance: sig({ statThreshold: 1.5, tail: 'two', mask })
+    })
+    const img = stub(4, 4)
+    extractOverlayRGBA(layer, vol, PLANES[0], 0, 0, img)
+    expect(visibleColumns(img)).toEqual([])
+  })
+})
+
 describe('extractOverlayRGBA — mask scaling', () => {
   it('shows nonzero scaled values only', () => {
     const base = mkVol({

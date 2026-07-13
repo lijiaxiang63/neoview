@@ -30,6 +30,9 @@ import {
   type RegionState,
   type RegionTimers
 } from './store/regionDomain'
+import { createCorrectionDomain } from './store/correctionDomain'
+import { CorrectionRunner } from './stats/correctionRunner'
+import { createAtlasProvider } from './runtime/atlasProvider'
 import type { RenderMode } from './render3d/types'
 import {
   defaultAppSettings,
@@ -133,6 +136,8 @@ export interface AppState extends RegionState, RegionActions {
   shortcutsOpen: boolean
   /** Overlay layers in draw order: index 0 is the bottom-most. */
   overlays: OverlayLayer[]
+  /** Selected atlas id for cluster-report region annotation, or null. */
+  correctionAtlas: string | null
   /** Frame playback rate (application setting, owned by the main process). */
   playbackFps: number
   /** Whether a newly added labels layer starts with its label list open. */
@@ -182,6 +187,7 @@ export interface AppState extends RegionState, RegionActions {
   selectOverlayTableSource: (id: number, source: LayerTableSource) => boolean
   removeOverlay: (id: number) => void
   updateOverlay: (id: number, patch: Partial<Omit<OverlayLayer, 'id' | 'volume'>>) => void
+  setCorrectionAtlas: (atlasId: string | null) => void
   fail: (message: string) => void
   dismissError: () => void
   setCross: (ijk: [number, number, number]) => void
@@ -395,6 +401,15 @@ function createAppState(
     modelBackend: () => (get() as AppState | undefined)?.modelBackend ?? initialModelBackend
   })
 
+  const atlasProvider = createAtlasProvider()
+  const correctionDomain = createCorrectionDomain({
+    get: () => get(),
+    set: (patch) => set(typeof patch === 'function' ? (state) => patch(state) : patch),
+    timers,
+    runner: new CorrectionRunner(),
+    atlasProvider
+  })
+
   const state: AppState = {
     volume: null,
     volumeSession: 0,
@@ -423,6 +438,7 @@ function createAppState(
     fileFilter: '',
     shortcutsOpen: false,
     overlays: [],
+    correctionAtlas: null,
     playbackFps: PLAYBACK_FPS_DEFAULT,
     expandLabelLists: true,
     segDefaults: initialSegDefaults,
@@ -491,6 +507,7 @@ function createAppState(
       const previousVolume = get().volume
       if (previousVolume && previousVolume !== v) releaseFrameTextureSource(previousVolume)
       const regionReset = regionDomain.resetForVolume()
+      correctionDomain.resetForVolume()
       // The outgoing file's pending pref save must land under ITS path (and
       // before this file's pref is read back, in case it is the same file).
       flushPrefSave()
@@ -558,7 +575,9 @@ function createAppState(
             ? { name: layerFileName(labelTableName), table: labelTable }
             : null,
         builtInTable: null,
-        customTable: null
+        customTable: null,
+        correction: null,
+        significance: null
       }
       set((s) => ({
         overlays: [...s.overlays, layer],
@@ -646,6 +665,7 @@ function createAppState(
     removeOverlay: (id) => {
       set((s) => ({ overlays: s.overlays.filter((l) => l.id !== id) }))
       regionDomain.overlayRemoved(id)
+      correctionDomain.overlayRemoved(id)
       // A constraint pointing at the removed layer would silently pin the
       // preview to stale data.
       const { segParams } = get()
@@ -654,10 +674,17 @@ function createAppState(
       }
     },
 
-    updateOverlay: (id, patch) =>
+    updateOverlay: (id, patch) => {
       set((s) => ({
         overlays: s.overlays.map((l) => (l.id === id ? { ...l, ...patch } : l))
-      })),
+      }))
+      if ('correction' in patch) correctionDomain.configChanged(id)
+    },
+
+    setCorrectionAtlas: (atlasId) => {
+      set({ correctionAtlas: atlasId })
+      correctionDomain.atlasChanged()
+    },
 
     fail: (message) =>
       set((s) => ({
@@ -688,6 +715,7 @@ function createAppState(
       if (frame === s.frame) return
       set({ frame })
       regionDomain.frameChanged(s.segBox !== null)
+      correctionDomain.frameChanged()
     },
 
     setRange: (lo, hi) => {
@@ -738,6 +766,8 @@ function createAppState(
     if (volume) releaseFrameTextureSource(volume)
     disposed = true
     regionDomain.dispose()
+    correctionDomain.dispose()
+    atlasProvider?.dispose()
     pagehideTarget?.removeEventListener('pagehide', flushAllPrefSaves)
   }
   pagehideTarget?.addEventListener('pagehide', flushAllPrefSaves)

@@ -61,6 +61,25 @@ import iconLight from '../../resources/icon-light.png?asset'
 import builtinVolume from '../../resources/builtin-volume.nii.gz?asset'
 import builtinOverlay from '../../resources/builtin-overlay.nii.gz?asset'
 import builtInLayerTable from '../../resources/FreeSurferColorLUT.txt?asset'
+// Reference atlases for cluster-report region annotation (label volume + name table).
+import aal3Volume from '../../resources/aal3.nii.gz?asset'
+import aal3Table from '../../resources/aal3.csv?asset'
+import neuromorphVolume from '../../resources/neuromorphometrics.nii.gz?asset'
+import neuromorphTable from '../../resources/neuromorphometrics.csv?asset'
+import suitVolume from '../../resources/suit.nii.gz?asset'
+import suitTable from '../../resources/suit.csv?asset'
+import thalamicVolume from '../../resources/thalamic_nuclei.nii.gz?asset'
+import thalamicTable from '../../resources/thalamic_nuclei.csv?asset'
+import tianVolume from '../../resources/Tian_Subcortex_S4_7T.nii.gz?asset'
+import tianTable from '../../resources/Tian_Subcortex_S4_7T.csv?asset'
+
+const ATLAS_PATHS: Record<string, { volume: string; table: string }> = {
+  aal3: { volume: aal3Volume, table: aal3Table },
+  neuromorphometrics: { volume: neuromorphVolume, table: neuromorphTable },
+  suit: { volume: suitVolume, table: suitTable },
+  thalamic_nuclei: { volume: thalamicVolume, table: thalamicTable },
+  tian_subcortex_s4: { volume: tianVolume, table: tianTable }
+}
 
 // A secure standard origin lets production use the same cross-origin
 // isolation contract as the development server. Registration must happen
@@ -625,6 +644,7 @@ if (gotLock) {
         access: fileAccess,
         dialogs: fileDialogs,
         builtInLayerTablePath: builtInLayerTable,
+        atlasPaths: ATLAS_PATHS,
         reader: fileReader,
         scanner: folderScanner,
         exporter: exportService,

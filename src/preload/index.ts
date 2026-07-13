@@ -1,5 +1,6 @@
 import { contextBridge, ipcRenderer, webUtils, type IpcRendererEvent } from 'electron'
 import type {
+  AtlasResource,
   ExportRequest,
   ExportResult,
   FolderEntry,
@@ -64,6 +65,8 @@ const api = {
     ipcRenderer.invoke(FILE_CHANNELS.openLayerTable, requestId, currentFilePath),
   readBuiltInLayerTable: (requestId: number): Promise<OpenedLayerTable | null> =>
     ipcRenderer.invoke(FILE_CHANNELS.readBuiltInLayerTable, requestId),
+  readAtlas: (requestId: number, atlasId: string): Promise<AtlasResource | null> =>
+    ipcRenderer.invoke(FILE_CHANNELS.readAtlas, requestId, atlasId),
   /** Reserve ordering before renderer-side path probes or reads begin. */
   beginBaseIntent: (): Promise<number> => ipcRenderer.invoke('begin-base-intent'),
   /** Promote a provisional token once its operation has a real result. Main

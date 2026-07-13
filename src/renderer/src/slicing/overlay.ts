@@ -1,5 +1,6 @@
 import type { Volume } from '../volume/types'
 import { applyAffine, composeVoxelMap } from '../volume/affine'
+import type { CorrectionConfig, SignificanceResult } from '../stats/correctionConfig'
 import type { PlaneSpec } from './extract'
 import type { LayerLabelTable } from './labelTable'
 
@@ -34,6 +35,10 @@ export interface OverlayLayer {
   matchingTable: LayerTableOption | null
   builtInTable: LayerTableOption | null
   customTable: LayerTableOption | null
+  /** Multiple-comparison correction config for a stat-map layer, or null. */
+  correction: CorrectionConfig | null
+  /** Resolved significance the display gate reads, or null when uncorrected. */
+  significance: SignificanceResult | null
 }
 
 // ---------------------------------------------------------------------------
@@ -381,6 +386,19 @@ export function extractOverlayRGBA(
   const signed = lut !== null && lut.neg !== null
   const anyHidden = hidden.size > 0
 
+  // Significance gate (stat maps only): a voxel is visible when it clears the
+  // correction threshold and, for cluster methods, lies in the survival mask.
+  // Colour still comes from the display window; only visibility changes.
+  const sig =
+    kind === 'map' && layer.significance?.frame === Math.min(frame, ov.frames - 1)
+      ? layer.significance
+      : null
+  const sigThreshold = sig ? sig.statThreshold : null
+  const sigMask = sig ? sig.mask : null
+  const sigIsP = sig ? sig.kind === 'p' : false
+  const sigIsF = sig ? sig.kind === 'f' : false
+  const sigOneTailed = sig ? sig.tail === 'one' : false
+
   let p = 0
   for (let screenRow = 0; screenRow < h; screenRow++) {
     // Fresh row start (no drift accumulation across rows).
@@ -395,7 +413,8 @@ export function extractOverlayRGBA(
         px[p] = 0
         continue
       }
-      const v = raw[frameOff + xi + yi * sy + zi * sz] * slope + inter
+      const ovIdx = xi + yi * sy + zi * sz
+      const v = raw[frameOff + ovIdx] * slope + inter
       if (!Number.isFinite(v)) {
         px[p] = 0
       } else if (kind === 'mask') {
@@ -405,19 +424,43 @@ export function extractOverlayRGBA(
         px[p] = id !== 0 && !(anyHidden && hidden.has(id)) ? layerLabelColor(layer, id) : 0
       } else if (signed) {
         const a = Math.abs(v)
-        if (a < lo) {
+        const visible =
+          sigThreshold === null
+            ? a >= lo
+            : (sigMask === null || sigMask[ovIdx] !== 0) &&
+              (sigIsP
+                ? v > 0 && v <= 1 && v <= sigThreshold
+                : sigIsF
+                  ? v > 0 && v >= sigThreshold
+                  : sigOneTailed
+                    ? v >= sigThreshold
+                    : a >= sigThreshold)
+        if (!visible) {
           px[p] = 0
         } else {
           let t = ((a - lo) * scale) | 0
-          t = t > 255 ? 255 : t
+          t = t < 0 ? 0 : t > 255 ? 255 : t
           px[p] = v >= 0 ? lut!.pos[t] : lut!.neg![t]
         }
-      } else if (v < lo) {
-        px[p] = 0
       } else {
-        let t = ((v - lo) * scale) | 0
-        t = t > 255 ? 255 : t
-        px[p] = lut!.pos[t]
+        const visible =
+          sigThreshold === null
+            ? v >= lo
+            : (sigMask === null || sigMask[ovIdx] !== 0) &&
+              (sigIsP
+                ? v > 0 && v <= 1 && v <= sigThreshold
+                : sigIsF
+                  ? v > 0 && v >= sigThreshold
+                  : sigOneTailed
+                    ? v >= sigThreshold
+                    : Math.abs(v) >= sigThreshold)
+        if (!visible) {
+          px[p] = 0
+        } else {
+          let t = ((v - lo) * scale) | 0
+          t = t < 0 ? 0 : t > 255 ? 255 : t
+          px[p] = lut!.pos[t]
+        }
       }
     }
   }

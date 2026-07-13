@@ -190,7 +190,13 @@ export class SliceRasterRenderer {
           layer.range.hi,
           layer.colormap,
           layer.hiddenLabels,
-          layer.labelTable
+          layer.labelTable,
+          // Only the fields the display gate reads — not the significance object
+          // identity — so re-annotating the cluster report never re-extracts pixels.
+          layer.significance?.statThreshold ?? null,
+          layer.significance?.mask ?? null,
+          layer.significance?.kind ?? null,
+          layer.significance?.tail ?? null
         ] as const
         if (!sameKey(buffer.key, overlayKey)) {
           this.extractors.overlay(

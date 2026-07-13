@@ -10,11 +10,13 @@ import { FilePanel } from './components/FilePanel'
 import { NotificationCenter } from './components/NotificationCenter'
 import { ShortcutsOverlay } from './components/ShortcutsOverlay'
 import type { RegionExportController } from './runtime/regionExportController'
+import type { CorrectionExportController } from './runtime/correctionExportController'
 import type { UpdatePresenter } from './runtime/updatePresenter'
 
 interface Props {
   runtime: RendererRuntime
   regionExports: RegionExportController
+  correctionExports: CorrectionExportController
   updates: UpdatePresenter
   revealInFolder(path: string): void
 }
@@ -23,6 +25,7 @@ interface Props {
 export default function App({
   runtime,
   regionExports,
+  correctionExports,
   updates,
   revealInFolder
 }: Props): JSX.Element {
@@ -64,6 +67,7 @@ export default function App({
               onUseBuiltInOverlayTable={runtime.useBuiltInOverlayTable}
               onSelectOverlayTableSource={runtime.selectOverlayTableSource}
               regionExports={regionExports}
+              correctionExports={correctionExports}
             />
           </>
         ) : (

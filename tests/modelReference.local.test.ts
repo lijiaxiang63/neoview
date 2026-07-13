@@ -13,6 +13,7 @@ import {
 } from '../src/renderer/src/model/catalog'
 import { keepLargestComponents } from '../src/renderer/src/model/preprocess'
 import { composeVoxelMap } from '../src/renderer/src/volume/affine'
+import { ESCAPED_LAYER_TABLE_MARKER_ROW } from '../src/renderer/src/slicing/labelTable'
 
 type CasePair = [candidatePath: string, referencePath: string]
 interface CaseRecord {
@@ -61,6 +62,12 @@ function unpackCase(item: ReferenceCase): CaseRecord {
   return Array.isArray(item) ? { candidatePath: item[0], referencePath: item[1] } : item
 }
 
+function unescapeTableName(value: string): string {
+  return value.replace(/\\([\\tnr])/g, (_match, escaped: string) =>
+    escaped === 't' ? '\t' : escaped === 'n' ? '\n' : escaped === 'r' ? '\r' : '\\'
+  )
+}
+
 function remapCandidate(
   raw: ArrayLike<number>,
   tablePath: string | undefined,
@@ -72,13 +79,17 @@ function remapCandidate(
     classes.map((item) => [`${item.name}\u0000${item.color.slice(1).toLowerCase()}`, item.value])
   )
   const valueMap = new Map<number, number>([[0, 0]])
-  for (const line of readFileSync(tablePath, 'utf8').trim().split('\n')) {
-    if (!line) continue
+  const lines = readFileSync(tablePath, 'utf8').split(/\r?\n/)
+  const escaped = lines[0] === ESCAPED_LAYER_TABLE_MARKER_ROW
+  for (const line of lines) {
+    if (!line.trim()) continue
     const [value, red, green, blue, , ...nameParts] = line.split('\t')
+    if (Number(value) === 0) continue // background / escaped-table metadata marker row
     const color = [red, green, blue]
       .map((component) => Number(component).toString(16).padStart(2, '0'))
       .join('')
-    const mapped = byIdentity.get(`${nameParts.join('\t')}\u0000${color}`)
+    const name = escaped ? unescapeTableName(nameParts.join('\t')) : nameParts.join('\t')
+    const mapped = byIdentity.get(`${name}\u0000${color}`)
     expect(mapped, `${variantId}:${nameParts.join('\t')}`).toBeDefined()
     valueMap.set(Number(value), mapped as number)
   }

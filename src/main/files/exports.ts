@@ -18,7 +18,7 @@ export interface ExportService {
 }
 
 export function splitExportName(fileName: string): { stem: string; ext: string } {
-  const match = /\.(nii\.gz|nii|txt)$/i.exec(fileName)
+  const match = /\.(nii\.gz|nii|txt|csv)$/i.exec(fileName)
   if (!match) return { stem: fileName, ext: '' }
   return { stem: fileName.slice(0, match.index), ext: match[0] }
 }

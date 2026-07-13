@@ -9,6 +9,7 @@ import { useStore } from '../store'
 import { RangeSlider } from './RangeSlider'
 import { EyeIcon } from './EyeIcon'
 import { CollapsibleSection } from './CollapsibleSection'
+import { CorrectionControls } from './CorrectionControls'
 import { fmt } from '../format'
 import {
   layerLabelColorCSS,
@@ -383,12 +384,14 @@ export function OverlayPanel({
   onAdd,
   onChooseTable,
   onUseBuiltInTable,
-  onSelectTableSource
+  onSelectTableSource,
+  onExportCorrection
 }: {
   onAdd: () => void
   onChooseTable: (id: number) => void
   onUseBuiltInTable: (id: number) => void
   onSelectTableSource: (id: number, source: LayerTableSource) => void
+  onExportCorrection: (layer: OverlayLayer) => void
 }): JSX.Element | null {
   const volume = useStore((s) => s.volume)
   const overlays = useStore((s) => s.overlays)
@@ -511,6 +514,11 @@ export function OverlayPanel({
                   <span>{fmt(layer.range.lo)}</span>
                   <span>{fmt(layer.range.hi)}</span>
                 </div>
+                <CorrectionControls
+                  layer={layer}
+                  onPatch={(patch) => updateOverlay(layer.id, patch)}
+                  onExport={() => onExportCorrection(layer)}
+                />
               </>
             )}
           </div>

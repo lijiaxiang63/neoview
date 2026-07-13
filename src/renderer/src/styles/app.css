@@ -716,6 +716,143 @@ body {
   text-align: right;
 }
 
+/* ---------- Multiple-comparison correction controls ---------- */
+
+.corr-check {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 10px;
+  font-size: 11px;
+  color: var(--text-1);
+  cursor: pointer;
+}
+
+.corr-field {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.corr-label {
+  font-size: 11px;
+  color: var(--text-1);
+  min-width: 58px;
+}
+
+.corr-field .preset-row {
+  margin-top: 0;
+}
+
+.corr-field .num-field {
+  width: 84px;
+}
+
+.corr-select {
+  flex: 1;
+  background: var(--bg-2);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  color: var(--text-0);
+  font-size: 11px;
+  padding: 3px 6px;
+}
+
+.corr-readout {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: 10px;
+  font-size: 11px;
+  color: var(--text-1);
+}
+
+.corr-hint {
+  margin-top: 4px;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--text-2);
+}
+
+.corr-head-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+/* The checkbox row carries its own top margin standalone; inside the head row
+   the flex container owns the spacing so the label stays vertically centered. */
+.corr-head-row .corr-check {
+  margin-top: 0;
+}
+
+.corr-help-btn {
+  flex: none;
+  appearance: none;
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  background: var(--bg-2);
+  color: var(--text-2);
+  width: 18px;
+  height: 18px;
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0;
+}
+
+.corr-help-btn:hover {
+  color: var(--text-0);
+  border-color: var(--accent-strong);
+}
+
+.cluster-list {
+  max-height: clamp(140px, 34vh, 420px);
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.cluster-row {
+  display: grid;
+  grid-template-columns: 28px 44px 52px 1fr;
+  gap: 6px;
+  align-items: center;
+  font-size: 11px;
+  text-align: left;
+}
+
+button.cluster-row {
+  appearance: none;
+  border: none;
+  background: transparent;
+  color: var(--text-1);
+  padding: 3px 4px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+button.cluster-row:hover {
+  background: var(--bg-2);
+  color: var(--text-0);
+}
+
+.cluster-head {
+  color: var(--text-2);
+  padding: 3px 4px;
+  border-bottom: 1px solid var(--border-strong);
+}
+
+.cluster-region {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* ---------- Numeric fields (editable readouts next to sliders) ---------- */
 
 .num-field {
@@ -1825,7 +1962,8 @@ body {
   backdrop-filter: blur(2px);
 }
 
-.shortcuts-panel {
+.shortcuts-panel,
+.corr-guide-panel {
   width: min(640px, calc(100% - 48px));
   max-height: calc(100% - 64px);
   overflow-y: auto;
@@ -1839,18 +1977,21 @@ body {
 /* The panel is focused programmatically on open (to pull activation keys off
    whatever was focused behind the modal); it isn't an interactive control, so
    no focus ring. */
-.shortcuts-panel:focus {
+.shortcuts-panel:focus,
+.corr-guide-panel:focus {
   outline: none;
 }
 
-.shortcuts-panel header {
+.shortcuts-panel header,
+.corr-guide-panel header {
   display: flex;
   align-items: center;
   justify-content: space-between;
   margin-bottom: 14px;
 }
 
-.shortcuts-panel h2 {
+.shortcuts-panel h2,
+.corr-guide-panel h2 {
   font-size: 14px;
   font-weight: 600;
   color: var(--text-0);
@@ -1877,7 +2018,8 @@ body {
   gap: 18px 28px;
 }
 
-.shortcuts-grid h3 {
+.shortcuts-grid h3,
+.corr-guide-body h3 {
   font-size: 11px;
   font-weight: 600;
   text-transform: uppercase;
@@ -1903,6 +2045,93 @@ body {
 .shortcut-row dd {
   color: var(--text-1);
   font-size: 12px;
+}
+
+/* ---------- Correction guide modal ---------- */
+
+/* Fixed (not absolute like the root-mounted shortcuts backdrop): this modal
+   mounts deep inside the side panel, so it must anchor to the viewport. */
+.corr-guide-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--scrim);
+  backdrop-filter: blur(2px);
+}
+
+.corr-guide-body {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.corr-guide-lead {
+  color: var(--text-1);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.corr-guide-row {
+  display: grid;
+  grid-template-columns: 152px 1fr;
+  gap: 6px 14px;
+  align-items: baseline;
+  padding: 3px 0;
+}
+
+.corr-guide-row dt {
+  color: var(--accent-strong);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.corr-guide-row dd {
+  color: var(--text-1);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+@media (max-width: 520px) {
+  .corr-guide-row {
+    grid-template-columns: 1fr;
+    gap: 2px;
+  }
+}
+
+.corr-guide-tablewrap {
+  overflow-x: auto;
+}
+
+.corr-guide-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.corr-guide-table th,
+.corr-guide-table td {
+  text-align: left;
+  vertical-align: top;
+  padding: 5px 12px 5px 0;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-1);
+}
+
+.corr-guide-table th {
+  color: var(--text-2);
+  font-weight: 600;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.corr-guide-table td:first-child {
+  color: var(--accent-strong);
+  font-weight: 600;
+  white-space: nowrap;
 }
 
 /* ---------- Scrollbars ---------- */
