@@ -41,6 +41,12 @@ function zMap(): Volume {
   }
 }
 
+/** A constant-valued volume on the same 12³ grid, usable as a restriction mask. */
+function constVolume(value: number): Volume {
+  const N = 12
+  return { ...zMap(), name: `const-${value}`, raw: new Float32Array(N * N * N).fill(value) }
+}
+
 function mapLayer(id: number, volume: Volume): OverlayLayer {
   return {
     id,
@@ -164,6 +170,106 @@ describe('createCorrectionDomain', () => {
     host.overlays = []
     flush()
     expect(host.overlays).toHaveLength(0)
+  })
+
+  const withMask = (maskValue: number): void => {
+    const stat = host.overlays[0]
+    host.overlays = [
+      {
+        ...stat,
+        correction: { ...defaultCorrectionConfig(stat.volume.statistic), maskLayerId: 2, rev: 1 }
+      },
+      mapLayer(2, constVolume(maskValue))
+    ]
+  }
+
+  it('restricts the correction to the selected mask layer', () => {
+    const domain = createCorrectionDomain({ get, set, timers })
+    withMask(0) // all-zero mask → the blob is outside it
+    domain.configChanged(1)
+    flush()
+    expect(host.overlays[0].significance?.survivingVoxels).toBe(0)
+    expect(host.overlays[0].significance?.mask).not.toBeNull() // gate restricts by mask
+  })
+
+  it('a whole-map mask leaves the result unrestricted', () => {
+    const domain = createCorrectionDomain({ get, set, timers })
+    withMask(1) // all-one mask → same voxels as no restriction
+    domain.configChanged(1)
+    flush()
+    expect(host.overlays[0].significance?.survivingVoxels).toBe(4 * 4 * 4)
+  })
+
+  it('clears the mask reference and recomputes when the mask layer is removed', () => {
+    const domain = createCorrectionDomain({ get, set, timers })
+    withMask(0)
+    domain.configChanged(1)
+    flush()
+    expect(host.overlays[0].significance?.survivingVoxels).toBe(0)
+    // The store filters the layer out, then notifies the domain.
+    host.overlays = host.overlays.filter((l) => l.id !== 2)
+    domain.overlayRemoved(2)
+    expect(host.overlays[0].correction?.maskLayerId).toBeNull() // dangling ref cleared
+    flush()
+    expect(host.overlays[0].significance?.survivingVoxels).toBe(4 * 4 * 4) // unrestricted now
+  })
+
+  it('samples the mask through a non-identity (axis-swap) affine', () => {
+    const N = 12
+    const at = (i: number, j: number, k: number): number => i + j * N + k * N * N
+    // Stat map with an asymmetric blob: i∈[2,4), j∈[2,8), k∈[2,8) → i-extent 2, j-extent 6.
+    const statRaw = new Float32Array(N * N * N).fill(0.3)
+    for (let k = 2; k < 8; k++)
+      for (let j = 2; j < 8; j++) for (let i = 2; i < 4; i++) statRaw[at(i, j, k)] = 6
+    const statVol: Volume = { ...zMap(), raw: statRaw }
+    // Mask on an axis-swapped grid (voxel (a,b,c) → world (b,a,c)), non-zero only
+    // where its own x-coord a < 4. Correct sampling maps stat (i,j,k) → mask
+    // (j,i,k), so the restriction becomes stat j < 4; a transposed walk would
+    // instead restrict on i and let the whole blob through.
+    const swap = new Float64Array([0, 1, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1])
+    const maskRaw = new Float32Array(N * N * N)
+    for (let c = 0; c < N; c++)
+      for (let b = 0; b < N; b++) for (let a = 0; a < 4; a++) maskRaw[a + b * N + c * N * N] = 1
+    const maskVol: Volume = { ...zMap(), name: 'mask', affine: swap, raw: maskRaw }
+
+    const domain = createCorrectionDomain({ get, set, timers })
+    host.overlays = [
+      {
+        ...mapLayer(1, statVol),
+        correction: { ...defaultCorrectionConfig(statVol.statistic), maskLayerId: 2, rev: 1 }
+      },
+      mapLayer(2, maskVol)
+    ]
+    domain.configChanged(1)
+    flush()
+    // Restriction j<4 keeps blob columns j∈{2,3}: 2 (i) · 2 (j) · 6 (k) = 24.
+    expect(host.overlays[0].significance?.survivingVoxels).toBe(24)
+  })
+
+  it('does not restrict when the mask affine is singular', () => {
+    const N = 12
+    const singular = new Float64Array(16) // zero linear part → non-invertible
+    singular[15] = 1
+    // Mask content is all-zero, yet a singular affine falls back to "don't
+    // restrict" (fill 1), so the whole blob survives rather than being hidden.
+    const maskVol: Volume = {
+      ...zMap(),
+      name: 'mask',
+      affine: singular,
+      raw: new Float32Array(N * N * N)
+    }
+    const domain = createCorrectionDomain({ get, set, timers })
+    const stat = zMap()
+    host.overlays = [
+      {
+        ...mapLayer(1, stat),
+        correction: { ...defaultCorrectionConfig(stat.statistic), maskLayerId: 2, rev: 1 }
+      },
+      mapLayer(2, maskVol)
+    ]
+    domain.configChanged(1)
+    flush()
+    expect(host.overlays[0].significance?.survivingVoxels).toBe(4 * 4 * 4)
   })
 })
 

@@ -768,6 +768,13 @@ body {
   color: var(--text-1);
 }
 
+.corr-hint {
+  margin-top: 4px;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--text-2);
+}
+
 .cluster-list {
   max-height: clamp(140px, 34vh, 420px);
   overflow-y: auto;

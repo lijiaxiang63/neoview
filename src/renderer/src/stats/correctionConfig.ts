@@ -26,6 +26,9 @@ export interface CorrectionConfig {
   tail: Tail
   connectivity: Connectivity
   statistic: CorrectionStatistic
+  /** Restrict the correction (test count, FDR denominator, cluster search volume,
+   * and display) to the non-zero voxels of this overlay layer; null = whole map. */
+  maskLayerId: number | null
   /** Bumped on every edit; the correction domain's cache key. */
   rev: number
 }
@@ -75,6 +78,7 @@ export function defaultCorrectionConfig(statistic: StatisticInfo | null): Correc
       dof1: statistic?.dof1 ?? 0,
       dof2: statistic?.dof2 ?? 0
     },
+    maskLayerId: null,
     rev: 0
   }
 }

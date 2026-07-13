@@ -241,6 +241,52 @@ describe('computeCorrection — cluster membership', () => {
   })
 })
 
+describe('computeCorrection — restriction mask', () => {
+  /** Include voxels whose i is in [lo, hi). */
+  function restrictColumns(lo: number, hi: number): Uint8Array {
+    const r = new Uint8Array(N * N * N)
+    for (let k = 0; k < N; k++)
+      for (let j = 0; j < N; j++) for (let i = lo; i < hi; i++) r[idx(i, j, k)] = 1
+    return r
+  }
+
+  it('keeps only in-mask supra-threshold voxels and returns the restriction mask', () => {
+    // The blob spans i=5..10; restrict to i=5,6,7 → three of its six columns.
+    const restrict = restrictColumns(5, 8)
+    const r = computeCorrection({ ...baseRequest('uncorrected'), restrict })
+    expect(r.survivingVoxels).toBe(3 * 6 * 6)
+    expect(r.mask).toBe(restrict) // the gate needs it to hide out-of-mask voxels
+    expect(r.report?.records[0].voxelCount).toBe(3 * 6 * 6)
+  })
+
+  it('hides everything when the mask excludes the blob', () => {
+    const r = computeCorrection({ ...baseRequest('uncorrected'), restrict: restrictColumns(0, 3) })
+    expect(r.survivingVoxels).toBe(0)
+    expect(r.report?.records).toHaveLength(0)
+  })
+
+  it('cluster-GRF respects the restriction', () => {
+    expect(computeCorrection(baseRequest('cluster-grf')).survivingVoxels).toBe(BLOB)
+    const r = computeCorrection({ ...baseRequest('cluster-grf'), restrict: restrictColumns(0, 3) })
+    expect(r.survivingVoxels).toBe(0)
+  })
+
+  it('shrinks the Bonferroni test count so the cutoff drops', () => {
+    const full = computeCorrection(baseRequest('bonferroni'))
+    const r = computeCorrection({ ...baseRequest('bonferroni'), restrict: restrictColumns(5, 8) })
+    expect(r.statThreshold).toBeLessThan(full.statThreshold) // smaller m → lower cutoff
+    expect(r.survivingVoxels).toBe(3 * 6 * 6)
+  })
+
+  it('FDR keeps only the in-mask blob voxels (restricted denominator)', () => {
+    // The restrict guard in the FDR p-collection is a separate predicate from
+    // countInMask; this pins them together (w must equal the restricted m).
+    expect(computeCorrection(baseRequest('fdr')).survivingVoxels).toBe(BLOB)
+    const r = computeCorrection({ ...baseRequest('fdr'), restrict: restrictColumns(5, 8) })
+    expect(r.survivingVoxels).toBe(3 * 6 * 6)
+  })
+})
+
 describe('computeCorrection — statistic kinds and tails', () => {
   it('a one-tailed t-map keeps only the positive tail', () => {
     const values = new Float64Array(N * N * N).fill(0.1)

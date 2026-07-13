@@ -63,7 +63,7 @@ export function CorrectionControls({
   }
 
   return (
-    <CollapsibleSection title="Correction" defaultOpen={false}>
+    <CollapsibleSection title="Correction" defaultOpen={true}>
       <label className="corr-check">
         <input
           type="checkbox"
@@ -117,19 +117,24 @@ export function CorrectionControls({
 
           <div className="corr-field">
             <span className="corr-label">Method</span>
-            <div className="preset-row">
+            <select
+              className="corr-select mono"
+              value={cfg.method}
+              onChange={(e) => setConfig({ method: e.target.value as CorrectionMethod })}
+            >
               {METHODS.map((m) => (
-                <button
-                  key={m.key}
-                  title={m.title}
-                  className={`preset-btn${cfg.method === m.key ? ' active' : ''}`}
-                  onClick={() => setConfig({ method: m.key })}
-                >
-                  {m.label}
-                </button>
+                <option key={m.key} value={m.key} title={m.title}>
+                  {m.title}
+                </option>
               ))}
-            </div>
+            </select>
           </div>
+
+          <MaskSelect
+            layer={layer}
+            value={cfg.maskLayerId}
+            onChange={(id) => setConfig({ maskLayerId: id })}
+          />
 
           <div className="corr-field">
             <span className="corr-label">{cfg.method === 'fdr' ? 'q' : 'α'}</span>
@@ -271,6 +276,46 @@ function AtlasSelect(): JSX.Element {
         </option>
       ))}
     </select>
+  )
+}
+
+/** Selector for another overlay layer whose non-zero voxels restrict where the
+ * correction is applied. */
+function MaskSelect({
+  layer,
+  value,
+  onChange
+}: {
+  layer: OverlayLayer
+  value: number | null
+  onChange: (id: number | null) => void
+}): JSX.Element {
+  const overlays = useStore((s) => s.overlays)
+  const candidates = overlays.filter((l) => l.id !== layer.id)
+  return (
+    <>
+      <div className="corr-field">
+        <span className="corr-label">Mask</span>
+        <select
+          className="corr-select mono"
+          value={value ?? ''}
+          onChange={(e) => onChange(e.target.value === '' ? null : Number(e.target.value))}
+        >
+          <option value="">Whole map (finite, non-zero)</option>
+          {candidates.map((l) => (
+            <option key={l.id} value={l.id}>
+              {l.volume.name}
+            </option>
+          ))}
+        </select>
+      </div>
+      {candidates.length === 0 && (
+        <div className="corr-hint">
+          No other layers loaded — correction spans the whole map. Load another layer to restrict it
+          to that layer&apos;s non-zero voxels.
+        </div>
+      )}
+    </>
   )
 }
 

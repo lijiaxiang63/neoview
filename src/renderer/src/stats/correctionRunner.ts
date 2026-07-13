@@ -98,17 +98,21 @@ export class CorrectionRunner implements CorrectionController {
     // arrays are never detached.
     const values = request.values.slice()
     const affine = request.affine.slice()
+    const restrict = request.restrict ? request.restrict.slice() : undefined
     const message: CorrectionWorkerRequest = {
       ...request,
       values,
       affine,
+      restrict,
       type: 'run',
       token,
       volumeSession,
       layerId
     }
+    const transfer: Transferable[] = [values.buffer, affine.buffer]
+    if (restrict) transfer.push(restrict.buffer)
     try {
-      worker.postMessage(message, [values.buffer, affine.buffer])
+      worker.postMessage(message, transfer)
     } catch {
       this.release(worker)
       return false

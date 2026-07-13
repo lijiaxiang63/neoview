@@ -14,6 +14,7 @@ import {
 import type { SignificanceResult } from '../stats/correctionConfig'
 import type { CorrectionController } from '../stats/correctionRunner'
 import type { AtlasProvider } from '../runtime/atlasProvider'
+import { composeVoxelMap } from '../volume/affine'
 import type { Volume } from '../volume/types'
 import type { RegionTimers } from './regionDomain'
 
@@ -59,6 +60,9 @@ export function createCorrectionDomain(deps: {
   const pending = new Set<number>()
   // Cached scaled values for the active (volume, frame); rebuilt on change.
   let frameValues: { volume: Volume; frame: number; values: Float64Array } | null = null
+  // One-slot cache of a restriction mask sampled onto a stat grid, keyed by the
+  // (stat volume, mask volume) pair; rebuilt when either identity changes.
+  let restrictCache: { statVol: Volume; maskVol: Volume; mask: Uint8Array } | null = null
 
   function patchSignificance(id: number, significance: SignificanceResult | null): void {
     set((state) => ({
@@ -109,6 +113,55 @@ export function createCorrectionDomain(deps: {
     for (let i = 0; i < nVox; i++) values[i] = raw[off + i] * slope + inter
     frameValues = { volume, frame, values }
     return values
+  }
+
+  /** Sample another layer's frame-0 volume onto the stat grid: 1 where the mask
+   * is finite and non-zero, else 0. Walks the mapped coordinate incrementally
+   * (3 adds per voxel), matching the overlay extractor. */
+  function buildRestrictMask(statVol: Volume, maskVol: Volume): Uint8Array {
+    const [nx, ny, nz] = statVol.dims
+    const out = new Uint8Array(nx * ny * nz)
+    const map = composeVoxelMap(statVol.affine, maskVol.affine) // stat voxel → mask voxel
+    if (!map) return out.fill(1) // unusable mapping → don't restrict
+    const [mx, my, mz] = maskVol.dims
+    const { raw, slope, inter } = maskVol
+    let idx = 0
+    for (let k = 0; k < nz; k++) {
+      const bx = map[3] + k * map[2]
+      const by = map[7] + k * map[6]
+      const bz = map[11] + k * map[10]
+      for (let j = 0; j < ny; j++) {
+        let x = bx + j * map[1]
+        let y = by + j * map[5]
+        let z = bz + j * map[9]
+        for (let i = 0; i < nx; i++, idx++, x += map[0], y += map[4], z += map[8]) {
+          const xi = Math.round(x)
+          const yi = Math.round(y)
+          const zi = Math.round(z)
+          if (xi < 0 || xi >= mx || yi < 0 || yi >= my || zi < 0 || zi >= mz) continue
+          const v = raw[xi + yi * mx + zi * mx * my] * slope + inter
+          if (Number.isFinite(v) && v !== 0) out[idx] = 1
+        }
+      }
+    }
+    return out
+  }
+
+  /** The restriction mask (on the layer's own grid) for a corrected layer, or
+   * null when it selects no mask or the mask layer is gone. Cached per pair. */
+  function restrictFor(layer: OverlayLayer): Uint8Array | null {
+    const cfg = layer.correction
+    if (!cfg || cfg.maskLayerId == null) return null
+    const maskLayer = get().overlays.find((l) => l.id === cfg.maskLayerId && l.id !== layer.id)
+    if (!maskLayer) return null
+    const statVol = layer.volume
+    const maskVol = maskLayer.volume
+    if (restrictCache && restrictCache.statVol === statVol && restrictCache.maskVol === maskVol) {
+      return restrictCache.mask
+    }
+    const mask = buildRestrictMask(statVol, maskVol)
+    restrictCache = { statVol, maskVol, mask }
+    return mask
   }
 
   function significanceOf(
@@ -175,6 +228,7 @@ export function createCorrectionDomain(deps: {
       tail: cfg.tail,
       connectivity: cfg.connectivity,
       smoothnessOverride: layer.volume.smoothness ?? undefined,
+      restrict: restrictFor(layer),
       includeReport: true
     }
 
@@ -260,6 +314,28 @@ export function createCorrectionDomain(deps: {
     overlayRemoved(id) {
       pending.delete(id)
       abortIfRunning(id)
+      // A corrected layer using the removed layer as its restriction mask must
+      // recompute unrestricted; clear the now-dangling reference and its cache.
+      const affected = get().overlays.filter(
+        (l) => l.kind === 'map' && l.correction && l.correction.maskLayerId === id
+      )
+      if (affected.length === 0) return
+      restrictCache = null
+      set((state) => ({
+        overlays: state.overlays.map((l) =>
+          l.correction && l.correction.maskLayerId === id
+            ? {
+                ...l,
+                correction: { ...l.correction, maskLayerId: null, rev: l.correction.rev + 1 }
+              }
+            : l
+        )
+      }))
+      for (const l of affected) {
+        markStale(l.id)
+        pending.add(l.id)
+      }
+      scheduleRecompute()
     },
     atlasChanged() {
       if (disposed) return
@@ -292,6 +368,7 @@ export function createCorrectionDomain(deps: {
       running = false
       runningId = null
       frameValues = null
+      restrictCache = null
     },
     dispose() {
       disposed = true
@@ -301,6 +378,7 @@ export function createCorrectionDomain(deps: {
       running = false
       runningId = null
       frameValues = null
+      restrictCache = null
     }
   }
 }

@@ -10,9 +10,11 @@ class FakeWorker implements CorrectionWorkerLike {
   onmessage: ((event: MessageEvent<CorrectionWorkerResponse>) => void) | null = null
   onerror: ((event: ErrorEvent) => void) | null = null
   posted: unknown[] = []
+  transfers: Transferable[][] = []
   terminated = 0
-  postMessage(message: unknown): void {
+  postMessage(message: unknown, transfer?: Transferable[]): void {
     this.posted.push(message)
+    this.transfers.push(transfer ?? [])
   }
   terminate(): void {
     this.terminated++
@@ -73,6 +75,18 @@ describe('CorrectionRunner', () => {
     expect(req.values.length).toBe(3) // not detached
     const posted = worker.posted[0] as { values: Float64Array }
     expect(posted.values).not.toBe(req.values)
+  })
+
+  it('copies and transfers a restriction mask instead of detaching the caller buffer', () => {
+    const worker = new FakeWorker()
+    const runner = new CorrectionRunner(() => worker)
+    const req = { ...request(), restrict: new Uint8Array([1, 0, 1]) }
+    runner.run(0, 7, 3, req, { complete: vi.fn(), error: vi.fn() })
+    expect(req.restrict.length).toBe(3) // caller buffer not detached
+    const posted = worker.posted[0] as { restrict?: Uint8Array }
+    expect(posted.restrict).not.toBe(req.restrict)
+    expect(Array.from(posted.restrict as Uint8Array)).toEqual([1, 0, 1])
+    expect(worker.transfers[0]).toContain(posted.restrict?.buffer)
   })
 
   it('ignores a message whose scope ids do not match', () => {

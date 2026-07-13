@@ -37,6 +37,10 @@ export interface CorrectionRequest {
   connectivity: Connectivity
   /** Prefer this smoothness (e.g. from the header) over estimating from the map. */
   smoothnessOverride?: Smoothness | null
+  /** Restrict the whole correction to voxels where this mask is non-zero (grid
+   * order, same dims as `values`). Excluded voxels are dropped from the test
+   * count, the FDR denominator, the cluster search, and the display. */
+  restrict?: Uint8Array | null
   /** Build the cluster report (and, for voxel methods, the survival mask). */
   includeReport?: boolean
 }
@@ -78,9 +82,12 @@ function survivesPredicate(
   return (v) => v >= threshold
 }
 
-function countInMask(values: Float64Array): number {
+function countInMask(values: Float64Array, restrict?: Uint8Array | null): number {
+  const r = restrict ?? null
   let m = 0
-  for (let i = 0; i < values.length; i++) if (isInMask(values[i])) m++
+  for (let i = 0; i < values.length; i++) {
+    if (isInMask(values[i]) && (r === null || r[i] !== 0)) m++
+  }
   return m
 }
 
@@ -143,11 +150,12 @@ function computeClusterGrf(
 } {
   const { values, dims, affine, spacing, statistic, alpha, clusterFormingP, tail, connectivity } =
     req
+  const restrict = req.restrict ?? null
   const n = values.length
   const z = new Float64Array(n)
   const inMask = new Uint8Array(n)
   for (let i = 0; i < n; i++) {
-    if (isInMask(values[i])) {
+    if (isInMask(values[i]) && (restrict === null || restrict[i] !== 0)) {
       inMask[i] = 1
       z[i] = statToZ(values[i], statistic.kind, statistic.dof1, statistic.dof2)
     }
@@ -232,13 +240,14 @@ export function computeCorrection(
 ): CorrectionResult {
   const { values, dims, affine, statistic, method, alpha, tail, connectivity } = req
   const { kind, dof1, dof2 } = statistic
+  const restrict = req.restrict ?? null
 
   // A t/F map with no (positive) degrees of freedom cannot yield valid p-values;
   // hide everything rather than emit garbage thresholds.
   if (!hasValidDof(statistic)) return rejectAllResult(kind)
 
   onProgress?.('scan', 0)
-  const m = countInMask(values)
+  const m = countInMask(values, restrict)
 
   if (method === 'cluster-grf') {
     const grf = computeClusterGrf(req, m, onProgress)
@@ -264,7 +273,9 @@ export function computeCorrection(
     let w = 0
     for (let i = 0; i < values.length; i++) {
       const v = values[i]
-      if (isInMask(v)) pv[w++] = statToP(v, kind, dof1, dof2, tail)
+      if (isInMask(v) && (restrict === null || restrict[i] !== 0)) {
+        pv[w++] = statToP(v, kind, dof1, dof2, tail)
+      }
     }
     const pThr = fdrThreshold(pv, m, alpha)
     // pThr < 0 means BH rejected nothing → hide everything (in the gate's own
@@ -277,11 +288,13 @@ export function computeCorrection(
   let report: ClusterReport | null = null
   let membership: ClusterMembership | null = null
   const survives = survivesPredicate(kind, tail, statThreshold)
+  const inEff = (i: number): boolean =>
+    isInMask(values[i]) && (restrict === null || restrict[i] !== 0)
   if (req.includeReport) {
     onProgress?.('clusters', 0)
     const survivalMask = new Uint8Array(values.length)
     for (let i = 0; i < values.length; i++) {
-      if (isInMask(values[i]) && survives(values[i])) {
+      if (inEff(i) && survives(values[i])) {
         survivalMask[i] = 1
         survivingVoxels++
       }
@@ -292,14 +305,17 @@ export function computeCorrection(
     membership = built.membership
   } else {
     for (let i = 0; i < values.length; i++) {
-      if (isInMask(values[i]) && survives(values[i])) survivingVoxels++
+      if (inEff(i) && survives(values[i])) survivingVoxels++
     }
   }
 
   return {
     statThreshold,
     minClusterSize: null,
-    mask: null,
+    // With a restriction, the display gate also needs to hide out-of-mask
+    // voxels; the survival mask = restriction ∧ threshold, and the gate applies
+    // the threshold, so returning the restriction mask itself is exactly right.
+    mask: restrict,
     survivingVoxels,
     smoothness: null,
     report,
