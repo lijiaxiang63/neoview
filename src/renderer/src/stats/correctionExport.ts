@@ -23,10 +23,12 @@ export function buildThresholdedMap(
   const thr = sig.statThreshold
   const mask = sig.mask
   const isP = sig.kind === 'p'
+  const isF = sig.kind === 'f'
   const oneTailed = sig.tail === 'one'
   for (let i = 0; i < nVox; i++) {
     const v = raw[off + i] * slope + inter
     if (v === 0 || !Number.isFinite(v)) continue
+    if ((isP && (v <= 0 || v > 1)) || (isF && v <= 0)) continue
     if (mask && mask[i] === 0) continue
     const survives = isP ? v <= thr : oneTailed ? v >= thr : Math.abs(v) >= thr
     if (survives) out[i] = v

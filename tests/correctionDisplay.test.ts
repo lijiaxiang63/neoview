@@ -119,6 +119,28 @@ describe('correction display (store → domain → extractor)', () => {
     expect(countVisible(empty)).toBe(0)
   })
 
+  it('does not apply a significance mask from another layer frame', () => {
+    enable()
+    const sig = layer().significance!
+    store.getState().updateOverlay(layer().id, {
+      significance: { ...sig, frame: 1, mask: new Uint8Array(N * N * N) }
+    })
+    const img = stub(N, N)
+    extractOverlayRGBA(layer(), layer().volume, PLANES[0], 2, 0, img)
+    expect(countVisible(img)).toBe(N * N)
+  })
+
+  it('hides invalid probability values while correction is active', () => {
+    enable()
+    const sig = layer().significance!
+    store.getState().updateOverlay(layer().id, {
+      significance: { ...sig, kind: 'p', tail: 'one', statThreshold: 0.05, mask: null }
+    })
+    const img = stub(N, N)
+    extractOverlayRGBA(layer(), layer().volume, PLANES[0], 6, 0, img)
+    expect(countVisible(img)).toBe(0)
+  })
+
   it('produces a cluster report of the surviving clusters', () => {
     enable() // uncorrected
     const report = layer().significance?.report

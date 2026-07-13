@@ -14,6 +14,7 @@ import {
 import type { SignificanceResult } from '../stats/correctionConfig'
 import type { CorrectionController } from '../stats/correctionRunner'
 import type { AtlasProvider } from '../runtime/atlasProvider'
+import { tailForStatistic } from '../stats/pValues'
 import { composeVoxelMap } from '../volume/affine'
 import type { Volume } from '../volume/types'
 import type { RegionTimers } from './regionDomain'
@@ -167,7 +168,7 @@ export function createCorrectionDomain(deps: {
   function significanceOf(
     result: CorrectionResult,
     layer: OverlayLayer,
-    frame: number
+    sourceFrame: number
   ): SignificanceResult {
     const cfg = layer.correction!
     // Annotate the fresh report with the selected atlas on the main thread (the
@@ -182,13 +183,13 @@ export function createCorrectionDomain(deps: {
       minClusterSize: result.minClusterSize,
       mask: result.mask,
       kind: cfg.statistic.kind,
-      tail: cfg.tail,
+      tail: tailForStatistic(cfg.statistic.kind, cfg.tail),
       survivingVoxels: result.survivingVoxels,
       smoothness: result.smoothness,
       report: result.report,
       membership: result.membership,
       configRev: cfg.rev,
-      frame,
+      frame: Math.min(sourceFrame, layer.volume.frames - 1),
       stale: false
     }
   }

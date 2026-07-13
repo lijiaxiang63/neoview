@@ -293,26 +293,32 @@ export function registerFileIpc(deps: FileIpcDependencies): () => void {
       }
     })
 
-    addHandle(FILE_CHANNELS.readAtlas, async (event, requestIdValue: unknown, atlasIdValue: unknown) => {
-      requireCurrentMainFrame(event)
-      sessions.track(event.sender)
-      const requestId = readIdOf(requestIdValue)
-      const abort = sessions.beginRead(event.sender.id, requestId)
-      try {
-        const paths = typeof atlasIdValue === 'string' ? deps.atlasPaths[atlasIdValue] : undefined
-        if (!paths) return null
-        const volume = await deps.reader.read(paths.volume, paths.volume, abort.signal)
-        const table = await readLayerTable(deps.reader, paths.table, abort.signal)
-        return !abort.signal.aborted && isCurrentMainFrame(event)
-          ? { bytes: volume.bytes, table: table.text }
-          : null
-      } catch (error) {
-        if (abort.signal.aborted || !isCurrentMainFrame(event)) return null
-        throw error
-      } finally {
-        sessions.finishRead(event.sender.id, requestId, abort)
+    addHandle(
+      FILE_CHANNELS.readAtlas,
+      async (event, requestIdValue: unknown, atlasIdValue: unknown) => {
+        requireCurrentMainFrame(event)
+        sessions.track(event.sender)
+        const requestId = readIdOf(requestIdValue)
+        const abort = sessions.beginRead(event.sender.id, requestId)
+        try {
+          const paths =
+            typeof atlasIdValue === 'string' && Object.hasOwn(deps.atlasPaths, atlasIdValue)
+              ? deps.atlasPaths[atlasIdValue]
+              : undefined
+          if (!paths) return null
+          const volume = await deps.reader.read(paths.volume, paths.volume, abort.signal)
+          const table = await readLayerTable(deps.reader, paths.table, abort.signal)
+          return !abort.signal.aborted && isCurrentMainFrame(event)
+            ? { bytes: volume.bytes, table: table.text }
+            : null
+        } catch (error) {
+          if (abort.signal.aborted || !isCurrentMainFrame(event)) return null
+          throw error
+        } finally {
+          sessions.finishRead(event.sender.id, requestId, abort)
+        }
       }
-    })
+    )
 
     addHandle(FILE_CHANNELS.openFolderScan, async (event, token: unknown) => {
       requireCurrentMainFrame(event)

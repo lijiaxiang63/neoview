@@ -59,9 +59,10 @@ export function CorrectionControls({
   }
   const selectKind = (kind: StatisticKind): void => {
     if (!cfg) return
-    // F is inherently one-sided; pin the tail when switching to it.
-    if (kind === 'f') setConfig({ statistic: { ...cfg.statistic, kind }, tail: 'one' })
-    else setStatistic({ kind })
+    // F and p already encode their probability direction; do not split it again.
+    if (kind === 'f' || kind === 'p') {
+      setConfig({ statistic: { ...cfg.statistic, kind }, tail: 'one' })
+    } else setStatistic({ kind })
   }
 
   return (
@@ -189,7 +190,7 @@ export function CorrectionControls({
             </>
           )}
 
-          {cfg.statistic.kind !== 'f' && (
+          {cfg.statistic.kind !== 'f' && cfg.statistic.kind !== 'p' && (
             <div className="corr-field">
               <span className="corr-label">Sided</span>
               <div className="preset-row">
@@ -218,7 +219,12 @@ export function CorrectionControls({
           <ClusterTable layer={layer} />
           {layer.significance && (
             <div className="corr-field">
-              <button className="preset-btn" onClick={onExport}>
+              <button
+                className="preset-btn"
+                disabled={layer.significance.stale}
+                title={layer.significance.stale ? 'Wait for correction to finish' : undefined}
+                onClick={onExport}
+              >
                 Export corrected map
               </button>
             </div>
@@ -335,17 +341,21 @@ function MaskSelect({
 function CorrectionReadout({ layer }: { layer: OverlayLayer }): JSX.Element | null {
   const sig = layer.significance
   if (!sig) return null
+  const fwhm = sig.smoothness?.fwhm
+  const hasFwhm = fwhm?.every((value) => Number.isFinite(value) && value > 0) ?? false
   const gate = !Number.isFinite(sig.statThreshold)
     ? 'no voxels pass'
     : sig.kind === 'p'
       ? `p ≤ ${fmt(sig.statThreshold)}`
-      : `|${sig.kind}| ≥ ${fmt(sig.statThreshold)}`
+      : sig.tail === 'one' || sig.kind === 'f'
+        ? `${sig.kind} ≥ ${fmt(sig.statThreshold)}`
+        : `|${sig.kind}| ≥ ${fmt(sig.statThreshold)}`
   return (
     <div className="corr-readout mono">
       <div>{sig.stale ? 'computing…' : gate}</div>
       <div>{sig.survivingVoxels.toLocaleString()} voxels survive</div>
       {sig.minClusterSize !== null && <div>min cluster {sig.minClusterSize} vox</div>}
-      {sig.smoothness && <div>FWHM {sig.smoothness.fwhm.map((f) => f.toFixed(1)).join(' / ')}</div>}
+      {fwhm && hasFwhm && <div>FWHM {fwhm.map((f) => f.toFixed(1)).join(' / ')}</div>}
     </div>
   )
 }

@@ -151,6 +151,15 @@ describe('createCorrectionDomain', () => {
     expect(scheduled).not.toBeNull()
   })
 
+  it('records the clamped layer frame described by the result', () => {
+    const domain = createCorrectionDomain({ get, set, timers })
+    host.frame = 4
+    enable(1)
+    domain.configChanged(1)
+    flush()
+    expect(host.overlays[0].significance?.frame).toBe(0)
+  })
+
   it('dispose makes later callbacks inert', () => {
     const domain = createCorrectionDomain({ get, set, timers })
     enable(1)

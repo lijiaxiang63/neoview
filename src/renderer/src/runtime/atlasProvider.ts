@@ -7,21 +7,26 @@ import { atlasEntry } from '../stats/atlasCatalog'
 import type { Atlas } from '../stats/atlasAnnotation'
 import { parseAtlasTable } from '../stats/atlasTable'
 import { loadVolume } from '../volume/loadVolume'
+import { allocateFileReadRequestId } from './fileReadRequestIds'
 
 export interface AtlasBridge {
   readAtlas(requestId: number, atlasId: string): Promise<AtlasResource | null>
+  cancelFileRead?(requestId: number): void
 }
 
 export class AtlasProvider {
   private readonly cache = new Map<string, Promise<Atlas | null>>()
   private readonly resolved = new Map<string, Atlas>()
-  private nextRequestId = 1
+  private readonly pendingReads = new Set<number>()
+  private readonly pendingLoads = new Set<AbortController>()
+  private active = true
 
   constructor(private readonly bridge: AtlasBridge) {}
 
   /** Parsed atlas for `id`, loaded and cached on first request; null if unknown
    * or if loading fails. */
   get(id: string): Promise<Atlas | null> {
+    if (!this.active) return Promise.resolve(null)
     let pending = this.cache.get(id)
     if (!pending) {
       pending = this.load(id)
@@ -44,16 +49,35 @@ export class AtlasProvider {
   private async load(id: string): Promise<Atlas | null> {
     const spec = atlasEntry(id)
     if (!spec) return null
-    const resource = await this.bridge.readAtlas(this.nextRequestId++, id)
-    if (!resource) return null
-    const volume = await loadVolume(spec.volumeFile, resource.bytes, {
-      skipTex: true,
-      signal: new AbortController().signal
-    })
-    return { volume, names: parseAtlasTable(resource.table) }
+    const requestId = allocateFileReadRequestId()
+    this.pendingReads.add(requestId)
+    let resource: AtlasResource | null
+    try {
+      resource = await this.bridge.readAtlas(requestId, id)
+    } finally {
+      this.pendingReads.delete(requestId)
+    }
+    if (!this.active || !resource) return null
+    const abort = new AbortController()
+    this.pendingLoads.add(abort)
+    try {
+      const volume = await loadVolume(spec.volumeFile, resource.bytes, {
+        skipTex: true,
+        signal: abort.signal
+      })
+      return this.active ? { volume, names: parseAtlasTable(resource.table) } : null
+    } finally {
+      this.pendingLoads.delete(abort)
+    }
   }
 
   dispose(): void {
+    if (!this.active) return
+    this.active = false
+    for (const requestId of this.pendingReads) this.bridge.cancelFileRead?.(requestId)
+    for (const abort of this.pendingLoads) abort.abort()
+    this.pendingReads.clear()
+    this.pendingLoads.clear()
     this.cache.clear()
     this.resolved.clear()
   }

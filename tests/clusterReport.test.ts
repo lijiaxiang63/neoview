@@ -52,6 +52,20 @@ describe('buildClusterReport', () => {
     expect(filtered.records[0].voxelCount).toBe(4)
   })
 
+  it('uses the smallest value as the peak for a p-value map', () => {
+    const mask = new Uint8Array(64)
+    const values = new Float64Array(64)
+    mask[idx(0, 0, 0)] = 1
+    mask[idx(1, 0, 0)] = 1
+    values[idx(0, 0, 0)] = 0.04
+    values[idx(1, 0, 0)] = 0.001
+
+    const cc = labelClusters(mask, dims, 6)
+    const report = buildClusterReport(values, dims, AFFINE, cc, 1, 'minimum')
+    expect(report.records[0].peakStat).toBe(0.001)
+    expect(report.records[0].peakVoxel).toEqual([1, 0, 0])
+  })
+
   it('uses |det| for volume with a rotated (oblique) affine', () => {
     // 90° rotation in-plane with scales 2,2,3 → |det| still 12.
     const rotated = new Float64Array([0, -2, 0, 1, 2, 0, 0, 2, 0, 0, 3, 3, 0, 0, 0, 1])

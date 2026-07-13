@@ -11,6 +11,11 @@ import type { StatisticKind } from '../volume/types'
 export type { StatisticKind }
 export type Tail = 'two' | 'one'
 
+/** F and p values already encode the probability direction used by correction. */
+export function tailForStatistic(kind: StatisticKind, tail: Tail): Tail {
+  return kind === 'f' || kind === 'p' ? 'one' : tail
+}
+
 /** Clamp a probability into [1e-15, 1−1e-15]. The 1e-15 floor keeps `1 − p`
  * strictly below 1 so normalInv(1 − p) stays finite even for extreme statistics
  * (a t/z above ~8 otherwise rounds `1 − p` to exactly 1 → Infinity). Capping the

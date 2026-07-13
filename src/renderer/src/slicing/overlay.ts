@@ -389,10 +389,14 @@ export function extractOverlayRGBA(
   // Significance gate (stat maps only): a voxel is visible when it clears the
   // correction threshold and, for cluster methods, lies in the survival mask.
   // Colour still comes from the display window; only visibility changes.
-  const sig = kind === 'map' ? layer.significance : null
+  const sig =
+    kind === 'map' && layer.significance?.frame === Math.min(frame, ov.frames - 1)
+      ? layer.significance
+      : null
   const sigThreshold = sig ? sig.statThreshold : null
   const sigMask = sig ? sig.mask : null
   const sigIsP = sig ? sig.kind === 'p' : false
+  const sigIsF = sig ? sig.kind === 'f' : false
   const sigOneTailed = sig ? sig.tail === 'one' : false
 
   let p = 0
@@ -424,7 +428,13 @@ export function extractOverlayRGBA(
           sigThreshold === null
             ? a >= lo
             : (sigMask === null || sigMask[ovIdx] !== 0) &&
-              (sigIsP ? v <= sigThreshold : sigOneTailed ? v >= sigThreshold : a >= sigThreshold)
+              (sigIsP
+                ? v > 0 && v <= 1 && v <= sigThreshold
+                : sigIsF
+                  ? v > 0 && v >= sigThreshold
+                  : sigOneTailed
+                    ? v >= sigThreshold
+                    : a >= sigThreshold)
         if (!visible) {
           px[p] = 0
         } else {
@@ -438,10 +448,12 @@ export function extractOverlayRGBA(
             ? v >= lo
             : (sigMask === null || sigMask[ovIdx] !== 0) &&
               (sigIsP
-                ? v <= sigThreshold
-                : sigOneTailed
-                  ? v >= sigThreshold
-                  : Math.abs(v) >= sigThreshold)
+                ? v > 0 && v <= 1 && v <= sigThreshold
+                : sigIsF
+                  ? v > 0 && v >= sigThreshold
+                  : sigOneTailed
+                    ? v >= sigThreshold
+                    : Math.abs(v) >= sigThreshold)
         if (!visible) {
           px[p] = 0
         } else {

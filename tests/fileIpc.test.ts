@@ -589,6 +589,32 @@ describe('file IPC registration', () => {
     dispose()
   })
 
+  it('reads only an own-property bundled atlas id', async () => {
+    const ipc = new FakeIpc()
+    const access = new FileAccessAuthorizer({ realpath: async (path) => path })
+    const base = makeDependencies(ipc, access)
+    const read = vi.fn(base.reader.read)
+    const readWithin = vi.fn(async () => ({
+      name: 'table.csv',
+      path: '',
+      bytes: new TextEncoder().encode('ROIid;ROIname\n1;One\n').buffer
+    }))
+    const dispose = registerFileIpc({
+      ...base,
+      atlasPaths: { known: { volume: '/bundled/volume.nii.gz', table: '/bundled/table.csv' } },
+      reader: { ...base.reader, read, readWithin }
+    })
+    const sender = new FakeSender(29)
+
+    await expect(ipc.invoke('read-atlas', sender, 306, 'known')).resolves.toMatchObject({
+      table: 'ROIid;ROIname\n1;One\n'
+    })
+    await expect(ipc.invoke('read-atlas', sender, 307, 'toString')).resolves.toBeNull()
+    expect(read).toHaveBeenCalledTimes(1)
+    expect(readWithin).toHaveBeenCalledTimes(1)
+    dispose()
+  })
+
   it('rejects a non-text file returned by the targeted table picker', async () => {
     const ipc = new FakeIpc()
     const access = new FileAccessAuthorizer({ realpath: async (path) => path })

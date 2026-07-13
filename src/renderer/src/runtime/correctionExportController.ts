@@ -33,14 +33,26 @@ export class CorrectionExportController {
    * is known so the caller can surface the region export settings. */
   async export(layer: OverlayLayer): Promise<boolean> {
     if (!this.active || this.busy) return true
-    const sig = layer.significance
-    if (!sig) return true
     const state = this.store.getState()
+    const currentLayer = state.overlays.find((item) => item.id === layer.id)
+    const sig = currentLayer?.significance
+    const sourceFrame = currentLayer ? Math.min(state.frame, currentLayer.volume.frames - 1) : -1
+    if (
+      !currentLayer ||
+      !currentLayer.correction ||
+      !sig ||
+      sig.stale ||
+      sig.configRev !== currentLayer.correction.rev ||
+      sig.frame !== sourceFrame
+    ) {
+      state.fail('Wait for correction to finish before exporting.')
+      return true
+    }
     const settings = loadExportSettings(this.storage)
     const dir =
       settings.dir ||
-      (layer.sourcePath
-        ? dirOfPath(layer.sourcePath)
+      (currentLayer.sourcePath
+        ? dirOfPath(currentLayer.sourcePath)
         : state.sourcePath
           ? dirOfPath(state.sourcePath)
           : '')
@@ -55,10 +67,10 @@ export class CorrectionExportController {
       // frame, which may differ (a recompute is debounced + async), or the mask
       // and threshold would gate the wrong frame's voxels.
       const payload = await buildCorrectedExport(
-        layer.volume,
+        currentLayer.volume,
         sig,
         sig.frame,
-        exportBaseName(layer.volume.name),
+        exportBaseName(currentLayer.volume.name),
         settings.format
       )
       if (!this.active) return true

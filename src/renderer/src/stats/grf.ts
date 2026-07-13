@@ -29,6 +29,7 @@ const TWO_PI_FACTOR = (2 * Math.PI) ** (-(D + 1) / 2) // (2π)^(-2) for D=3
  * voxels EN.
  */
 function clusterSizeThreshold(n: number, dLh: number, zThr: number, clusterP: number): number {
+  if (clusterP <= 0) return n + 1
   const z2 = zThr * zThr
   const Em = n * TWO_PI_FACTOR * dLh * (z2 - 1) ** ((D - 1) / 2) * Math.exp(-z2 / 2)
   const EN = n * normalSf(zThr)

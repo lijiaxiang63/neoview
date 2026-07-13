@@ -102,16 +102,18 @@ function voxelVolume(affine: Float64Array): number {
 
 /**
  * Build the cluster report from a labelling of the surviving voxels. `values`
- * holds the original signed statistic (so the peak is the max-|stat| voxel and
- * its signed value is reported). Clusters smaller than `minClusterSize` are
- * dropped; the rest are ordered largest first and renumbered 1..N.
+ * holds the original statistic. Peaks use maximum magnitude by default; p-value
+ * maps request the minimum value instead. Clusters smaller than
+ * `minClusterSize` are dropped; the rest are ordered largest first and
+ * renumbered 1..N.
  */
 export function buildClusterReport(
   values: Float64Array,
   dims: [number, number, number],
   affine: Float64Array,
   components: Components,
-  minClusterSize: number
+  minClusterSize: number,
+  peakMode: 'magnitude' | 'minimum' = 'magnitude'
 ): ClusterReport {
   const nx = dims[0]
   const sz = dims[0] * dims[1]
@@ -122,10 +124,10 @@ export function buildClusterReport(
   for (let idx = 0; idx < labels.length; idx++) {
     const label = labels[idx]
     if (label === 0) continue
-    const a = Math.abs(values[idx])
     const c = label - 1
-    if (peakIdx[c] === -1 || a > peakAbs[c]) {
-      peakAbs[c] = a
+    const score = peakMode === 'minimum' ? -values[idx] : Math.abs(values[idx])
+    if (peakIdx[c] === -1 || score > peakAbs[c]) {
+      peakAbs[c] = score
       peakIdx[c] = idx
     }
   }

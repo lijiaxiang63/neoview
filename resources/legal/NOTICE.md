@@ -50,18 +50,30 @@ https://doi.org/10.21105/joss.05098
 
 Each atlas is bundled as a `.nii.gz` label volume plus a same-stem `.csv` name
 table and used only to annotate correction cluster reports with region names.
-The label volumes were losslessly gzip-compressed from the originals; the CSV
-name tables are unmodified. **License/citation for each atlas must be confirmed
-against its source before distribution** — the canonical citations are noted
-below; complete each `License:` line with the source's terms.
+The files are copied from CAT12 revision
+`b4f8ca5070bb08bd25ddcd84134dfe06e77ab5c3`, directory
+`templates_MNI152NLin2009cAsym/`. CAT12 is distributed under GPL-2.0-or-later;
+the source-specific terms and requested citations below also apply.
 
-- `aal3` — Automated Anatomical Labelling atlas 3. Rolls, Huang, Lin, Feng &
-  Joliot (2020), *NeuroImage* 206:116189. License: _to be confirmed._
-- `suit` — SUIT cerebellar atlas. Diedrichsen (2006), *NeuroImage* 33(1):127-138.
-  License: _to be confirmed._
-- `thalamic_nuclei` — thalamic nuclei parcellation. License: _to be confirmed._
-- `Tian_Subcortex_S4_7T` — Melbourne Subcortex Atlas (scale IV, 7T). Tian,
-  Margulies, Breakspear & Zalesky (2020), *Nature Neuroscience* 23:1421-1432.
-  License: _to be confirmed._
-- `neuromorphometrics` — Neuromorphometrics labelling (as distributed with
-  SPM/CAT12), © Neuromorphometrics, Inc. License: _to be confirmed._
+- `aal3` — Automated Anatomical Labelling atlas 3. License: GNU General Public
+  License. Cite Rolls, Huang, Lin, Feng & Joliot (2020), _NeuroImage_
+  206:116189, and Tzourio-Mazoyer et al. (2002), _NeuroImage_ 15:273-289.
+- `suit` — SUIT cerebellar atlas. License: Creative Commons
+  Attribution-NonCommercial 3.0 Unported. Cite Diedrichsen et al. (2009),
+  _NeuroImage_ 46(1):39-46. Labels 29–34 in the name table are supplemented
+  from `Diedrichsen_2009/atl-Anatom.lut` at cerebellar-atlases revision
+  `1b62fdc0954d34ed768ec36e81ce6a007dbe9e3c`; the CAT12 table omitted those
+  names although its label volume contains their values.
+- `thalamic_nuclei` — Copyright © 2021 Manojkumar Saranathan, University of
+  Arizona, Tucson. License: Creative Commons Attribution 4.0 International.
+  Cite Su et al. (2019), _NeuroImage_ 194:272-282, and Saranathan et al. (2021),
+  _Scientific Data_ 8:275. This atlas has not been tested or validated for
+  clinical use.
+- `Tian_Subcortex_S4_7T` — Melbourne Subcortex Atlas (scale IV, 7T). Permission
+  is granted to use, copy, modify, merge, publish, and distribute the atlas,
+  provided that publications using it cite Tian, Margulies, Breakspear &
+  Zalesky (2020), _Nature Neuroscience_ 23:1421-1432.
+- `neuromorphometrics` — License: Creative Commons Attribution-NonCommercial
+  (no end date). Credit the scans as originating from the OASIS project and the
+  labelled data as “provided by Neuromorphometrics, Inc. under academic
+  subscription”; include those references in workshop and final publications.

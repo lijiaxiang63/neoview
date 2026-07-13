@@ -1,9 +1,23 @@
 import { describe, expect, it } from 'vitest'
-import { statCutoffForP, statToP, statToZ } from '../src/renderer/src/stats/pValues'
+import {
+  statCutoffForP,
+  statToP,
+  statToZ,
+  tailForStatistic
+} from '../src/renderer/src/stats/pValues'
 
 const near = (a: number, b: number, tol: number): void => {
   expect(Math.abs(a - b)).toBeLessThan(tol)
 }
+
+describe('tailForStatistic', () => {
+  it('forces F and p values to one tail', () => {
+    expect(tailForStatistic('f', 'two')).toBe('one')
+    expect(tailForStatistic('p', 'two')).toBe('one')
+    expect(tailForStatistic('t', 'two')).toBe('two')
+    expect(tailForStatistic('z', 'one')).toBe('one')
+  })
+})
 
 describe('statToP', () => {
   it('z two-tailed vs one-tailed', () => {

@@ -12,7 +12,14 @@ import {
 import { type Components, type Connectivity, labelClusters } from './connectedComponents'
 import { type CorrectionMethod, fdrThreshold } from './correction'
 import { clusterExtentThreshold } from './grf'
-import { statCutoffForP, statToP, statToZ, type StatisticKind, type Tail } from './pValues'
+import {
+  statCutoffForP,
+  statToP,
+  statToZ,
+  tailForStatistic,
+  type StatisticKind,
+  type Tail
+} from './pValues'
 import { estimateSmoothness, type Smoothness } from './smoothness'
 
 export interface StatisticSpec {
@@ -66,8 +73,11 @@ type ProgressStage = 'scan' | 'smoothness' | 'clusters' | 'report'
 /** A voxel is part of the analysis mask iff it is finite and non-zero. This one
  * predicate drives the test count m, the FDR denominator, the smoothness pairs,
  * and the cluster search volume. */
-export function isInMask(v: number): boolean {
-  return v !== 0 && Number.isFinite(v)
+export function isInMask(v: number, kind?: StatisticKind): boolean {
+  if (v === 0 || !Number.isFinite(v)) return false
+  if (kind === 'p') return v > 0 && v <= 1
+  if (kind === 'f') return v > 0
+  return true
 }
 
 /** Per-voxel significance test matching the display gate: p-maps keep the
@@ -82,11 +92,15 @@ function survivesPredicate(
   return (v) => v >= threshold
 }
 
-function countInMask(values: Float64Array, restrict?: Uint8Array | null): number {
+function countInMask(
+  values: Float64Array,
+  restrict?: Uint8Array | null,
+  kind?: StatisticKind
+): number {
   const r = restrict ?? null
   let m = 0
   for (let i = 0; i < values.length; i++) {
-    if (isInMask(values[i]) && (r === null || r[i] !== 0)) m++
+    if (isInMask(values[i], kind) && (r === null || r[i] !== 0)) m++
   }
   return m
 }
@@ -126,10 +140,18 @@ function reportFromMask(
   dims: [number, number, number],
   affine: Float64Array,
   mask: Uint8Array,
-  connectivity: Connectivity
+  connectivity: Connectivity,
+  kind: StatisticKind
 ): { report: ClusterReport; membership: ClusterMembership } {
   const components = labelClusters(mask, dims, connectivity)
-  const report = buildClusterReport(values, dims, affine, components, 1)
+  const report = buildClusterReport(
+    values,
+    dims,
+    affine,
+    components,
+    1,
+    kind === 'p' ? 'minimum' : 'magnitude'
+  )
   return { report, membership: buildMembership(report, components, dims) }
 }
 
@@ -148,14 +170,24 @@ function computeClusterGrf(
   report: ClusterReport | null
   membership: ClusterMembership | null
 } {
-  const { values, dims, affine, spacing, statistic, alpha, clusterFormingP, tail, connectivity } =
-    req
+  const {
+    values,
+    dims,
+    affine,
+    spacing,
+    statistic,
+    alpha,
+    clusterFormingP,
+    tail: requestedTail,
+    connectivity
+  } = req
+  const tail = tailForStatistic(statistic.kind, requestedTail)
   const restrict = req.restrict ?? null
   const n = values.length
   const z = new Float64Array(n)
   const inMask = new Uint8Array(n)
   for (let i = 0; i < n; i++) {
-    if (isInMask(values[i]) && (restrict === null || restrict[i] !== 0)) {
+    if (isInMask(values[i], statistic.kind) && (restrict === null || restrict[i] !== 0)) {
       inMask[i] = 1
       z[i] = statToZ(values[i], statistic.kind, statistic.dof1, statistic.dof2)
     }
@@ -219,7 +251,14 @@ function computeClusterGrf(
       sizes: Int32Array.from(combinedSizes),
       count: nextId
     }
-    report = buildClusterReport(values, dims, affine, components, 1)
+    report = buildClusterReport(
+      values,
+      dims,
+      affine,
+      components,
+      1,
+      statistic.kind === 'p' ? 'minimum' : 'magnitude'
+    )
     membership = buildMembership(report, components, dims)
   }
 
@@ -238,8 +277,9 @@ export function computeCorrection(
   req: CorrectionRequest,
   onProgress?: (stage: ProgressStage, fraction: number) => void
 ): CorrectionResult {
-  const { values, dims, affine, statistic, method, alpha, tail, connectivity } = req
+  const { values, dims, affine, statistic, method, alpha, tail: requestedTail, connectivity } = req
   const { kind, dof1, dof2 } = statistic
+  const tail = tailForStatistic(kind, requestedTail)
   const restrict = req.restrict ?? null
 
   // A t/F map with no (positive) degrees of freedom cannot yield valid p-values;
@@ -247,7 +287,7 @@ export function computeCorrection(
   if (!hasValidDof(statistic)) return rejectAllResult(kind)
 
   onProgress?.('scan', 0)
-  const m = countInMask(values, restrict)
+  const m = countInMask(values, restrict, kind)
 
   if (method === 'cluster-grf') {
     const grf = computeClusterGrf(req, m, onProgress)
@@ -273,7 +313,7 @@ export function computeCorrection(
     let w = 0
     for (let i = 0; i < values.length; i++) {
       const v = values[i]
-      if (isInMask(v) && (restrict === null || restrict[i] !== 0)) {
+      if (isInMask(v, kind) && (restrict === null || restrict[i] !== 0)) {
         pv[w++] = statToP(v, kind, dof1, dof2, tail)
       }
     }
@@ -289,7 +329,7 @@ export function computeCorrection(
   let membership: ClusterMembership | null = null
   const survives = survivesPredicate(kind, tail, statThreshold)
   const inEff = (i: number): boolean =>
-    isInMask(values[i]) && (restrict === null || restrict[i] !== 0)
+    isInMask(values[i], kind) && (restrict === null || restrict[i] !== 0)
   if (req.includeReport) {
     onProgress?.('clusters', 0)
     const survivalMask = new Uint8Array(values.length)
@@ -300,7 +340,7 @@ export function computeCorrection(
       }
     }
     onProgress?.('report', 0)
-    const built = reportFromMask(values, dims, affine, survivalMask, connectivity)
+    const built = reportFromMask(values, dims, affine, survivalMask, connectivity, kind)
     report = built.report
     membership = built.membership
   } else {

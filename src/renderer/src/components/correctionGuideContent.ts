@@ -77,7 +77,7 @@ export function correctionGuideSections(): GuideSection[] {
           term: 'Neighbors',
           desc: 'Cluster adjacency: 6 (faces) or 26 (faces + edges + corners).'
         },
-        { term: 'Sided', desc: 'Two-tailed or positive-only. F is one-sided.' },
+        { term: 'Sided', desc: 'Two-tailed or positive-only. F and p do not use this setting.' },
         { term: 'Mask', desc: "Restrict correction to another layer's finite, non-zero voxels." },
         {
           term: 'Atlas',

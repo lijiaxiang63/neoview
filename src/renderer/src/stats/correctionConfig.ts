@@ -6,7 +6,7 @@ import type { StatisticInfo } from '../volume/types'
 import type { ClusterMembership, ClusterReport } from './clusterReport'
 import type { Connectivity } from './connectedComponents'
 import type { CorrectionMethod } from './correction'
-import type { StatisticKind, Tail } from './pValues'
+import { tailForStatistic, type StatisticKind, type Tail } from './pValues'
 import type { Smoothness } from './smoothness'
 
 export interface CorrectionStatistic {
@@ -71,7 +71,7 @@ export function defaultCorrectionConfig(statistic: StatisticInfo | null): Correc
     method: 'uncorrected',
     alpha: CORRECTION_DEFAULTS.alpha,
     clusterFormingP: CORRECTION_DEFAULTS.clusterFormingP,
-    tail: CORRECTION_DEFAULTS.tail,
+    tail: tailForStatistic(statistic?.kind ?? 'z', CORRECTION_DEFAULTS.tail),
     connectivity: CORRECTION_DEFAULTS.connectivity,
     statistic: {
       kind: statistic?.kind ?? 'z',

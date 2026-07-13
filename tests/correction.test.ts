@@ -1,5 +1,14 @@
 import { describe, expect, it } from 'vitest'
 import { fdrThreshold } from '../src/renderer/src/stats/correction'
+import { defaultCorrectionConfig } from '../src/renderer/src/stats/correctionConfig'
+
+describe('defaultCorrectionConfig', () => {
+  it('uses one tail for F and p values declared by the volume', () => {
+    expect(defaultCorrectionConfig({ kind: 'f', dof1: 3, dof2: 40 }).tail).toBe('one')
+    expect(defaultCorrectionConfig({ kind: 'p', dof1: null, dof2: null }).tail).toBe('one')
+    expect(defaultCorrectionConfig({ kind: 'z', dof1: null, dof2: null }).tail).toBe('two')
+  })
+})
 
 describe('fdrThreshold (Benjamini-Hochberg)', () => {
   it('reproduces the canonical 15-p-value example at q=0.05', () => {

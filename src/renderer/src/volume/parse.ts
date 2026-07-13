@@ -215,9 +215,7 @@ function parseStatMetadata(
       const dLh = Number(meta[2])
       if (Number.isFinite(dLh) && dLh > 0) {
         const fwhm: [number, number, number] =
-          meta[3] !== undefined
-            ? [Number(meta[3]), Number(meta[4]), Number(meta[5])]
-            : [0, 0, 0]
+          meta[3] !== undefined ? [Number(meta[3]), Number(meta[4]), Number(meta[5])] : [0, 0, 0]
         smoothness = { dLh, fwhm }
       }
     }
@@ -226,7 +224,8 @@ function parseStatMetadata(
   const kind = STAT_INTENT_KINDS[dv.getInt16(OFF_INTENT_CODE, le)] ?? null
   let statistic: StatisticInfo | null = null
   if (kind) {
-    let dof1 = kind === 't' || kind === 'f' ? positiveOrNull(dv.getFloat32(OFF_INTENT_P1, le)) : null
+    let dof1 =
+      kind === 't' || kind === 'f' ? positiveOrNull(dv.getFloat32(OFF_INTENT_P1, le)) : null
     const dof2 = kind === 'f' ? positiveOrNull(dv.getFloat32(OFF_INTENT_P2, le)) : null
     if (kind === 't' && dof1 === null) dof1 = descripDof
     statistic = { kind, dof1, dof2 }

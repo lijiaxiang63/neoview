@@ -89,6 +89,9 @@ describe('isInMask / countInMask', () => {
     expect(isInMask(NaN)).toBe(false)
     expect(isInMask(Infinity)).toBe(false)
     expect(isInMask(0.3)).toBe(true)
+    expect(isInMask(-0.1, 'p')).toBe(false)
+    expect(isInMask(1.1, 'p')).toBe(false)
+    expect(isInMask(-1, 'f')).toBe(false)
     expect(countInMask(plantedMap())).toBe(N * N * N - 2)
   })
 })
@@ -148,6 +151,13 @@ describe('computeCorrection — cluster-GRF', () => {
     expect(r.report?.records).toHaveLength(0)
   })
 
+  it('rejects every cluster at an exact zero cluster level', () => {
+    const r = computeCorrection({ ...baseRequest('cluster-grf'), alpha: 0 })
+    expect(r.minClusterSize).toBeGreaterThan(N * N * N - 2)
+    expect(r.survivingVoxels).toBe(0)
+    expect(r.report?.records).toHaveLength(0)
+  })
+
   it('is not defeated by a single extreme voxel (finite smoothness)', () => {
     // z→∞ underflow used to poison smoothness → dLh NaN → minClusterSize 1.
     const values = plantedMap()
@@ -159,6 +169,20 @@ describe('computeCorrection — cluster-GRF', () => {
     })
     expect(r.smoothness && Number.isFinite(r.smoothness.dLh)).toBe(true)
     expect(r.minClusterSize).toBeGreaterThan(1)
+  })
+
+  it('never treats low F values as a negative-tail cluster', () => {
+    const values = new Float64Array(N * N * N).fill(0.000001)
+    for (let k = 5; k < 11; k++)
+      for (let j = 5; j < 11; j++) for (let i = 5; i < 11; i++) values[idx(i, j, k)] = 20
+    const r = computeCorrection({
+      ...baseRequest('cluster-grf'),
+      values,
+      statistic: { kind: 'f', dof1: 3, dof2: 40 },
+      tail: 'two'
+    })
+    expect(r.mask?.[idx(0, 0, 0)]).toBe(0)
+    expect(r.survivingVoxels).toBe(BLOB)
   })
 })
 
@@ -188,6 +212,34 @@ describe('computeCorrection — degenerate inputs', () => {
       statistic: { kind: 'p', dof1: 0, dof2: 0 }
     })
     expect(r.survivingVoxels).toBe(0)
+  })
+
+  it('reports the smallest surviving p value as the cluster peak', () => {
+    const values = new Float64Array(N * N * N).fill(0.5)
+    values[idx(5, 5, 5)] = 0.01
+    values[idx(6, 5, 5)] = 0.001
+    const r = computeCorrection({
+      ...baseRequest('uncorrected'),
+      values,
+      alpha: 0.05,
+      statistic: { kind: 'p', dof1: 0, dof2: 0 }
+    })
+    expect(r.report?.records[0].peakStat).toBe(0.001)
+    expect(r.report?.records[0].peakVoxel).toEqual([6, 5, 5])
+  })
+
+  it('excludes invalid p values instead of treating them as significant', () => {
+    const values = new Float64Array(N * N * N).fill(0.5)
+    values[idx(4, 5, 5)] = -0.1
+    values[idx(5, 5, 5)] = 1.1
+    values[idx(6, 5, 5)] = 0.001
+    const r = computeCorrection({
+      ...baseRequest('uncorrected'),
+      values,
+      statistic: { kind: 'p', dof1: 0, dof2: 0 }
+    })
+    expect(r.survivingVoxels).toBe(1)
+    expect(r.report?.records[0].peakVoxel).toEqual([6, 5, 5])
   })
 
   it('FDR keeps voxels whose p underflows to exactly 0', () => {
