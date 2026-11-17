@@ -4,7 +4,7 @@
 // z-space, and the display gate works in stat magnitude — these helpers bridge
 // all three. Pure; depend only on distributions.ts.
 
-import { fSf, normalInv, normalSf, studentTSf } from './distributions'
+import { fSf, normalIsfLog, normalSf, studentTLogSf, studentTSf } from './distributions'
 
 import type { StatisticKind } from '../volume/types'
 
@@ -16,15 +16,11 @@ export function tailForStatistic(kind: StatisticKind, tail: Tail): Tail {
   return kind === 'f' || kind === 'p' ? 'one' : tail
 }
 
-/** Clamp a probability into [1e-15, 1−1e-15]. The 1e-15 floor keeps `1 − p`
- * strictly below 1 so normalInv(1 − p) stays finite even for extreme statistics
- * (a t/z above ~8 otherwise rounds `1 − p` to exactly 1 → Infinity). Capping the
- * z-equivalent at ~8 is harmless: such voxels are astronomically significant and
- * always clear any cluster-forming threshold. */
-function clampP(p: number): number {
-  if (p < 1e-15) return 1e-15
-  if (p > 1 - 1e-15) return 1 - 1e-15
-  return p
+/** Preserve every positive representable tail. A p/F tail already rounded to
+ * zero has lost its magnitude: use the smallest positive double as a finite
+ * fallback. T statistics instead retain their log-tail before underflow. */
+function probabilityToZ(p: number): number {
+  return normalIsfLog(Math.log(Math.max(Number.MIN_VALUE, Math.min(1 - 1e-15, p))))
 }
 
 /**
@@ -54,21 +50,21 @@ export function statToP(
 
 /**
  * z-equivalent (same upper-tail probability under N(0,1)), sign preserved for
- * signed statistics. Matches the reference `_t_to_z`: p is the one-sided tail of
- * the magnitude, clipped to [1e-300, 1−1e-15], then z = Φ⁻¹(1−p).
+ * signed statistics. T tails stay in log space, including beyond underflow;
+ * no 1-p subtraction or arbitrary lower probability floor is used.
  */
 export function statToZ(value: number, kind: StatisticKind, dof1: number, dof2: number): number {
   switch (kind) {
     case 'z':
       return value
     case 't': {
-      const z = normalInv(1 - clampP(studentTSf(Math.abs(value), dof1)))
-      return value >= 0 ? z : -z
+      const z = normalIsfLog(studentTLogSf(Math.abs(value), dof1))
+      return (value >= 0 ? z : -z) + 0
     }
     case 'f':
-      return normalInv(1 - clampP(fSf(value, dof1, dof2)))
+      return probabilityToZ(fSf(value, dof1, dof2))
     case 'p':
-      return normalInv(1 - clampP(value))
+      return probabilityToZ(value)
   }
 }
 
