@@ -155,6 +155,55 @@ export function normalInv(p: number): number {
   return x - u / (1 + (x * u) / 2)
 }
 
+/** Inverse normal survival from log(p), avoiding both 1-p cancellation and
+ * probability underflow. The ordinary lower-tail quantile is accurate until
+ * its Halley refinement approaches exp overflow; farther out, invert the
+ * Cephes log-tail directly. */
+export function normalIsfLog(logp: number): number {
+  if (logp > 0 || Number.isNaN(logp)) return NaN
+  if (logp === 0) return -Infinity
+  if (logp === -Infinity) return Infinity
+  if (logp > -690) return -normalInv(Math.exp(logp))
+  let lo = 0
+  let hi = Math.sqrt(-logp) * Math.SQRT2
+  for (let i = 0; i < 60; i++) {
+    const z = (lo + hi) / 2
+    const x = z / SQRT2
+    // Here x > 8 at the root; keep the other branch for early iterations.
+    const ratio =
+      x < 8 ? polevl(x, ERFC_P) / p1evl(x, ERFC_Q) : polevl(x, ERFC_R) / p1evl(x, ERFC_S)
+    const tail = -x * x + Math.log(ratio) - Math.LN2
+    if (tail > logp) lo = z
+    else hi = z
+  }
+  return (lo + hi) / 2
+}
+
+/** Student-t log survival for a nonnegative magnitude. Evaluating the beta
+ * front factor in log space retains tails even when sf itself underflows.
+ * log(x) is computed without t*t, which can overflow for finite statistics. */
+export function studentTLogSf(absT: number, dof: number): number {
+  if (!(dof > 0) || !Number.isFinite(dof) || absT < 0) return NaN
+  if (absT === 0) return -Math.LN2
+  const logRatio = 2 * Math.log(absT) - Math.log(dof)
+  const logX =
+    logRatio > 0 ? -logRatio - Math.log1p(Math.exp(-logRatio)) : -Math.log1p(Math.exp(logRatio))
+  const x = Math.exp(logX)
+  const a = dof / 2
+  const b = 0.5
+  if (x >= (a + 1) / (a + b + 2)) return Math.log(studentTSf(absT, dof))
+  return (
+    -Math.LN2 +
+    lnGamma(a + b) -
+    lnGamma(a) -
+    lnGamma(b) +
+    a * logX +
+    b * Math.log1p(-x) +
+    Math.log(betacf(a, b, x)) -
+    Math.log(a)
+  )
+}
+
 const LANCZOS_G = 7
 const LANCZOS_C = [
   0.99999999999980993, 676.5203681218851, -1259.1392167224028, 771.32342877765313,

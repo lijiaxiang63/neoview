@@ -50,7 +50,13 @@ describe('statToZ', () => {
     // t=2, df=10 → one-sided p≈0.0367 → z=Φ⁻¹(1−p)
     near(zPos, 1.7904099322689326, 1e-4)
   })
-  it('clips extreme values without producing infinities', () => {
+  it('preserves small F tails and uses a finite fallback only after underflow', () => {
+    // SciPy 1.17: norm.isf(f.sf(100, 3, 379)).
+    near(statToZ(100, 'f', 3, 379), 14.460957324077947, 1e-9)
+    expect(Number.isFinite(statToZ(1e300, 'f', 3, 379))).toBe(true)
+    expect(statToZ(1e-300, 'p', 0, 0)).toBeGreaterThan(statToZ(1e-100, 'p', 0, 0))
+  })
+  it('converts extreme values without producing infinities', () => {
     expect(Number.isFinite(statToZ(1000, 't', 5, 0))).toBe(true)
   })
 })
